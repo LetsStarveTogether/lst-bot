@@ -1,0 +1,20 @@
+[Unit]
+Description=Podman container for napcat
+After=network-online.target
+Requires=network-online.target
+
+[Container]
+AutoUpdate=registry
+ContainerName=napcat
+Image=docker.io/mlikiowa/napcat-docker
+# PodmanArgs=--mac-address=
+PublishPort=127.0.0.1:6099:6099
+Volume=/srv/napcat/config:/app/napcat/config
+Volume=/srv/napcat/ntqq:/app/.config/QQ
+
+[Service]
+Restart=always
+ExecStartPre=mkdir -p /srv/napcat/config /srv/napcat/ntqq
+
+[Install]
+WantedBy=default.target

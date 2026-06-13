@@ -1,0 +1,91 @@
+[project]
+name = "lst-bot"
+version = "0.0.0"
+description = "A lightweight modern async bot framework."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "apsw>=3.53.2.0",
+    "croniter>=6.2.2",
+    "diwire>=1.4.2",
+    "logbook>=1.9.2",
+    "orjson>=3.11.9",
+    "pydantic>=2.13.4",
+    "pydantic-ai-slim[google,mcp]>=1.107.0",
+    "pydantic-settings>=2.14.1",
+    "pystemd>=0.13.2",
+    "python-ulid>=3.1.0",
+    "robyn[pydantic]>=0.84.0",
+    "selectolax>=0.4.10",
+    "urllib3-future>=2.21.902",
+    "uvloop>=0.22.1",
+    "websockets>=16.0",
+]
+
+[dependency-groups]
+dev = [
+    "prek>=0.4.4",
+    "pytest>=9.1.0",
+    "pytest-asyncio>=1.4.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.15.17",
+    "ty>=0.0.49",
+]
+
+[build-system]
+requires = ['uv_build~=0.11']
+build-backend = 'uv_build'
+
+[tool.ruff]
+fix = true
+preview = true
+required-version = '>=0.15'
+
+[tool.ruff.lint]
+select = ['ALL']
+ignore = [
+    'COM812',  # Conflicts with `ruff format`.
+    'ERA001',  # False positives are common.
+    'TC',      # Runtime use of typing constructs is common now.
+    'CPY',     # Covered by the standalone LICENSE file.
+    'PLR0913', # Explicit is better than implicit.
+    'PLR0917', # Complex is better than complicated.
+    'PLR6301', # Violates the usual practice.
+    'ANN401',  # Framework boundaries carry protocol and DI values.
+    'A002',    # Event(type=...) is part of the public API.
+    'BLE001',  # Dispatch records handler exceptions before re-raising.
+    'D',       # Too verbose.
+    'FURB189', # Message and State intentionally mirror built-in containers.
+    'FBT',     # Too strict.
+    'PLC0415', # Optional runtime imports keep hard dependencies lazy.
+    'PLR0911', # Small resolver functions are branchy by nature.
+]
+allowed-confusables = ['，', '：', '；', '？', '！', '（', '）']
+
+[tool.ruff.lint.per-file-ignores]
+'app/**' = [
+    'INP001', # App entry files are not package modules.
+]
+
+'tests/**/*.py' = [
+    'S101',    # Assert statements used for pytest.
+    'PLR2004', # Magic value used in test cases.
+    'PLC2701', # Allow import private members from graphon module.
+    'PLC1901', # be more precise about assertion in tests.
+
+    # permit calls of private methods until we separate
+    # public interface tests from implementation tests.
+    'SLF001', # allow calls of private class methods in tests
+]
+
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = true
+
+[tool.ty.environment]
+python-platform = "linux"
+
+[tool.pytest]
+minversion = '9.0'
+addopts = ['-n', '4']
+testpaths = ['tests']
+asyncio_mode = 'auto'

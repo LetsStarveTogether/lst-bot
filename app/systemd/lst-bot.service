@@ -1,0 +1,18 @@
+[Unit]
+Description=lst-bot
+After=network-online.target napcat.service
+Requires=network-online.target network-pre.target
+
+[Service]
+WorkingDirectory=/srv/lst-bot/app
+ExecStart=/srv/lst-bot/.venv/bin/python3 -OO /srv/lst-bot/app/main.py
+Restart=on-failure
+RestartSec=5s
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

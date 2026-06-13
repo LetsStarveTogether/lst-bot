@@ -1,0 +1,21 @@
+# Byte-compiled
+__pycache__/
+
+# Distribution
+dist/
+
+# Unit test
+.pytest_cache/
+
+# Environments
+.venv/
+.env
+
+# Ruff
+.ruff_cache/
+
+# Dev refs
+ref/
+
+# DB
+*.db
