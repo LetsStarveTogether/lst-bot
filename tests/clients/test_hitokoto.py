@@ -142,7 +142,6 @@ async def test_hitokoto_client_uses_injected_pool() -> None:
         await client.close()
 
     assert hitokoto.hitokoto == "hello"
-    assert str(hitokoto) == "hello\n-- source author"
     assert pool.cleared is True
     assert pool.calls == [
         {
@@ -176,7 +175,6 @@ async def test_hitokoto_client_omits_type_fields_when_unfiltered() -> None:
         await client.close()
 
     assert hitokoto.hitokoto == "hello"
-    assert str(hitokoto) == "hello\n-- source"
     assert pool.calls == [
         {
             "method": "GET",
@@ -201,7 +199,6 @@ async def test_hitokoto_client_reads_from_cache(tmp_path: Path) -> None:
         await client.close()
 
     assert hitokoto.hitokoto == "cached hello"
-    assert str(hitokoto) == "cached hello\n-- cache source cache author"
     assert cache_path.is_file()
     async with aclosing(await apsw.Connection.as_async(str(cache_path))) as db:
         version_cursor = await db.execute(

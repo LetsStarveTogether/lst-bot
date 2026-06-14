@@ -147,8 +147,8 @@ def log_event(event: Injected[Event]) -> None:
 
 
 @bot.on_cmd("一言")
-async def hitokoto(hc: Injected[HitokotoClient], r: Injected[Reply]) -> ReturnAction:
-    return r(str(await hc.get_hitokoto(use_cache=True)))
+async def hitokoto(hc: Injected[HitokotoClient]) -> str:
+    return str(await hc.get_hitokoto(use_cache=True))
 
 
 @bot.on_cmd("问")
