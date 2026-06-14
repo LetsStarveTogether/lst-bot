@@ -17,5 +17,5 @@ dist/
 # Dev refs
 ref/
 
-# DB
-*.db
+# Cache
+.cache/

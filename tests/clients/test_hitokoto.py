@@ -185,7 +185,7 @@ async def test_hitokoto_client_omits_type_fields_when_unfiltered() -> None:
 
 
 async def test_hitokoto_client_reads_from_cache(tmp_path: Path) -> None:
-    cache_path = tmp_path / "hitokoto.db"
+    cache_path = tmp_path / ".cache" / "hitokoto.db"
     pool = FakeRoutePool(fake_bundle_routes())
     client = HitokotoClient(
         bundle_url="sentences-bundle.hitokoto.cn",
@@ -277,7 +277,7 @@ async def test_hitokoto_client_downloads_sentence_files_concurrently() -> None:
 
 
 async def test_hitokoto_client_ensures_cache_on_enter(tmp_path: Path) -> None:
-    cache_path = tmp_path / "hitokoto.db"
+    cache_path = tmp_path / ".cache" / "hitokoto.db"
     pool = FakeRoutePool(fake_bundle_routes())
     client = HitokotoClient(
         http_pool=cast(AsyncPoolManager, pool),
@@ -292,7 +292,7 @@ async def test_hitokoto_client_ensures_cache_on_enter(tmp_path: Path) -> None:
 
 
 async def test_hitokoto_client_keeps_valid_cache_on_enter(tmp_path: Path) -> None:
-    cache_path = tmp_path / "hitokoto.db"
+    cache_path = tmp_path / ".cache" / "hitokoto.db"
     routes = fake_bundle_routes("already cached")
     await write_cache(cache_path, _bundle_from_routes(routes))
     pool = FakeRoutePool(routes)
@@ -313,7 +313,7 @@ async def test_hitokoto_client_keeps_valid_cache_on_enter(tmp_path: Path) -> Non
 async def test_hitokoto_cache_validity_rejects_missing_stale_and_bad_version(
     tmp_path: Path,
 ) -> None:
-    cache_path = tmp_path / "hitokoto.db"
+    cache_path = tmp_path / ".cache" / "hitokoto.db"
 
     assert await is_cache_valid(cache_path) is False
 
@@ -338,7 +338,7 @@ async def test_hitokoto_cache_validity_rejects_missing_stale_and_bad_version(
 async def test_read_cached_hitokoto_filters_types_and_reports_empty_match(
     tmp_path: Path,
 ) -> None:
-    cache_path = tmp_path / "hitokoto.db"
+    cache_path = tmp_path / ".cache" / "hitokoto.db"
     routes = fake_bundle_routes()
     category_url = "https://sentences-bundle.hitokoto.cn/categories.json"
     sentence_url = "https://sentences-bundle.hitokoto.cn/sentences/a.json"

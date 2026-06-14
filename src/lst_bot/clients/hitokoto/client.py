@@ -35,7 +35,7 @@ class HitokotoClient:
         url: str = "https://v1.hitokoto.cn/",
         bundle_url: str = "https://sentences-bundle.hitokoto.cn/",
         http_pool: AsyncPoolManager | None = None,
-        cache_path: str | Path = Path("hitokoto.db"),
+        cache_path: str | Path = Path(".cache/hitokoto.db"),
         download_cache_on_enter: bool = False,
     ) -> None:
         self.url = url
