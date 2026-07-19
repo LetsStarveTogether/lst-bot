@@ -17,7 +17,7 @@ English | [简体中文](README.zh-Hans.md)
 - Looks up DST versions, Klei lobbies, room details, and online players.
 - Manages local DST rooms for the LST group: save, rollback, restart, and regenerate.
 - Sends scheduled active-room reports to an IM group.
-- Answers DST questions with Gemini + Dosu MCP.
+- Answers DST questions with Grok 4.5 + Dosu MCP.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ flowchart LR
     Bot --> Clients[clients]
     Clients --> Klei[Klei lobby and version data]
     Clients --> DST[local DST systemd rooms]
-    Clients --> AI[Gemini + Dosu MCP]
+    Clients --> AI[Grok 4.5 + Dosu MCP]
     Clients --> Hitokoto[Hitokoto cache]
 ```
 
@@ -64,7 +64,8 @@ Core settings:
 | `REPORT_GROUP_ID` | IM group for scheduled reports |
 | `KLEI_ACCESS_TOKEN` | Klei lobby/read token |
 | `KLEI_HOST_ID` | DST host ID managed for the LST group |
-| `GEMINI_API_KEY` | Gemini question answering |
+| `GEMINI_API_KEY` | Reserved Gemini question-answering key |
+| `XAI_API_KEY` | Grok 4.5 question answering |
 | `DOSU_MCP_ENDPOINT` | Dosu MCP endpoint |
 | `DOSU_API_KEY` | Dosu access token |
 | `HTTP_PROXY` | Proxy for outbound HTTP requests |
@@ -90,7 +91,7 @@ Deployment checklist:
 
 1. Place the repository at `/srv/lst-bot` and run `just sync`.
 2. Enable the NapCat container and make sure its OneBot 11 WebSocket is reachable.
-3. Fill `.env` with OneBot, Klei, Gemini, Dosu, and report-group settings.
+3. Fill `.env` with OneBot, Klei, Gemini, xAI, Dosu, and report-group settings.
 4. For room management, provide local `dst@<room>.service` units.
 5. Make sure the service user can control lst-bot, NapCat, and DST room units.
 

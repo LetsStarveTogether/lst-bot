@@ -17,7 +17,7 @@ Let's Starve Together（LST）是围绕《饥荒联机版》（Don't Starve Toge
 - 查询 DST 最新版本、Klei 大厅、房间详情和在线玩家。
 - 管理 LST 使用的本机 DST 房间：存档、回档、重启、重置。
 - 定时向 IM 群报告活跃房间。
-- 用 Gemini + Dosu MCP 回答 DST 相关问题。
+- 用 Grok 4.5 + Dosu MCP 回答 DST 相关问题。
 
 ## 整体结构
 
@@ -34,7 +34,7 @@ flowchart LR
     Bot --> Clients[clients]
     Clients --> Klei[Klei 大厅与版本数据]
     Clients --> DST[本机 DST systemd 房间]
-    Clients --> AI[Gemini + Dosu MCP]
+    Clients --> AI[Grok 4.5 + Dosu MCP]
     Clients --> Hitokoto[一言缓存]
 ```
 
@@ -64,7 +64,8 @@ flowchart LR
 | `REPORT_GROUP_ID` | 定时报告 IM 群 |
 | `KLEI_ACCESS_TOKEN` | Klei lobby/read token |
 | `KLEI_HOST_ID` | LST 需要管理的 DST 主机 ID |
-| `GEMINI_API_KEY` | Gemini 问答 |
+| `GEMINI_API_KEY` | 暂时保留的 Gemini 问答密钥 |
+| `XAI_API_KEY` | Grok 4.5 问答 |
 | `DOSU_MCP_ENDPOINT` | Dosu MCP 地址 |
 | `DOSU_API_KEY` | Dosu 鉴权 |
 | `HTTP_PROXY` | 外部请求代理 |
@@ -90,7 +91,7 @@ flowchart LR
 
 1. 项目位于 `/srv/lst-bot`，并已运行 `just sync`。
 2. NapCat 容器已启用，OneBot 11 WebSocket 可连。
-3. `.env` 已填好 OneBot、Klei、Gemini、Dosu 和报告群配置。
+3. `.env` 已填好 OneBot、Klei、Gemini、xAI、Dosu 和报告群配置。
 4. 需要房间管理时，本机存在 `dst@<room>.service` 这类 DST 房间服务。
 5. 运行用户有权限控制 lst-bot、NapCat 和 DST 房间服务。
 

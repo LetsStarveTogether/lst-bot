@@ -3,28 +3,31 @@ from __future__ import annotations
 from typing import Any, Final
 
 from fastmcp.client.transports import StreamableHttpTransport
-from google.genai.types import ContentUnionDict, GenerateContentConfigDict
 from httpx import AsyncClient, Auth, Timeout
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import NativeTool, Thinking
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models import ModelRequestParameters
-from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
+from pydantic_ai.models.xai import XaiModel
 from pydantic_ai.native_tools import WebSearchTool
-from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.providers.xai import XaiProvider
 from pydantic_ai.toolsets import AbstractToolset
+from xai_sdk import AsyncClient as XaiClient
 
-GEMINI_MODEL: Final = "gemini-3.1-flash-lite"
+GROK_MODEL: Final = "grok-4.5"
 DOSU_API_KEY_HEADER: Final = "X-Dosu-API-Key"
 DOSU_MCP_TOOL_NAMES: Final = frozenset({"ask"})
 REQUEST_TIMEOUT: Final = 600
 
 DST_AGENT_INSTRUCTIONS: Final = """\
-你是《饥荒联机版》（Don't Starve Together）的问答助手，你的名字叫拾什。
+你是《饥荒联机版》（Don't Starve Together）的问答助手，名字叫拾什。
+目前你正在一个 QQ 群里作为机器人回答玩家关于 DST 的问题。
+你所在的 QQ 群是一个玩家自发组织的开放 DST 社区，
+社区的正式名称是 Let's Starve Together。
+“朗诵团”是其缩写 LST 的中文译名。
+
 你可以使用这些工具：
-- google_search：查询公开网页信息，成本更低且速度更快，适合优先使用。
+- web_search：查询公开网页信息，成本更低且速度更快，适合优先使用。
   用它补充 Klei 公告、版本更新、近期改动、社区资料，也用它寻找
   DST Lua 代码实体标识符，例如 prefab、component、stategraph、action、
   recipe、tuning、event、function、constant 或文件路径。
@@ -34,9 +37,9 @@ DST_AGENT_INSTRUCTIONS: Final = """\
   省略 data_source_ids 参数。
 
 工具使用策略：
-- 简单稳定的问题可以直接回答；其他问题通常先用 google_search 获取公开线索。
+- 简单稳定的问题可以直接回答；其他问题通常先用 web_search 获取公开线索。
 - 复杂机制、代码实现、模组开发或服务器配置问题，在调用 ask 前，先用
-  google_search 和推理明确问题描述，尽量找出相关 Lua 实体标识符。
+  web_search 和推理明确问题描述，尽量找出相关 Lua 实体标识符。
 - 当问题已经有清晰代码实体，或需要从游戏 Lua 脚本代码中综合确认时，调用 ask。
 - 工具结果不足或互相冲突时说明不确定，并区分 Lua 代码索引结论和公开资料结论。
 
@@ -50,25 +53,9 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 回答要求：
 - 不超 500 字的中文（在不影响语义的前提下尽可能简短）。
 - 不用 markdown 标记，只用基本的空格和换行排版。
-- 语气友好接地气，但不要客套和招呼。
+- 语气友好接地气，并略带一点幽默和调侃，不要客套和招呼。
 - 不编造版本机制、角色数值、代码或服务器配置。
 """
-
-
-class DstGoogleModel(GoogleModel):
-    async def _build_content_and_config(
-        self,
-        messages: list[ModelMessage],
-        model_settings: GoogleModelSettings,
-        model_request_parameters: ModelRequestParameters,
-    ) -> tuple[list[ContentUnionDict], GenerateContentConfigDict]:
-        contents, config = await super()._build_content_and_config(
-            messages,
-            model_settings,
-            model_request_parameters,
-        )
-        config["automatic_function_calling"] = {"disable": True}
-        return contents, config
 
 
 class DstQuestionAgent:
@@ -76,11 +63,13 @@ class DstQuestionAgent:
         self,
         *,
         gemini_api_key: SecretStr,
+        xai_api_key: SecretStr,
         dosu_mcp_endpoint: str,
         dosu_api_key: SecretStr,
         http_proxy: str | None = None,
     ) -> None:
         self._gemini_api_key = gemini_api_key
+        self._xai_api_key = xai_api_key
         self._dosu_mcp_endpoint = dosu_mcp_endpoint
         self._dosu_api_key = dosu_api_key
         self._http_proxy = http_proxy
@@ -88,15 +77,14 @@ class DstQuestionAgent:
     async def answer(self, question: str) -> str:
         proxy = self._http_proxy or None
 
-        async with AsyncClient(
-            proxy=proxy, timeout=REQUEST_TIMEOUT
-        ) as google_http_client:
-            model = DstGoogleModel(
-                GEMINI_MODEL,
-                provider=GoogleProvider(
-                    api_key=self._gemini_api_key.get_secret_value(),
-                    http_client=google_http_client,
-                ),
+        async with XaiClient(
+            api_key=self._xai_api_key.get_secret_value(),
+            channel_options=[("grpc.http_proxy", proxy)] if proxy else None,
+            timeout=REQUEST_TIMEOUT,
+        ) as xai_client:
+            model = XaiModel(
+                GROK_MODEL,
+                provider=XaiProvider(xai_client=xai_client),
             )
             agent = Agent(
                 model,
