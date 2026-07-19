@@ -9,15 +9,15 @@ class FakeSystemdInterface:
     def __init__(self) -> None:
         self.calls: list[tuple[str, bytes, bytes]] = []
 
-    def StartUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # noqa: N802
+    def StartUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # ruff:ignore[invalid-function-name]
         self.calls.append(("StartUnit", unit_name, mode))
         return b"/job/start"
 
-    def StopUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # noqa: N802
+    def StopUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # ruff:ignore[invalid-function-name]
         self.calls.append(("StopUnit", unit_name, mode))
         return b"/job/stop"
 
-    def RestartUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # noqa: N802
+    def RestartUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # ruff:ignore[invalid-function-name]
         self.calls.append(("RestartUnit", unit_name, mode))
         return b"/job/restart"
 

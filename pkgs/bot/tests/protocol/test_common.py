@@ -23,8 +23,9 @@ def test_self_is_frozen_value_key() -> None:
     same_self = BotSelf(platform="qq", user_id="10000")
 
     assert {self_: "connected"}[same_self] == "connected"
+    field = "user_id"
     with pytest.raises(ValidationError):
-        self_.user_id = "10001"
+        setattr(self_, field, "10001")
 
 
 def test_version_impl_uses_protocol_name_format() -> None:

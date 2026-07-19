@@ -173,7 +173,7 @@ async def read_cached_hitokoto(
     if type_values:
         placeholders = ", ".join("?" for _ in type_values)
         query = (
-            "SELECT "  # noqa: S608
+            "SELECT "  # ruff:ignore[hardcoded-sql-expression]
             "id,"
             "uuid,"
             "hitokoto,"
