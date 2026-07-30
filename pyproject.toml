@@ -13,7 +13,7 @@ dependencies = [
     "klei",
     "lst",
     "pydantic>=2.13.4",
-    "pydantic-ai-slim[mcp,xai]>=2.13.0",
+    "pydantic-ai-slim[mcp,openrouter]>=2.13.0",
     "pydantic-settings>=2.14.1",
     "urllib3-future>=2.21.902",
     "uvloop>=0.22.1",

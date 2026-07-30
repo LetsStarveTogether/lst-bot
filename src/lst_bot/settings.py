@@ -28,8 +28,7 @@ class Settings(BaseSettings):
     klei_access_token: SecretStr = SecretStr("")
     klei_host_id: str = ""
 
-    gemini_api_key: SecretStr = SecretStr("")
-    xai_api_key: SecretStr = SecretStr("")
+    openrouter_api_key: SecretStr = SecretStr("")
     dosu_mcp_endpoint: str = ""
     dosu_api_key: SecretStr = SecretStr("")
 

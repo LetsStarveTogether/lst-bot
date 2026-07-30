@@ -41,8 +41,7 @@ bot.container.add_instance(
 )
 bot.container.add_instance(
     DstQuestionAgent(
-        gemini_api_key=settings.gemini_api_key,
-        xai_api_key=settings.xai_api_key,
+        openrouter_api_key=settings.openrouter_api_key,
         dosu_mcp_endpoint=settings.dosu_mcp_endpoint,
         dosu_api_key=settings.dosu_api_key,
         http_proxy=settings.http_proxy,

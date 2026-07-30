@@ -8,13 +8,12 @@ from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import NativeTool, Thinking
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.models.xai import XaiModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.native_tools import WebSearchTool
-from pydantic_ai.providers.xai import XaiProvider
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.toolsets import AbstractToolset
-from xai_sdk import AsyncClient as XaiClient
 
-GROK_MODEL: Final = "grok-4.5"
+OPENROUTER_MODEL: Final = "openai/gpt-5.6-luna"
 DOSU_API_KEY_HEADER: Final = "X-Dosu-API-Key"
 DOSU_MCP_TOOL_NAMES: Final = frozenset({"ask"})
 REQUEST_TIMEOUT: Final = 600
@@ -53,7 +52,7 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 回答要求：
 - 不超 500 字的中文（在不影响语义的前提下尽可能简短）。
 - 不用 markdown 标记，只用基本的空格和换行排版。
-- 语气友好接地气，并略带一点幽默和调侃，不要客套和招呼。
+- 语气友好俏皮，带一点幽默调侃，不要客套和招呼。
 - 不编造版本机制、角色数值、代码或服务器配置。
 """
 
@@ -62,14 +61,12 @@ class DstQuestionAgent:
     def __init__(
         self,
         *,
-        gemini_api_key: SecretStr,
-        xai_api_key: SecretStr,
+        openrouter_api_key: SecretStr,
         dosu_mcp_endpoint: str,
         dosu_api_key: SecretStr,
         http_proxy: str | None = None,
     ) -> None:
-        self._gemini_api_key = gemini_api_key
-        self._xai_api_key = xai_api_key
+        self._openrouter_api_key = openrouter_api_key
         self._dosu_mcp_endpoint = dosu_mcp_endpoint
         self._dosu_api_key = dosu_api_key
         self._http_proxy = http_proxy
@@ -77,20 +74,25 @@ class DstQuestionAgent:
     async def answer(self, question: str) -> str:
         proxy = self._http_proxy or None
 
-        async with XaiClient(
-            api_key=self._xai_api_key.get_secret_value(),
-            channel_options=[("grpc.http_proxy", proxy)] if proxy else None,
+        async with AsyncClient(
+            proxy=proxy,
             timeout=REQUEST_TIMEOUT,
-        ) as xai_client:
-            model = XaiModel(
-                GROK_MODEL,
-                provider=XaiProvider(xai_client=xai_client),
+        ) as http_client:
+            model = OpenAIResponsesModel(
+                OPENROUTER_MODEL,
+                provider=OpenRouterProvider(
+                    api_key=self._openrouter_api_key.get_secret_value(),
+                    http_client=http_client,
+                ),
             )
             agent = Agent(
                 model,
                 instructions=DST_AGENT_INSTRUCTIONS,
                 toolsets=[self._dosu_tools(proxy=proxy)],
-                capabilities=[NativeTool(WebSearchTool()), Thinking(effort="medium")],
+                capabilities=[
+                    NativeTool(WebSearchTool()),
+                    Thinking(effort="xhigh"),
+                ],
             )
             async with agent:
                 result = await agent.run(question)
