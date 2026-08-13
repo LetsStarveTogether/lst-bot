@@ -6,14 +6,14 @@ from fastmcp.client.transports import StreamableHttpTransport
 from httpx import AsyncClient, Auth, Timeout
 from pydantic import SecretStr
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import NativeTool, Thinking
+from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.native_tools import WebSearchTool
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.toolsets import AbstractToolset
 
-OPENROUTER_MODEL: Final = "openai/gpt-5.6-luna"
+OPENROUTER_MODEL: Final = "deepseek/deepseek-v4-pro-0813"
 DOSU_API_KEY_HEADER: Final = "X-Dosu-API-Key"
 DOSU_MCP_TOOL_NAMES: Final = frozenset({"ask"})
 REQUEST_TIMEOUT: Final = 600
@@ -46,14 +46,14 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 - 最终回答参照费曼学习法：先用一句话给结论，再用玩家熟悉的游戏现象解释原因。
 - 默认读者不了解 Lua、prefab、component、stategraph 等代码概念；必须先讲白话，
   再在确有必要时补充代码名或服务器配置名。
-- 解释复杂机制时按“它是什么、为什么会这样、玩家该怎么做或怎么验证”的顺序写。
 - 避免堆叠代码细节；只保留能帮助判断、操作或避免误解的关键依据。
 
 回答要求：
-- 不超 500 字的中文（在不影响语义的前提下尽可能简短）。
-- 不用 markdown 标记，只用基本的空格和换行排版。
+- 少于 500 字的中文（在不影响语义的前提下尽可能简短）。
+- 不使用 markdown 标记，只用基本的空格和换行排版。
 - 语气友好俏皮，带一点幽默调侃，不要客套和招呼。
 - 不编造版本机制、角色数值、代码或服务器配置。
+- 不需要引用或列出原始网页链接。
 """
 
 
@@ -78,7 +78,7 @@ class DstQuestionAgent:
             proxy=proxy,
             timeout=REQUEST_TIMEOUT,
         ) as http_client:
-            model = OpenAIResponsesModel(
+            model = OpenRouterModel(
                 OPENROUTER_MODEL,
                 provider=OpenRouterProvider(
                     api_key=self._openrouter_api_key.get_secret_value(),
@@ -89,10 +89,7 @@ class DstQuestionAgent:
                 model,
                 instructions=DST_AGENT_INSTRUCTIONS,
                 toolsets=[self._dosu_tools(proxy=proxy)],
-                capabilities=[
-                    NativeTool(WebSearchTool()),
-                    Thinking(effort="xhigh"),
-                ],
+                capabilities=[NativeTool(WebSearchTool())],
             )
             async with agent:
                 result = await agent.run(question)

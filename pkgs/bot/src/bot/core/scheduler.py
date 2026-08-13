@@ -147,7 +147,7 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
-        async with self.bot.container.enter_scope(Scope.REQUEST) as resolver:
+        async with self.bot.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
             state: State = {}
             context = InjectionContext(
                 bot=self.bot,

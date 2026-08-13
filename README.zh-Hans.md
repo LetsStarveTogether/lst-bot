@@ -5,93 +5,74 @@
 
 [English](README.md) | 简体中文
 
-`lst-bot` 是一个给 Let's Starve Together 玩家群体用的通用 IM 机器人。
-
 ![LST logo](https://pub.starv.ing/logo.png)
 
-Let's Starve Together（LST）是围绕《饥荒联机版》（Don't Starve Together, DST）形成的自发游戏群体。仓库由 LST 机器人应用、可复用异步 bot 包和独立客户端包组成。`src/lst_bot/` 承载当前业务实现，`pkgs/bot/` 负责 OneBot 接入、事件分发、依赖注入、定时任务和动作执行。
+`lst-bot` 是 **Let's Starve Together（LST）** 玩家群体使用的即时通讯机器人，服务于《饥荒联机版》（Don't Starve Together，DST）玩家。
 
-## 它会做什么
+本仓库包含机器人应用及其可复用框架和客户端包。
 
-- 接入 NapCat / OneBot 11。
+## 功能
+
+- 通过 OneBot 接入 LST 群聊。
 - 查询 DST 最新版本、Klei 大厅、房间详情和在线玩家。
-- 管理 LST 使用的本机 DST 房间：存档、回档、重启、重置。
-- 定时向 IM 群报告活跃房间。
-- 通过 OpenRouter 使用 GPT-5.6 Luna + Dosu MCP 回答 DST 相关问题。
+- 管理本机 DST 房间并发送定时活跃报告。
+- 使用 AI 助手回答 DST 问题。
 
-## 整体结构
+## 架构
 
 ```mermaid
 flowchart LR
-    QQ[QQ 群] <--> NapCat[NapCat / OneBot 11]
-    NapCat <--> Bot[lst-bot app]
-
-    Bot --> Framework[bot 包]
-    Framework --> Router[事件路由 / 权限 / DI]
-    Framework --> Scheduler[cron 定时任务]
-    Framework --> Gateway[OneBot 网关]
-
-    Bot --> Clients[clients]
-    Clients --> Klei[Klei 大厅与版本数据]
-    Clients --> DST[本机 DST systemd 房间]
-    Clients --> AI[OpenRouter GPT-5.6 Luna + Dosu MCP]
-    Clients --> Hitokoto[一言缓存]
+    Chat[IM 群] <--> Gateway[NapCat / OneBot]
+    Gateway <--> Bot[lst-bot]
+    Bot --> Game[Klei 与 DST 数据]
+    Bot --> Rooms[本机 DST 房间]
+    Bot --> AI[AI 服务]
+    Bot --> Hitokoto[一言]
 ```
 
 ## 目录
 
-- `pkgs/bot/`：独立的异步 bot 框架包。
-- `pkgs/hitokoto/`：独立的一言客户端包。
-- `pkgs/klei/`：独立的 Klei 大厅、版本和论坛客户端包。
-- `pkgs/lst/`：独立的本机 DST 房间控制客户端包。
-- `src/lst_bot/`：机器人业务入口、配置和问答 Agent。
-- `systemd/`：NapCat 容器和 lst-bot 服务。
-- `tests/`：根应用测试。
-- 各 package 的测试放在对应 package 旁边。
+- `src/lst_bot/` 包含机器人应用。
+- `pkgs/` 包含 bot 框架和服务客户端。
+- `systemd/` 包含部署单元。
+- 测试放在其覆盖的代码旁边。
 
 ## 配置
 
-应用从运行目录读取 `.env`。开发和部署都以仓库根目录作为工作目录，所以通常放在 `.env`。
-
-核心配置：
+应用从仓库根目录读取 `.env`。
 
 | 变量 | 用途 |
 | --- | --- |
-| `ONEBOT_WS_URL` | NapCat 的 OneBot 11 WebSocket 地址 |
-| `ONEBOT_ACCESS_TOKEN` | OneBot 鉴权 |
-| `BOT_ADMIN` | 管理员账号 ID 列表 |
+| `ONEBOT_WS_URL` | OneBot WebSocket 地址 |
+| `ONEBOT_ACCESS_TOKEN` | OneBot 访问令牌 |
+| `BOT_ADMIN` | 管理员账号 ID |
 | `BOT_CMD_PREFIXES` | 命令前缀 |
-| `REPORT_GROUP_ID` | 定时报告 IM 群 |
-| `KLEI_ACCESS_TOKEN` | Klei lobby/read token |
-| `KLEI_HOST_ID` | LST 需要管理的 DST 主机 ID |
-| `OPENROUTER_API_KEY` | GPT-5.6 Luna 问答 |
-| `DOSU_MCP_ENDPOINT` | Dosu MCP 地址 |
-| `DOSU_API_KEY` | Dosu 鉴权 |
+| `REPORT_GROUP_ID` | 定时报告群 |
+| `KLEI_ACCESS_TOKEN` | Klei 访问令牌 |
+| `KLEI_HOST_ID` | 托管的 DST 主机 ID |
+| `OPENROUTER_API_KEY` | AI 服务凭据 |
+| `DOSU_MCP_ENDPOINT` | 知识服务地址 |
+| `DOSU_API_KEY` | 知识服务凭据 |
 | `HTTP_PROXY` | 外部请求代理 |
 | `LOG_LEVEL` | 日志等级 |
 
 ## 开发
 
-- `just sync`：同步所有 workspace 包并安装 hooks。
-- `just dev`：启动机器人应用包。
-- `just check`：运行 CI 风格检查。
-- `just test`：运行完整测试链路。
-- `just build`：检查并构建。
+- `just sync` 安装 workspace 和开发 hooks。
+- `just dev` 启动机器人。
+- `just check` 运行 CI 检查。
+- `just test` 运行全部检查和测试。
+- `just build` 检查并构建项目。
 
 ## 部署
 
-默认按 `/srv/lst-bot` 和 `/srv/napcat` 设计。
+仓库提供的 systemd 单元使用 `/srv/lst-bot` 和 `/srv/napcat`。
 
-`systemd/napcat.container` 是 Podman Quadlet 配置，会生成 `napcat.service`，并把 NapCat 的配置和 QQ 数据放到 `/srv/napcat/config`、`/srv/napcat/ntqq`。
-
-`systemd/lst-bot.service` 负责启动机器人，工作目录是 `/srv/lst-bot`，并在 `napcat.service` 之后启动。
-
-部署时只需要确认几件事：
+`systemd/napcat.container` 使用 Podman 运行 NapCat，`systemd/lst-bot.service` 随后启动机器人。
 
 1. 项目位于 `/srv/lst-bot`，并已运行 `just sync`。
-2. NapCat 容器已启用，OneBot 11 WebSocket 可连。
-3. `.env` 已填好 OneBot、Klei、OpenRouter、Dosu 和报告群配置。
-4. 需要房间管理时，本机存在 `dst@<room>.service` 这类 DST 房间服务。
-5. 运行用户有权限控制 lst-bot、NapCat 和 DST 房间服务。
+2. 配置 `.env`。
+3. 启用 NapCat 容器和机器人服务。
+4. 需要房间管理时，提供 `dst@<room>.service` 单元并授予机器人控制权限。
 
-如果路径不同，记得同步调整 systemd 文件里的 `WorkingDirectory`、`ExecStart` 和 NapCat volume。
+如果部署路径不同，请同步修改 systemd 单元。

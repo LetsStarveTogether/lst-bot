@@ -234,7 +234,7 @@ class Bot:
             await AsyncEvent().wait()
 
     async def _run_hooks(self, hooks: list[Callable]) -> None:
-        async with self.container.enter_scope(Scope.REQUEST) as resolver:
+        async with self.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
             context = InjectionContext(bot=self)
             for hook in hooks:
                 await call_with_injection(hook, context, resolver)
@@ -261,7 +261,7 @@ class Bot:
                 gateway=active_gateway,
             )
 
-        async with self.container.enter_scope(Scope.REQUEST) as resolver:
+        async with self.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
             state: State = {}
             results: list[DispatchResult] = []
             timeout = self.dispatch_timeout
