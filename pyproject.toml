@@ -78,12 +78,7 @@ allowed-confusables = ['，', '：', '；', '？', '！', '（', '）']
     'assert',    # Assert statements used for pytest.
     'implicit-namespace-package',  # Colocated tests are plain directories, not import packages.
     'magic-value-comparison', # Magic value used in test cases.
-    'import-private-name', # Allow import private members from graphon module.
     'compare-to-empty-string', # be more precise about assertion in tests.
-
-    # permit calls of private methods until we separate
-    # public interface tests from implementation tests.
-    'private-member-access', # allow calls of private class methods in tests
 ]
 
 [tool.ruff.lint.pydoclint]
@@ -93,8 +88,7 @@ ignore-one-line-docstrings = true
 python-platform = "linux"
 
 [tool.pytest]
-minversion = '9.0'
-addopts = ['-n', '4']
+minversion = '9.1'
 testpaths = [
     'tests',
     'pkgs/bot/tests',
@@ -102,4 +96,7 @@ testpaths = [
     'pkgs/klei/tests',
     'pkgs/lst/tests',
 ]
+strict = true
+filterwarnings = ['error']
 asyncio_mode = 'auto'
+asyncio_debug = true

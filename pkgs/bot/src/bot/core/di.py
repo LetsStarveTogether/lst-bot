@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
     from .bot import Bot
 
 type State = dict[str, object]
+
+
+@asynccontextmanager
+async def request_scope(container: Container) -> AsyncIterator[ResolverProtocol]:
+    async with container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
+        yield resolver
 
 
 @dataclass(slots=True)
@@ -301,4 +308,5 @@ __all__ = [
     "call_with_injection",
     "current_injection_context",
     "register_context_providers",
+    "request_scope",
 ]

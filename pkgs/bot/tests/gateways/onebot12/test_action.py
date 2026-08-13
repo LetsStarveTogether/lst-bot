@@ -1,202 +1,162 @@
 from __future__ import annotations
 
+from asyncio import to_thread
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from typing import cast
 
+import orjson
 import pytest
-from bot import (
-    ActionParamInput,
-    ActionResponse,
-    ApiStatus,
-    Bot,
-    BotSelf,
-    EventPayload,
-    GroupMessageEvent,
-    Msg,
-    ReturnAction,
-)
+from bot import ActionResponse, ApiStatus, Bot
 from bot.gateways.onebot12 import HttpAction, OneBot12Gateway
-from pydantic import JsonValue, ValidationError
+from pydantic import JsonValue
 from urllib3_future import AsyncPoolManager
 
-from tests.protocol.support import private_msg_payload
+from .support import SELF
 
-from .support import CaptureOneBot12Gateway, FakePool
-
-
-@pytest.mark.parametrize(
-    ("params", "expected"),
-    [
-        (
-            {"detail_type": "private", "user_id": "42", "message": "hello"},
-            {
-                "detail_type": "private",
-                "user_id": "42",
-                "message": [{"type": "text", "data": {"text": "hello"}}],
-            },
-        ),
-        (
-            {
-                "group_id": "20000",
-                "message": {"type": "mention_all", "data": {}},
-            },
-            {
-                "detail_type": "group",
-                "group_id": "20000",
-                "message": [{"type": "mention_all", "data": {}}],
-            },
-        ),
-        (
-            {
-                "guild_id": "30000",
-                "channel_id": "40000",
-                "message": Msg.t("hi"),
-            },
-            {
-                "detail_type": "channel",
-                "guild_id": "30000",
-                "channel_id": "40000",
-                "message": [{"type": "text", "data": {"text": "hi"}}],
-            },
-        ),
-        (
-            {
-                "user_id": "42",
-                "message": Msg.reply("msg-1", Msg.mention("42", " hello")),
-            },
-            {
-                "detail_type": "private",
-                "user_id": "42",
-                "message": [
-                    {
-                        "type": "reply",
-                        "data": {"message_id": "msg-1"},
-                    },
-                    {"type": "mention", "data": {"user_id": "42"}},
-                    {"type": "text", "data": {"text": " hello"}},
-                ],
-            },
-        ),
-    ],
-)
-async def test_action_params_follow_protocol_msg_rules(
-    params: dict[str, str | Msg | dict[str, JsonValue]],
-    expected: dict[str, JsonValue],
-) -> None:
-    gateway = CaptureOneBot12Gateway(Bot())
-    connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
-
-    response = cast(ActionResponse, await connection.action("send_message", **params))
-
-    assert response.data == {"message_id": "out-1", "time": 1.0}
-    assert gateway.calls == [
-        ("send_message", expected, BotSelf(platform="qq", user_id="10000")),
-    ]
+type RequestRecord = tuple[str, dict[str, str], dict[str, JsonValue]]
+AUTH = "test-value"
 
 
-@pytest.mark.parametrize(
-    "params",
-    [
-        {"detail_type": "private", "message": "hello"},
-        {
-            "detail_type": "private",
-            "user_id": "42",
-            "message": "hello",
-            "session_id": "internal",
-        },
-        {"detail_type": "group", "user_id": "42", "message": "hello"},
-        {"detail_type": "channel", "guild_id": "30000", "message": "hello"},
-        {"detail_type": "private", "user_id": "42"},
-        {"detail_type": "private", "user_id": 42, "message": "hello"},
-        {"detail_type": "private", "user_id": "42", "message": {"type": "text"}},
-        {
-            "detail_type": "private",
-            "user_id": "42",
-            "message": {"type": "text", "data": {}},
-        },
-    ],
-)
-async def test_send_msg_rejects_bad_standard_params(
-    params: dict[str, ActionParamInput],
-) -> None:
-    gateway = CaptureOneBot12Gateway(Bot())
-    connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
-
-    with pytest.raises((TypeError, ValueError, ValidationError)):
-        await connection.action("send_message", **params)
-
-
-async def test_http_action_uses_underlying_async_pool() -> None:
-    credential = "token-1"
-    pool = FakePool()
-    gateway = OneBot12Gateway(
-        Bot(),
-        action=HttpAction(
-            "https://api.example.test/",
-            http_pool=cast(AsyncPoolManager, pool),
-        ),
-        access_token=credential,
+@asynccontextmanager
+async def action_server(
+    *,
+    status: HTTPStatus = HTTPStatus.OK,
+    content_type: str = "application/json",
+    payload: JsonValue = None,
+) -> AsyncIterator[tuple[str, list[RequestRecord]]]:
+    response_payload = (
+        {"status": "ok", "retcode": 0, "data": None, "message": ""}
+        if payload is None
+        else payload
     )
-    connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
+    requests: list[RequestRecord] = []
 
-    response = cast(
-        ActionResponse,
-        await connection.action(
-            "send_message",
-            user_id="42",
-            message="hello",
-        ),
-    )
-    await gateway.close()
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = cast(dict[str, JsonValue], orjson.loads(self.rfile.read(length)))
+            requests.append((self.path, dict(self.headers.items()), body))
+            encoded = orjson.dumps(response_payload)
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:
+            _ = format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = cast(tuple[str, int], server.server_address)[1]
+    try:
+        yield f"http://127.0.0.1:{port}/action?source=test", requests
+    finally:
+        await to_thread(server.shutdown)
+        server.server_close()
+        await to_thread(thread.join)
+
+
+async def test_http_action_preserves_wire_envelope_self_and_null() -> None:
+    async with action_server() as (url, requests):
+        bot = Bot()
+        gateway = OneBot12Gateway(
+            bot,
+            action=HttpAction(url),
+            access_token=AUTH,
+        )
+        bot.add_gateway(gateway)
+
+        async with bot:
+            response = cast(
+                ActionResponse,
+                await gateway.connection_for(SELF).action(
+                    "vendor.test",
+                    optional=None,
+                ),
+            )
 
     assert response.status == ApiStatus.OK
-    assert pool.cleared is True
-    assert pool.calls == [
-        {
-            "method": "POST",
-            "url": "https://api.example.test",
-            "body": None,
-            "headers": {"Authorization": "Bearer token-1"},
-            "json": {
-                "action": "send_message",
-                "params": {
-                    "detail_type": "private",
-                    "user_id": "42",
-                    "message": [{"type": "text", "data": {"text": "hello"}}],
-                },
-                "self": {"platform": "qq", "user_id": "10000"},
-            },
-            "multiplexed": False,
-            "kwargs": {},
-        },
-    ]
+    assert response.data is None
+    assert len(requests) == 1
+    path, headers, body = requests[0]
+    assert path == "/action?source=test"
+    assert headers["Authorization"] == "Bearer test-value"
+    assert body == {
+        "action": "vendor.test",
+        "params": {"optional": None},
+        "self": {"platform": "qq", "user_id": "10000"},
+    }
 
 
-async def test_message_return_uses_event_target_fields() -> None:
-    bot = Bot()
-    gateway = CaptureOneBot12Gateway(bot)
-    bot.add_gateway(gateway)
-    event = EventPayload.model_validate(
-        {
-            **private_msg_payload(),
-            "detail_type": "group",
-            "message_id": "g-1",
-            "group_id": "20000",
-        },
-    ).root
-    assert isinstance(event, GroupMessageEvent)
-    assert event.self_ is not None
-
-    connection = gateway.connection_for(event.self_)
-    await connection.execute_return_action(event, ReturnAction.message("reply"))
-
-    assert gateway.calls == [
-        (
-            "send_message",
-            {
-                "message": [{"type": "text", "data": {"text": "reply"}}],
-                "detail_type": "group",
-                "group_id": "20000",
-            },
-            event.self_,
+@pytest.mark.parametrize(
+    ("status", "content_type", "message"),
+    [
+        pytest.param(
+            HTTPStatus.UNAUTHORIZED,
+            "application/json",
+            "HTTP 401",
+            id="non-200-status",
         ),
-    ]
+        pytest.param(
+            HTTPStatus.OK,
+            "text/plain",
+            "unsupported Content-Type",
+            id="non-json-content-type",
+        ),
+    ],
+)
+async def test_http_action_rejects_transport_contract_violations(
+    status: HTTPStatus,
+    content_type: str,
+    message: str,
+) -> None:
+    async with action_server(status=status, content_type=content_type) as (url, _):
+        bot = Bot()
+        gateway = OneBot12Gateway(bot, action=HttpAction(url))
+        bot.add_gateway(gateway)
+
+        async with bot:
+            with pytest.raises(RuntimeError, match=message):
+                await gateway.connection_for(SELF).action("get_version")
+
+
+async def test_gateway_does_not_close_borrowed_http_pool() -> None:
+    async with action_server() as (url, requests):
+        pool = AsyncPoolManager()
+        bot = Bot()
+        gateway = OneBot12Gateway(
+            bot,
+            action=HttpAction(url, http_pool=pool),
+        )
+        bot.add_gateway(gateway)
+        try:
+            async with bot:
+                await gateway.connection_for(SELF).action("get_version")
+
+            response = await pool.request("POST", url, json={"still": "open"})
+            assert response.status == HTTPStatus.OK
+            await response.data
+        finally:
+            await pool.clear()
+
+    assert len(requests) == 2
+
+
+async def test_closed_gateway_rejects_actions() -> None:
+    async with action_server() as (url, _):
+        bot = Bot()
+        gateway = OneBot12Gateway(bot, action=HttpAction(url))
+        bot.add_gateway(gateway)
+        connection = gateway.connection_for(SELF)
+
+        async with bot:
+            pass
+
+        with pytest.raises(RuntimeError, match="gateway is closed"):
+            await connection.action("get_version")

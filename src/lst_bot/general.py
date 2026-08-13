@@ -1,25 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from operator import attrgetter
 
 from bot import Bot, Cmd, Connection, EventRouter, Injected
 from hitokoto import HitokotoClient
-from klei import KleiClient, VersionType
+from klei import KleiClient, Version, VersionType
 
 from .rooms import format_lobby_data, get_active_rooms, get_host_rooms
-from .settings import settings
+from .settings import Settings
 
 router = EventRouter()
 
 
-@router.on_cmd("一言")
-async def hitokoto(hc: Injected[HitokotoClient]) -> str:
-    return str(await hc.get_hitokoto(use_cache=True))
-
-
-@router.on_cmd("最新版本")
-async def versions(kc: Injected[KleiClient]) -> str:
-    versions = await kc.get_latest_versions()
+def format_versions(versions: Sequence[Version]) -> str:
     messages = []
     for version_type in VersionType:
         version = max(
@@ -32,6 +26,16 @@ async def versions(kc: Injected[KleiClient]) -> str:
             f"发布日期：{version.date}",
         )
     return "\n\n\n".join(messages)
+
+
+@router.on_cmd("一言")
+async def hitokoto(hc: Injected[HitokotoClient]) -> str:
+    return str(await hc.get_hitokoto(use_cache=True))
+
+
+@router.on_cmd("最新版本")
+async def versions(kc: Injected[KleiClient]) -> str:
+    return format_versions(await kc.get_latest_versions())
 
 
 @router.on_cmd("搜索玩家")
@@ -52,10 +56,17 @@ async def search_player(cmd: Injected[Cmd], kc: Injected[KleiClient]) -> str:
 
 
 async def report(
-    hc: Injected[HitokotoClient], kc: Injected[KleiClient], conn: Injected[Connection]
+    hc: Injected[HitokotoClient],
+    kc: Injected[KleiClient],
+    conn: Injected[Connection],
+    settings: Injected[Settings],
 ) -> None:
     hitokoto = str(await hc.get_hitokoto(use_cache=True))
-    rooms = await get_host_rooms(kc, connected_only=True)
+    rooms = await get_host_rooms(
+        kc,
+        settings.klei_host_id,
+        connected_only=True,
+    )
     rooms.sort(key=attrgetter("connected"), reverse=True)
 
     lobby_text = "\n".join(format_lobby_data(room) for room in rooms)
@@ -67,4 +78,4 @@ def register_crons(bot: Bot) -> None:
     bot.on_cron("0 0,8-23 * * *")(report)
 
 
-__all__ = ["register_crons", "router"]
+__all__ = ["format_versions", "register_crons", "router"]

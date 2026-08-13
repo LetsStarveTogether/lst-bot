@@ -1,18 +1,31 @@
 from __future__ import annotations
 
+from asyncio import (
+    CancelledError,
+    Future,
+    Lock,
+    Queue,
+    QueueEmpty,
+    Task,
+    create_task,
+    current_task,
+    get_running_loop,
+    timeout_at,
+)
 from asyncio import Event as AsyncEvent
-from asyncio import get_running_loop, timeout_at
-from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timedelta, tzinfo
+from collections.abc import Awaitable, Callable, Iterable
+from contextlib import AsyncExitStack, suppress
+from contextvars import Context, ContextVar, copy_context
+from dataclasses import dataclass
+from datetime import timedelta, tzinfo
 from types import TracebackType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from diwire import (
     Container,
     DependencyRegistrationPolicy,
     MissingPolicy,
     ResolverProtocol,
-    Scope,
 )
 from logbook import Logger
 
@@ -38,10 +51,34 @@ from .di import (
     State,
     call_with_injection,
     register_context_providers,
+    request_scope,
 )
 from .scheduler import RECENT_SELF, CronScheduler, SelfTarget
 
+if TYPE_CHECKING:
+    from bot.gateways.base import RobynServer
+
 logger = Logger(__name__)
+
+_EVENT_QUEUE_CAPACITY = 64
+_CURRENT_DISPATCHER: ContextVar[Bot | None] = ContextVar(
+    "bot_current_dispatcher",
+    default=None,
+)
+
+
+@dataclass(slots=True)
+class _QueuedEvent:
+    connection: Connection | None
+    event: Event
+    gateway: Gateway | None
+    context: Context
+    result: Future[list[DispatchResult]] | None = None
+    deadline: float | None = None
+
+
+class _DispatchTimeoutError(Exception):
+    pass
 
 
 class Bot:
@@ -51,12 +88,20 @@ class Bot:
         admin_ids: Iterable[str] = (),
         cmd_prefixes: tuple[str, ...] = ("/",),
         dispatch_timeout: timedelta | None = timedelta(seconds=900),
+        max_dispatches: int = 8,
         scheduler_timezone: tzinfo | None = None,
         container: Container | None = None,
     ) -> None:
+        if isinstance(max_dispatches, bool) or not isinstance(max_dispatches, int):
+            msg = "max_dispatches must be an integer"
+            raise TypeError(msg)
+        if max_dispatches <= 0:
+            msg = "max_dispatches must be greater than zero"
+            raise ValueError(msg)
         self.admin_ids = frozenset(admin_ids)
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
+        self.max_dispatches = max_dispatches
         self.scheduler_timezone = scheduler_timezone
         self.container = (
             container
@@ -75,6 +120,13 @@ class Bot:
         self._close_hooks: list[Callable] = []
         self._recent_connection: tuple[Gateway, BotSelf] | None = None
         self._scheduler = CronScheduler(self, default_timezone=self.scheduler_timezone)
+        self._lifecycle_lock = Lock()
+        self._started = False
+        self._accepting_events = False
+        self._running = AsyncEvent()
+        self._event_queue: Queue[_QueuedEvent] | None = None
+        self._event_workers: tuple[Task[None], ...] = ()
+        self._mounted_server: RobynServer | None = None
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -97,6 +149,16 @@ class Bot:
         )
         self._gateways.append(gateway)
 
+    def mount_server(self, server: RobynServer) -> None:
+        if self._mounted_server is server:
+            return
+        if self._mounted_server is not None:
+            msg = "A bot can only be mounted on one server"
+            raise ValueError(msg)
+        server.startup_handler(self.start)
+        server.shutdown_handler(self.close)
+        self._mounted_server = server
+
     def add_router(self, router: EventRouter) -> EventRouter:
         self._router.add_router(router)
         return router
@@ -104,6 +166,10 @@ class Bot:
     @property
     def recent_connection(self) -> tuple[Gateway, BotSelf] | None:
         return self._recent_connection
+
+    @property
+    def scheduler(self) -> CronScheduler:
+        return self._scheduler
 
     def resolve_gateway(self, gateway_type: type[Gateway] | None = None) -> Gateway:
         if gateway_type is None:
@@ -205,39 +271,71 @@ class Bot:
         return func
 
     async def start(self) -> None:
-        try:
-            for gateway in self._gateways:
-                await gateway.start()
-            await self._run_hooks(self._start_hooks)
-            self._scheduler.start()
-        except BaseException:
-            logger.exception(
-                "bot startup failed: gateways={gateway_count}",
-                gateway_count=len(self._gateways),
-            )
-            await self._scheduler.close()
-            for gateway in reversed(self._gateways):
-                await gateway.close()
-            raise
+        async with self._lifecycle_lock:
+            if self._started:
+                return
+            try:
+                await self._start_once()
+            except BaseException:
+                logger.exception(
+                    "bot startup failed: gateways={gateway_count}",
+                    gateway_count=len(self._gateways),
+                )
+                raise
+            self._started = True
+            self._accepting_events = True
+            self._running.set()
 
     async def close(self) -> None:
-        try:
-            await self._scheduler.close()
-            await self._run_hooks(self._close_hooks)
-        finally:
-            for gateway in reversed(self._gateways):
-                await gateway.close()
-            await self.container.aclose()
+        if _CURRENT_DISPATCHER.get() is self:
+            msg = "Bot cannot be closed from a dispatch handler"
+            raise RuntimeError(msg)
+        async with self._lifecycle_lock:
+            if not self._started:
+                return
+            self._accepting_events = False
+            self._running.clear()
+            try:
+                async with AsyncExitStack() as cleanup:
+                    cleanup.push_async_callback(self.container.aclose)
+                    for gateway in self._gateways:
+                        cleanup.push_async_callback(gateway.close)
+                    cleanup.push_async_callback(self._stop_dispatcher)
+                    cleanup.push_async_callback(self._run_hooks, self._close_hooks)
+                    cleanup.push_async_callback(self._scheduler.close)
+            finally:
+                self._started = False
 
-    async def run(self) -> None:
-        async with self:
-            await AsyncEvent().wait()
+    async def _start_once(self) -> None:
+        async with AsyncExitStack() as rollback:
+            await self._start_dispatcher()
+            rollback.push_async_callback(self._stop_dispatcher)
+            for gateway in self._gateways:
+                rollback.push_async_callback(gateway.close)
+                await gateway.start()
+            rollback.push_async_callback(self._run_hooks, self._close_hooks)
+            rollback.push_async_callback(self._scheduler.close)
+            await self._run_hooks(self._start_hooks)
+            self._scheduler.start()
+            rollback.pop_all()
+
+    async def wait_until_running(self) -> None:
+        await self._running.wait()
 
     async def _run_hooks(self, hooks: list[Callable]) -> None:
-        async with self.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
+        async with request_scope(self.container) as resolver:
             context = InjectionContext(bot=self)
             for hook in hooks:
                 await call_with_injection(hook, context, resolver)
+
+    def enqueue_event(
+        self,
+        connection: Connection | None,
+        event: Event,
+        *,
+        gateway: Gateway | None = None,
+    ) -> None:
+        self._submit_event(connection, event, gateway=gateway)
 
     async def dispatch(
         self,
@@ -245,6 +343,127 @@ class Bot:
         event: Event,
         *,
         gateway: Gateway | None = None,
+    ) -> list[DispatchResult]:
+        if _CURRENT_DISPATCHER.get() is self:
+            msg = "Recursive dispatch is not supported"
+            raise RuntimeError(msg)
+        result = get_running_loop().create_future()
+        self._submit_event(connection, event, gateway=gateway, result=result)
+        return await result
+
+    def _submit_event(
+        self,
+        connection: Connection | None,
+        event: Event,
+        *,
+        gateway: Gateway | None,
+        result: Future[list[DispatchResult]] | None = None,
+    ) -> None:
+        queue = self._event_queue
+        if not self._started or not self._accepting_events or queue is None:
+            msg = "Bot is not running"
+            raise RuntimeError(msg)
+        timeout = self.dispatch_timeout
+        deadline = (
+            None
+            if timeout is None
+            else get_running_loop().time() + timeout.total_seconds()
+        )
+        queue.put_nowait(
+            _QueuedEvent(
+                connection=connection,
+                event=event,
+                gateway=gateway,
+                context=copy_context(),
+                result=result,
+                deadline=deadline,
+            )
+        )
+
+    async def _start_dispatcher(self) -> None:
+        queue: Queue[_QueuedEvent] = Queue(maxsize=_EVENT_QUEUE_CAPACITY)
+        self._event_queue = queue
+        self._event_workers = tuple(
+            create_task(
+                self._dispatch_worker(queue),
+                name=f"bot-dispatch-{index + 1}",
+            )
+            for index in range(self.max_dispatches)
+        )
+
+    async def _stop_dispatcher(self) -> None:
+        self._accepting_events = False
+        workers, self._event_workers = self._event_workers, ()
+        for worker in workers:
+            worker.cancel()
+        for worker in workers:
+            with suppress(CancelledError):
+                await worker
+
+        queue, self._event_queue = self._event_queue, None
+        if queue is None:
+            return
+        while True:
+            try:
+                item = queue.get_nowait()
+            except QueueEmpty:
+                return
+            if item.result is not None and not item.result.done():
+                item.result.cancel()
+            queue.task_done()
+
+    async def _dispatch_worker(self, queue: Queue[_QueuedEvent]) -> None:
+        worker = current_task()
+        while True:
+            item = await queue.get()
+            task = create_task(
+                self._dispatch_queued_event(item),
+                context=item.context,
+            )
+            try:
+                results = await task
+            except CancelledError:
+                if item.result is not None and not item.result.done():
+                    item.result.cancel()
+                if worker is not None and worker.cancelling():
+                    raise
+            except BaseException as exc:
+                if item.result is not None and not item.result.done():
+                    item.result.set_exception(exc)
+                else:
+                    logger.exception(
+                        "queued event dispatch failed: {event} ({error})",
+                        event=item.event,
+                        error=type(exc).__name__,
+                    )
+            else:
+                if item.result is not None and not item.result.done():
+                    item.result.set_result(results)
+            finally:
+                queue.task_done()
+
+    async def _dispatch_queued_event(
+        self,
+        item: _QueuedEvent,
+    ) -> list[DispatchResult]:
+        token = _CURRENT_DISPATCHER.set(self)
+        try:
+            return await self._dispatch_event(
+                item.connection,
+                item.event,
+                gateway=item.gateway,
+                deadline=item.deadline,
+            )
+        finally:
+            _CURRENT_DISPATCHER.reset(token)
+
+    async def _dispatch_event(
+        self,
+        connection: Connection | None,
+        event: Event,
+        *,
+        gateway: Gateway | None,
+        deadline: float | None,
     ) -> list[DispatchResult]:
         active_gateway = connection.gateway if connection is not None else gateway
         self._remember_recent_connection(active_gateway, event)
@@ -261,11 +480,9 @@ class Bot:
                 gateway=active_gateway,
             )
 
-        async with self.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
+        async with request_scope(self.container) as resolver:
             state: State = {}
             results: list[DispatchResult] = []
-            timeout = self.dispatch_timeout
-            deadline = None if timeout is None else datetime.now(UTC) + timeout
 
             for route in self._router.routes:
                 if route.event_type is not None and route.event_type != event.type:
@@ -323,24 +540,17 @@ class Bot:
         context: InjectionContext,
         route: EventRoute,
         resolver: ResolverProtocol,
-        deadline: datetime | None,
+        deadline: float | None,
     ) -> tuple[DispatchResult, bool] | None:
-        timeout_scope = None
         try:
-            if deadline is None:
-                matched = await route.check(context, resolver)
-            else:
-                async with timeout_at(
-                    get_running_loop().time()
-                    + (deadline - datetime.now(UTC)).total_seconds(),
-                ) as timeout_scope:
-                    matched = await route.check(context, resolver)
-        except TimeoutError as exc:
-            if timeout_scope is not None and timeout_scope.expired():
-                self._log_dispatch_timeout(context, route)
-                return self._failed_dispatch_result(context, route, exc), True
-            self._log_dispatch_exception(context, route, exc)
-            return self._failed_dispatch_result(context, route, exc), False
+            matched = await self._before_deadline(
+                deadline,
+                lambda: route.check(context, resolver),
+            )
+        except _DispatchTimeoutError:
+            exc = TimeoutError()
+            self._log_dispatch_timeout(context, route)
+            return self._failed_dispatch_result(context, route, exc), True
         except Exception as exc:
             self._log_dispatch_exception(context, route, exc)
             return self._failed_dispatch_result(context, route, exc), False
@@ -356,19 +566,38 @@ class Bot:
             )
 
         try:
-            if deadline is None:
-                result = await self._run_route(context, route, resolver)
-            else:
-                async with timeout_at(
-                    get_running_loop().time()
-                    + (deadline - datetime.now(UTC)).total_seconds(),
-                ):
-                    result = await self._run_route(context, route, resolver)
-        except TimeoutError as exc:
+            result = await self._before_deadline(
+                deadline,
+                lambda: self._run_route(context, route, resolver),
+            )
+        except _DispatchTimeoutError:
+            exc = TimeoutError()
             self._log_dispatch_timeout(context, route)
             return self._failed_dispatch_result(context, route, exc), True
+        except Exception as exc:
+            self._log_dispatch_exception(context, route, exc)
+            return self._failed_dispatch_result(context, route, exc), False
 
         return result, False
+
+    async def _before_deadline[T](
+        self,
+        deadline: float | None,
+        operation: Callable[[], Awaitable[T]],
+    ) -> T:
+        if deadline is None:
+            return await operation()
+        if get_running_loop().time() >= deadline:
+            raise _DispatchTimeoutError
+
+        timeout_scope = timeout_at(deadline)
+        try:
+            async with timeout_scope:
+                return await operation()
+        except TimeoutError:
+            if timeout_scope.expired():
+                raise _DispatchTimeoutError from None
+            raise
 
     async def _run_route(
         self,

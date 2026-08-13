@@ -8,7 +8,7 @@ from klei import KleiClient, LobbyData, Platform, RoomData, Season
 from logbook import Logger
 from lst import LstClient
 
-from .settings import settings
+from .settings import Settings
 
 DAY_PATTERN = re.compile(r"day=(\d+)")
 
@@ -68,6 +68,7 @@ def parse_room_ids(value: str) -> list[int]:
 
 async def get_host_rooms(
     kc: KleiClient,
+    host_id: str,
     *,
     connected_only: bool = False,
 ) -> list[RoomData]:
@@ -75,8 +76,7 @@ async def get_host_rooms(
     rooms = (
         (data.row_id, data.region)
         for data in lobbies
-        if data.host == settings.klei_host_id
-        and (not connected_only or data.connected > 0)
+        if data.host == host_id and (not connected_only or data.connected > 0)
     )
     return await kc.get_room_data(rooms)
 
@@ -88,8 +88,11 @@ async def get_active_rooms(kc: KleiClient) -> list[RoomData]:
 
 
 @router.on_cmd("房间列表")
-async def rooms(kc: Injected[KleiClient]) -> str:
-    room_data_list = await get_host_rooms(kc)
+async def rooms(
+    kc: Injected[KleiClient],
+    settings: Injected[Settings],
+) -> str:
+    room_data_list = await get_host_rooms(kc, settings.klei_host_id)
     if not room_data_list:
         return "❌ 未搜索到相关大厅信息"
 

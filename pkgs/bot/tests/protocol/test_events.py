@@ -1,260 +1,434 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 from bot import (
+    ChannelCreateNoticeEvent,
+    ChannelDeleteNoticeEvent,
+    ChannelMemberDecreaseNoticeEvent,
+    ChannelMemberIncreaseNoticeEvent,
+    ChannelMessageDeleteNoticeEvent,
     ChannelMessageEvent,
     ConnectMetaEvent,
     Event,
-    EventDetailType,
-    EventKind,
     EventPayload,
+    FriendDecreaseNoticeEvent,
     FriendIncreaseNoticeEvent,
     FriendRequestEvent,
+    GroupMemberDecreaseNoticeEvent,
     GroupMemberIncreaseNoticeEvent,
+    GroupMessageDeleteNoticeEvent,
     GroupMessageEvent,
     GroupRequestEvent,
+    GuildMemberDecreaseNoticeEvent,
+    GuildMemberIncreaseNoticeEvent,
     HeartbeatMetaEvent,
+    MetaEvent,
+    NoticeEvent,
+    PrivateMessageDeleteNoticeEvent,
     PrivateMessageEvent,
+    RequestEvent,
     StatusUpdateMetaEvent,
-    UserEvent,
 )
-from pydantic import JsonValue, ValidationError
-
-from .support import bot_self, private_msg_payload
+from pydantic import ValidationError
 
 
-def test_private_msg_event_model_follows_protocol() -> None:
-    event = EventPayload.model_validate(private_msg_payload()).root
-
-    assert isinstance(event, PrivateMessageEvent)
-    assert event.type == EventKind.MESSAGE
-    assert event.user_id == "42"
-    assert event.detail_type == "private"
-    assert event.self_ is not None
-    assert event.self_.platform == "qq"
+def _bot_self() -> dict[str, str]:
+    return {"platform": "qq", "user_id": "10000"}
 
 
-def test_event_literal_fields_default_to_protocol_tags() -> None:
-    payload = private_msg_payload()
-    payload.pop("type")
-    payload.pop("detail_type")
+def _event(
+    event_type: str,
+    detail_type: str,
+    **fields: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": f"event-{detail_type}",
+        "time": 1.25,
+        "type": event_type,
+        "detail_type": detail_type,
+        "sub_type": "",
+    }
+    if event_type != "meta":
+        payload["self"] = _bot_self()
+    payload.update(fields)
+    return payload
 
-    event = PrivateMessageEvent.model_validate(payload)
 
-    assert event.type == EventKind.MESSAGE
-    assert event.detail_type == EventDetailType.PRIVATE
-
-
-def test_event_time_parses_to_datetime_and_dumps_protocol_number() -> None:
-    time = datetime.fromtimestamp(1632847927.599013, UTC)
-    event = EventPayload.model_validate({**private_msg_payload(), "time": time}).root
-
-    assert event.time == time
-    assert event.model_dump(mode="json", by_alias=True)["time"] == pytest.approx(
-        1632847927.599013,
+def _message(detail_type: str, **target: object) -> dict[str, object]:
+    return _event(
+        "message",
+        detail_type,
+        message_id=f"message-{detail_type}",
+        message=[{"type": "text", "data": {"text": "hello"}}],
+        alt_message="hello",
+        user_id="42",
+        **target,
     )
 
-    string_event = EventPayload.model_validate({
-        **private_msg_payload(),
-        "time": "1632847927.599013",
-    }).root
 
-    assert string_event.time == time
-
-
-@pytest.mark.parametrize(
-    ("payload", "event_cls"),
-    [
-        (
-            {
-                **private_msg_payload(),
-                "detail_type": "group",
-                "message_id": "g-1",
-                "group_id": "20000",
-            },
-            GroupMessageEvent,
+EVENT_CASES: tuple[object, ...] = (
+    pytest.param(_message("private"), PrivateMessageEvent, id="message-private"),
+    pytest.param(
+        _message("group", group_id="20000"),
+        GroupMessageEvent,
+        id="message-group",
+    ),
+    pytest.param(
+        _message("channel", guild_id="30000", channel_id="40000"),
+        ChannelMessageEvent,
+        id="message-channel",
+    ),
+    pytest.param(
+        _event("notice", "friend_increase", user_id="42"),
+        FriendIncreaseNoticeEvent,
+        id="notice-friend-increase",
+    ),
+    pytest.param(
+        _event("notice", "friend_decrease", user_id="42"),
+        FriendDecreaseNoticeEvent,
+        id="notice-friend-decrease",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "private_message_delete",
+            user_id="42",
+            message_id="message-1",
         ),
-        (
-            {
-                **private_msg_payload(),
-                "detail_type": "channel",
-                "message_id": "c-1",
-                "guild_id": "30000",
-                "channel_id": "40000",
-            },
-            ChannelMessageEvent,
+        PrivateMessageDeleteNoticeEvent,
+        id="notice-private-message-delete",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "group_member_increase",
+            group_id="20000",
+            user_id="42",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-friend",
-                "self": bot_self(),
-                "time": 1,
-                "type": "notice",
-                "detail_type": "friend_increase",
-                "sub_type": "",
-                "user_id": "42",
-            },
-            FriendIncreaseNoticeEvent,
+        GroupMemberIncreaseNoticeEvent,
+        id="notice-group-member-increase",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "group_member_decrease",
+            group_id="20000",
+            user_id="42",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-member",
-                "self": bot_self(),
-                "time": 1.0,
-                "type": "notice",
-                "detail_type": "group_member_increase",
-                "sub_type": "join",
-                "group_id": "20000",
-                "user_id": "42",
-                "operator_id": "43",
-            },
-            GroupMemberIncreaseNoticeEvent,
+        GroupMemberDecreaseNoticeEvent,
+        id="notice-group-member-decrease",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "group_message_delete",
+            group_id="20000",
+            user_id="42",
+            message_id="message-1",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-friend-request",
-                "self": bot_self(),
-                "time": 1.0,
-                "type": "request",
-                "detail_type": "friend",
-                "sub_type": "",
-                "user_id": "42",
-                "comment": "hello",
-                "flag": "flag-1",
-            },
-            FriendRequestEvent,
+        GroupMessageDeleteNoticeEvent,
+        id="notice-group-message-delete",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "guild_member_increase",
+            guild_id="30000",
+            user_id="42",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-group-request",
-                "self": bot_self(),
-                "time": 1.0,
-                "type": "request",
-                "detail_type": "group",
-                "sub_type": "add",
-                "group_id": "20000",
-                "user_id": "42",
-                "comment": "join",
-                "flag": "flag-2",
-            },
-            GroupRequestEvent,
+        GuildMemberIncreaseNoticeEvent,
+        id="notice-guild-member-increase",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "guild_member_decrease",
+            guild_id="30000",
+            user_id="42",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-connect",
-                "time": 1.0,
-                "type": "meta",
-                "detail_type": "connect",
-                "sub_type": "",
-                "version": {
-                    "impl": "test",
-                    "version": "1.0.0",
-                    "onebot_version": "12",
-                },
-            },
-            ConnectMetaEvent,
+        GuildMemberDecreaseNoticeEvent,
+        id="notice-guild-member-decrease",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "channel_member_increase",
+            guild_id="30000",
+            channel_id="40000",
+            user_id="42",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-heartbeat",
-                "time": 1.0,
-                "type": "meta",
-                "detail_type": "heartbeat",
-                "sub_type": "",
-                "interval": 5000,
-            },
-            HeartbeatMetaEvent,
+        ChannelMemberIncreaseNoticeEvent,
+        id="notice-channel-member-increase",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "channel_member_decrease",
+            guild_id="30000",
+            channel_id="40000",
+            user_id="42",
+            operator_id="43",
         ),
-        (
-            {
-                "id": "evt-status",
-                "time": 1.0,
-                "type": "meta",
-                "detail_type": "status_update",
-                "sub_type": "",
-                "status": {
-                    "good": True,
-                    "bots": [{"self": bot_self(), "online": True}],
-                },
-            },
-            StatusUpdateMetaEvent,
+        ChannelMemberDecreaseNoticeEvent,
+        id="notice-channel-member-decrease",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "channel_message_delete",
+            guild_id="30000",
+            channel_id="40000",
+            user_id="42",
+            message_id="message-1",
+            operator_id="43",
         ),
-    ],
+        ChannelMessageDeleteNoticeEvent,
+        id="notice-channel-message-delete",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "channel_create",
+            guild_id="30000",
+            channel_id="40000",
+            operator_id="43",
+        ),
+        ChannelCreateNoticeEvent,
+        id="notice-channel-create",
+    ),
+    pytest.param(
+        _event(
+            "notice",
+            "channel_delete",
+            guild_id="30000",
+            channel_id="40000",
+            operator_id="43",
+        ),
+        ChannelDeleteNoticeEvent,
+        id="notice-channel-delete",
+    ),
+    pytest.param(
+        _event(
+            "request",
+            "friend",
+            user_id="42",
+            comment="hello",
+            flag="flag-1",
+        ),
+        FriendRequestEvent,
+        id="request-friend",
+    ),
+    pytest.param(
+        _event(
+            "request",
+            "group",
+            group_id="20000",
+            user_id="42",
+            comment="join",
+            flag="flag-2",
+        ),
+        GroupRequestEvent,
+        id="request-group",
+    ),
+    pytest.param(
+        _event(
+            "meta",
+            "connect",
+            version={
+                "impl": "test",
+                "version": "1.0.0",
+                "onebot_version": "12",
+            },
+        ),
+        ConnectMetaEvent,
+        id="meta-connect",
+    ),
+    pytest.param(
+        _event("meta", "heartbeat", interval=5000),
+        HeartbeatMetaEvent,
+        id="meta-heartbeat",
+    ),
+    pytest.param(
+        _event(
+            "meta",
+            "status_update",
+            status={
+                "good": True,
+                "bots": [{"self": _bot_self(), "online": True}],
+            },
+        ),
+        StatusUpdateMetaEvent,
+        id="meta-status-update",
+    ),
 )
-def test_event_matrix_maps_standard_detail_types(
-    payload: dict[str, JsonValue],
-    event_cls: type[Event],
+
+
+@pytest.mark.parametrize(("payload", "event_class"), EVENT_CASES)
+def test_each_standard_event_variant_round_trips_json(
+    payload: dict[str, object],
+    event_class: type[Event],
 ) -> None:
     event = EventPayload.model_validate(payload).root
 
-    assert isinstance(event, event_cls)
-    assert event.type == payload["type"]
-    assert event.detail_type == payload["detail_type"]
-    assert event.sub_type == payload.get("sub_type", "")
-    if "user_id" in payload:
-        assert isinstance(event, UserEvent)
+    assert isinstance(event, event_class)
+    assert EventPayload.model_validate_json(event.model_dump_json()).root == event
 
 
-def test_unknown_detail_type_is_kept_as_extension_event() -> None:
-    payload = {
-        "id": "evt-ext",
-        "self": bot_self(),
-        "time": 1.0,
-        "type": "notice",
-        "detail_type": "qq.group_file_upload",
-        "sub_type": "",
-        "group_id": "20000",
-        "qq.file_id": "file-1",
-    }
-
+@pytest.mark.parametrize(
+    ("payload", "event_class"),
+    [
+        pytest.param(
+            _event(
+                "message",
+                "vendor.message",
+                **{"vendor.payload": {"nested": [True, None]}},
+            ),
+            Event,
+            id="message-extension",
+        ),
+        pytest.param(
+            _event(
+                "notice",
+                "vendor.notice",
+                **{"vendor.payload": {"nested": [True, None]}},
+            ),
+            NoticeEvent,
+            id="notice-extension",
+        ),
+        pytest.param(
+            _event(
+                "request",
+                "vendor.request",
+                **{"vendor.payload": {"nested": [True, None]}},
+            ),
+            RequestEvent,
+            id="request-extension",
+        ),
+        pytest.param(
+            {
+                **_event(
+                    "meta",
+                    "vendor.meta",
+                    **{"vendor.payload": {"nested": [True, None]}},
+                ),
+                "self": None,
+            },
+            MetaEvent,
+            id="meta-extension-explicit-null-self",
+        ),
+    ],
+)
+def test_event_extension_variants_preserve_json_fields(
+    payload: dict[str, object],
+    event_class: type[Event],
+) -> None:
     event = EventPayload.model_validate(payload).root
 
-    assert isinstance(event, Event)
-    assert event.model_extra is not None
-    assert event.model_extra["qq.file_id"] == "file-1"
-    assert event.type == EventKind.NOTICE
-    assert event.detail_type == "qq.group_file_upload"
+    assert type(event) is event_class
+    assert event.model_dump(mode="json", by_alias=True) == payload
+    assert EventPayload.model_validate_json(event.model_dump_json()).root == event
 
 
-def test_unknown_meta_detail_type_allows_missing_self() -> None:
-    event = EventPayload.model_validate({
-        "id": "evt-meta-ext",
-        "time": 1.0,
-        "type": "meta",
-        "detail_type": "impl.ready",
-        "sub_type": "",
-    }).root
+def test_event_normalization_is_idempotent() -> None:
+    payload = _message("private")
 
-    assert isinstance(event, Event)
-    assert event.self_ is None
-    assert event.type == EventKind.META
-    assert event.detail_type == "impl.ready"
+    normalized = EventPayload.model_validate(payload).model_dump(
+        mode="json",
+        by_alias=True,
+    )
+
+    assert (
+        EventPayload.model_validate(normalized).model_dump(
+            mode="json",
+            by_alias=True,
+        )
+        == normalized
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(True, id="boolean"),
+        pytest.param(None, id="null"),
+        pytest.param([], id="array"),
+        pytest.param("1", id="string"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_event_time_rejects_non_float_or_non_finite_value(value: object) -> None:
+    with pytest.raises(ValidationError):
+        EventPayload.model_validate({**_message("private"), "time": value})
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [
+        pytest.param(1, id="minimum"),
+        pytest.param(2**63 - 1, id="int64-maximum"),
+    ],
+)
+def test_heartbeat_accepts_positive_int64_boundaries(interval: int) -> None:
+    event = EventPayload.model_validate(
+        _event("meta", "heartbeat", interval=interval),
+    ).root
+
+    assert isinstance(event, HeartbeatMetaEvent)
+    assert event.interval == interval
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [
+        pytest.param(True, id="boolean"),
+        pytest.param(1.0, id="float"),
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative"),
+        pytest.param(2**63, id="above-int64-maximum"),
+    ],
+)
+def test_heartbeat_rejects_non_positive_or_non_int64_interval(
+    interval: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        EventPayload.model_validate(
+            _event("meta", "heartbeat", interval=interval),
+        )
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {},
-        {**private_msg_payload(), "id": 1},
-        {**private_msg_payload(), "time": "not-a-time"},
-        {**private_msg_payload(), "type": "startup"},
-        {**private_msg_payload(), "type": "system"},
-        {**private_msg_payload(), "detail_type": 1},
-        {**private_msg_payload(), "sub_type": None},
-        {**private_msg_payload(), "self": {"platform": "qq"}},
-        {**private_msg_payload(), "message_id": 6283},
-        {**private_msg_payload(), "alt_message": None},
-        {**private_msg_payload(), "user_id": 42},
-        {key: value for key, value in private_msg_payload().items() if key != "self"},
-        {
-            "id": "evt-ext",
-            "time": 1.0,
-            "type": "notice",
-            "detail_type": "qq.group_file_upload",
-            "sub_type": "",
-        },
+        pytest.param({}, id="empty"),
+        pytest.param({**_message("private"), "id": 1}, id="non-string-id"),
+        pytest.param(
+            {**_message("private"), "detail_type": 1},
+            id="non-string-detail-type",
+        ),
+        pytest.param(
+            {**_message("private"), "sub_type": None},
+            id="null-sub-type",
+        ),
+        pytest.param(
+            {**_message("private"), "self": {"platform": "qq"}},
+            id="incomplete-self",
+        ),
+        pytest.param(
+            {**_message("private"), "message": "hello"},
+            id="message-not-segment-list",
+        ),
+        pytest.param(
+            {key: value for key, value in _message("private").items() if key != "self"},
+            id="non-meta-missing-self",
+        ),
     ],
 )
 def test_event_rejects_invalid_protocol_shape(payload: object) -> None:
@@ -262,25 +436,12 @@ def test_event_rejects_invalid_protocol_shape(payload: object) -> None:
         EventPayload.model_validate(payload)
 
 
-@pytest.mark.parametrize(
-    "msg",
-    [
-        "hello",
-        [{"type": "text", "data": {"text": "hello"}}],
-        [{"type": 1, "data": {}}],
-        [{"type": "text"}],
-        [{"type": "text", "data": []}],
-        [{"type": "text", "data": {}}],
-        [{"type": "qq.face", "data": {"type": "reserved"}}],
-    ],
-)
-def test_event_msg_must_be_segment_list(msg: object) -> None:
-    payload = {**private_msg_payload(), "message": msg}
-
-    if isinstance(msg, list) and msg == [{"type": "text", "data": {"text": "hello"}}]:
-        event = EventPayload.model_validate(payload).root
-        assert isinstance(event, PrivateMessageEvent)
-        assert event.message.text == "hello"
-    else:
-        with pytest.raises((TypeError, ValidationError)):
-            EventPayload.model_validate(payload)
+def test_event_extension_rejects_nested_non_finite_number() -> None:
+    with pytest.raises(ValidationError):
+        EventPayload.model_validate(
+            _event(
+                "notice",
+                "vendor.notice",
+                **{"vendor.payload": [float("nan")]},
+            ),
+        )

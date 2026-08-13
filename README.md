@@ -45,8 +45,11 @@ The app reads `.env` from the repository root.
 | --- | --- |
 | `ONEBOT_WS_URL` | OneBot WebSocket URL |
 | `ONEBOT_ACCESS_TOKEN` | OneBot access token |
+| `ONEBOT_SELF_ID` | OneBot account ID |
 | `BOT_ADMIN` | Admin account IDs |
 | `BOT_CMD_PREFIXES` | Command prefixes |
+| `BOT_TIMEOUT` | Event handling timeout as an ISO 8601 duration |
+| `BOT_TIMEZONE` | Scheduler timezone |
 | `REPORT_GROUP_ID` | Group for scheduled reports |
 | `KLEI_ACCESS_TOKEN` | Klei access token |
 | `KLEI_HOST_ID` | Managed DST host ID |

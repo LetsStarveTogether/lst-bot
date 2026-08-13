@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from asyncio import sleep
-from collections.abc import Iterable
+import json as jsonlib
+from collections.abc import Mapping
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, override
 
 import apsw
 import pytest
 from hitokoto import (
-    Hitokoto,
     HitokotoBundle,
-    HitokotoBundleVersion,
     HitokotoClient,
     HitokotoType,
     bundle_base_url,
@@ -21,105 +19,54 @@ from hitokoto import (
     read_cached_hitokoto,
     write_cache,
 )
-from hitokoto_support import FakePool, FakeResponse, FakeRoutePool, fake_bundle_routes
 from pydantic import JsonValue
-from urllib3_future import AsyncPoolManager
+from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future.exceptions import HTTPError
+
+API_URL = "https://hitokoto.example.test/"
+BUNDLE_URL = "https://bundle.example.test/"
 
 
-class TrackingRoutePool(FakeRoutePool):
-    def __init__(self, routes: dict[str, JsonValue]) -> None:
-        super().__init__(routes)
-        self.active_sentence_requests = 0
-        self.max_sentence_requests = 0
+class RecordingPool(AsyncPoolManager):
+    def __init__(self, routes: Mapping[str, object]) -> None:
+        self.routes = routes
+        self.calls: list[dict[str, object]] = []
+        self.cleared = False
 
+    @override
     async def request(
         self,
         method: str,
         url: str,
-        *,
-        fields: Iterable[tuple[str, str]] | None = None,
-        json: JsonValue = None,
-    ) -> FakeResponse:
-        if "/sentences/" in url:
-            self.active_sentence_requests += 1
-            self.max_sentence_requests = max(
-                self.max_sentence_requests,
-                self.active_sentence_requests,
-            )
-            await sleep(0)
-            self.active_sentence_requests -= 1
-        return await super().request(method, url, fields=fields, json=json)
+        body: Any = None,
+        fields: Any = None,
+        headers: Mapping[str, str] | None = None,
+        json: Any = None,
+        **urlopen_kw: Any,
+    ) -> Any:
+        _ = body, headers, urlopen_kw
+        call: dict[str, object] = {"method": method, "url": url}
+        if fields is not None:
+            call["fields"] = list(fields)
+        if json is not None:
+            call["json"] = json
+        self.calls.append(call)
+        result = self.routes[url]
+        if isinstance(result, Exception):
+            raise result
+        body = result if isinstance(result, bytes) else jsonlib.dumps(result).encode()
+        return AsyncHTTPResponse(body=body)
+
+    @override
+    async def clear(self) -> None:
+        self.cleared = True
 
 
-def _bundle_from_routes(routes: dict[str, JsonValue]) -> HitokotoBundle:
-    return HitokotoBundle.model_validate({
-        "protocol_version": "1.0.0",
-        "bundle_version": "1.0.1",
-        "categories": routes["https://sentences-bundle.hitokoto.cn/categories.json"],
-        "sentences": routes["https://sentences-bundle.hitokoto.cn/sentences/a.json"],
-    })
-
-
-def test_hitokoto_time_fields_parse_to_datetime_and_dump_json_iso() -> None:
-    routes = fake_bundle_routes()
-    bundle = _bundle_from_routes(routes)
-    version = HitokotoBundleVersion.model_validate(
-        routes["https://sentences-bundle.hitokoto.cn/version.json"],
-    )
-    sentence_time = datetime.fromtimestamp(1468605909, UTC)
-
-    assert bundle.categories[0].created_at == datetime(
-        2020,
-        5,
-        15,
-        10,
-        48,
-        9,
-        tzinfo=UTC,
-    )
-    assert bundle.categories[0].model_dump(mode="json")["created_at"] == (
-        "2020-05-15T10:48:09Z"
-    )
-    assert bundle.sentences[0].created_at == sentence_time
-    assert bundle.sentences[0].model_dump(mode="json")["created_at"] == (
-        "2016-07-15T18:05:09Z"
-    )
-    assert version.updated_at == datetime.fromtimestamp(1781163567.796, UTC)
-    assert version.model_dump(mode="json")["updated_at"] == (
-        "2026-06-11T07:39:27.796000Z"
-    )
-    assert version.categories.timestamp == datetime.fromtimestamp(
-        1597712000.881,
-        UTC,
-    )
-    assert version.categories.model_dump(mode="json")["timestamp"] == (
-        "2020-08-18T00:53:20.881000Z"
-    )
-
-    hitokoto = Hitokoto.model_validate({
+def hitokoto_payload(text: str = "hello") -> dict[str, JsonValue]:
+    return {
         "id": 1,
         "uuid": "7bfb14e2-5538-4bde-8362-7e053f84e799",
-        "hitokoto": "hello",
-        "type": "a",
-        "from": "source",
-        "from_who": None,
-        "creator": "tester",
-        "creator_uid": 1,
-        "reviewer": 1,
-        "commit_from": "web",
-        "created_at": sentence_time,
-    })
-
-    assert hitokoto.model_dump(mode="json", by_alias=True)["created_at"] == (
-        "2016-07-15T18:05:09Z"
-    )
-
-
-async def test_hitokoto_client_uses_injected_pool() -> None:
-    pool = FakePool({
-        "id": 1,
-        "uuid": "7bfb14e2-5538-4bde-8362-7e053f84e799",
-        "hitokoto": "hello",
+        "hitokoto": text,
         "type": "a",
         "from": "source",
         "from_who": "author",
@@ -127,277 +74,221 @@ async def test_hitokoto_client_uses_injected_pool() -> None:
         "creator_uid": 1,
         "reviewer": 1,
         "commit_from": "web",
-        "created_at": "2026-06-12T00:00:00",
-    })
-    client = HitokotoClient(
-        url="https://hitokoto.example.test/",
-        http_pool=cast(AsyncPoolManager, pool),
-    )
+        "created_at": "2026-06-12T00:00:00Z",
+    }
 
-    try:
-        hitokoto = await client.get_hitokoto([HitokotoType.ANIME])
-    finally:
-        await client.close()
 
-    assert hitokoto.hitokoto == "hello"
-    assert pool.cleared is True
-    assert pool.calls == [
+def bundle(text: str = "cached hello", *, include_game: bool = False) -> HitokotoBundle:
+    categories: list[dict[str, JsonValue]] = [
         {
-            "method": "GET",
-            "url": "https://hitokoto.example.test/",
-            "fields": [("c", "a")],
-            "json": None,
+            "id": 1,
+            "name": "动画",
+            "desc": "Anime",
+            "key": "a",
+            "created_at": "2020-05-15T10:48:09Z",
+            "updated_at": "2020-05-15T10:48:12Z",
+            "path": "./sentences/a.json",
         },
     ]
-
-
-async def test_hitokoto_client_omits_type_fields_when_unfiltered() -> None:
-    pool = FakePool({
-        "id": 1,
-        "uuid": "7bfb14e2-5538-4bde-8362-7e053f84e799",
-        "hitokoto": "hello",
-        "type": "a",
-        "from": "source",
-        "from_who": None,
-        "creator": "tester",
-        "creator_uid": 1,
-        "reviewer": 1,
-        "commit_from": "web",
-        "created_at": "2026-06-12T00:00:00",
-    })
-    client = HitokotoClient(http_pool=cast(AsyncPoolManager, pool))
-
-    try:
-        hitokoto = await client.get_hitokoto()
-    finally:
-        await client.close()
-
-    assert hitokoto.hitokoto == "hello"
-    assert pool.calls == [
+    sentences: list[dict[str, JsonValue]] = [
         {
-            "method": "GET",
-            "url": "https://v1.hitokoto.cn/",
-            "json": None,
-        },
-    ]
-
-
-async def test_hitokoto_client_reads_from_cache(tmp_path: Path) -> None:
-    cache_path = tmp_path / ".cache" / "hitokoto.db"
-    pool = FakeRoutePool(fake_bundle_routes())
-    client = HitokotoClient(
-        bundle_url="sentences-bundle.hitokoto.cn",
-        http_pool=cast(AsyncPoolManager, pool),
-        cache_path=cache_path,
-    )
-
-    try:
-        hitokoto = await client.get_hitokoto([HitokotoType.ANIME], use_cache=True)
-    finally:
-        await client.close()
-
-    assert hitokoto.hitokoto == "cached hello"
-    assert cache_path.is_file()
-    async with aclosing(await apsw.Connection.as_async(str(cache_path))) as db:
-        version_cursor = await db.execute(
-            "SELECT protocol_version, bundle_version, updated_at FROM version"
-        )
-        version = await version_cursor.fetchone()
-        category_cursor = await db.execute(
-            "SELECT created_at, updated_at FROM category"
-        )
-        category_times = await category_cursor.fetchone()
-        sentence_cursor = await db.execute("SELECT created_at FROM sentence")
-        sentence_time = await sentence_cursor.fetchone()
-        category_count = await (await db.execute("SELECT COUNT(*) FROM category")).get
-        sentence_count = await (await db.execute("SELECT COUNT(*) FROM sentence")).get
-    assert version is not None
-    assert version[:2] == ("1.0.0", "1.0.1")
-    assert isinstance(version[2], str)
-    assert datetime.fromisoformat(version[2]).tzinfo is UTC
-    assert category_times == (
-        "2020-05-15T10:48:09+00:00",
-        "2020-05-15T10:48:12+00:00",
-    )
-    assert sentence_time == ("2016-07-15T18:05:09+00:00",)
-    assert category_count == 1
-    assert sentence_count == 1
-    assert pool.cleared is True
-    assert [call["url"] for call in pool.calls] == [
-        "https://sentences-bundle.hitokoto.cn/version.json",
-        "https://sentences-bundle.hitokoto.cn/categories.json",
-        "https://sentences-bundle.hitokoto.cn/sentences/a.json",
-    ]
-
-
-async def test_hitokoto_client_downloads_sentence_files_concurrently() -> None:
-    routes = fake_bundle_routes("first")
-    base_url = "https://sentences-bundle.hitokoto.cn/"
-    version = cast(dict[str, JsonValue], routes[f"{base_url}version.json"])
-    version["sentences"] = [
-        *cast(list[dict[str, JsonValue]], version["sentences"]),
-        {
-            "name": "游戏",
-            "key": "c",
-            "path": "./sentences/c.json",
-            "timestamp": 1619244060706,
-        },
-    ]
-    routes[f"{base_url}sentences/c.json"] = [
-        {
-            "id": 3,
-            "uuid": "0ed43f7f-7af4-4f06-8665-101855d66d74",
-            "hitokoto": "second",
-            "type": "c",
-            "from": "game source",
-            "from_who": None,
-            "creator": "tester",
-            "creator_uid": 1,
-            "reviewer": 1,
-            "commit_from": "web",
+            **hitokoto_payload(text),
             "created_at": "1468605909",
-            "length": 6,
+            "length": len(text),
         },
     ]
-    pool = TrackingRoutePool(routes)
-    client = HitokotoClient(http_pool=cast(AsyncPoolManager, pool))
-
-    try:
-        bundle = await client._download_bundle()
-    finally:
-        await client.close()
-
-    assert pool.max_sentence_requests == 2
-    assert [sentence.hitokoto for sentence in bundle.sentences] == [
-        "first",
-        "second",
-    ]
-
-
-async def test_hitokoto_client_ensures_cache_on_enter(tmp_path: Path) -> None:
-    cache_path = tmp_path / ".cache" / "hitokoto.db"
-    pool = FakeRoutePool(fake_bundle_routes())
-    client = HitokotoClient(
-        http_pool=cast(AsyncPoolManager, pool),
-        cache_path=cache_path,
-        download_cache_on_enter=True,
-    )
-
-    async with client:
-        assert cache_path.is_file()
-
-    assert pool.cleared is True
-
-
-async def test_hitokoto_client_keeps_valid_cache_on_enter(tmp_path: Path) -> None:
-    cache_path = tmp_path / ".cache" / "hitokoto.db"
-    routes = fake_bundle_routes("already cached")
-    await write_cache(cache_path, _bundle_from_routes(routes))
-    pool = FakeRoutePool(routes)
-    client = HitokotoClient(
-        http_pool=cast(AsyncPoolManager, pool),
-        cache_path=cache_path,
-        download_cache_on_enter=True,
-    )
-
-    async with client:
-        hitokoto = await client.get_hitokoto([HitokotoType.ANIME], use_cache=True)
-
-    assert hitokoto.hitokoto == "already cached"
-    assert pool.calls == []
-    assert pool.cleared is True
-
-
-async def test_hitokoto_cache_validity_rejects_missing_stale_and_bad_version(
-    tmp_path: Path,
-) -> None:
-    cache_path = tmp_path / ".cache" / "hitokoto.db"
-
-    assert await is_cache_valid(cache_path) is False
-
-    await write_cache(cache_path, _bundle_from_routes(fake_bundle_routes()))
-
-    assert await is_cache_valid(cache_path) is True
-
-    async with aclosing(await apsw.Connection.as_async(str(cache_path))) as db:
-        await db.execute(
-            "UPDATE version SET updated_at = ?",
-            ((datetime.now(UTC) - timedelta(hours=73)).isoformat(),),
-        )
-
-    assert await is_cache_valid(cache_path) is False
-
-    async with aclosing(await apsw.Connection.as_async(str(cache_path))) as db:
-        await db.execute("UPDATE version SET updated_at = ?", ("not-a-date",))
-
-    assert await is_cache_valid(cache_path) is False
-
-
-async def test_read_cached_hitokoto_filters_types_and_reports_empty_match(
-    tmp_path: Path,
-) -> None:
-    cache_path = tmp_path / ".cache" / "hitokoto.db"
-    routes = fake_bundle_routes()
-    category_url = "https://sentences-bundle.hitokoto.cn/categories.json"
-    sentence_url = "https://sentences-bundle.hitokoto.cn/sentences/a.json"
-    categories = [
-        *cast(list[dict[str, JsonValue]], routes[category_url]),
-        {
+    if include_game:
+        categories.append({
             "id": 3,
             "name": "游戏",
-            "desc": "Game - 游戏",
+            "desc": "Game",
             "key": "c",
             "created_at": "2020-05-15T10:48:09Z",
             "updated_at": "2020-05-15T10:48:12Z",
             "path": "./sentences/c.json",
-        },
-    ]
-    sentences = [
-        *cast(list[dict[str, JsonValue]], routes[sentence_url]),
-        {
+        })
+        sentences.append({
+            **hitokoto_payload("cached game"),
             "id": 3,
             "uuid": "0ed43f7f-7af4-4f06-8665-101855d66d74",
-            "hitokoto": "cached game",
             "type": "c",
-            "from": "game source",
             "from_who": None,
-            "creator": "tester",
-            "creator_uid": 1,
-            "reviewer": 1,
-            "commit_from": "web",
             "created_at": "1468605909",
             "length": 11,
+        })
+    return HitokotoBundle.model_validate({
+        "protocol_version": "1.0.0",
+        "bundle_version": "1.0.1",
+        "categories": categories,
+        "sentences": sentences,
+    })
+
+
+def bundle_routes(text: str = "cached hello") -> dict[str, object]:
+    value = bundle(text)
+    return {
+        f"{BUNDLE_URL}version.json": {
+            "protocol_version": value.protocol_version,
+            "bundle_version": value.bundle_version,
+            "updated_at": 1781163567796,
+            "categories": {
+                "path": "./categories.json",
+                "timestamp": 1597712000881,
+            },
+            "sentences": [
+                {
+                    "name": "动画",
+                    "key": "a",
+                    "path": "./sentences/a.json",
+                    "timestamp": 1619244060706,
+                },
+            ],
         },
-    ]
-    await write_cache(
-        cache_path,
-        HitokotoBundle.model_validate({
-            "protocol_version": "1.0.0",
-            "bundle_version": "1.0.1",
-            "categories": categories,
-            "sentences": sentences,
-        }),
+        f"{BUNDLE_URL}categories.json": [
+            item.model_dump(mode="json", by_alias=True) for item in value.categories
+        ],
+        f"{BUNDLE_URL}sentences/a.json": [
+            item.model_dump(mode="json", by_alias=True) for item in value.sentences
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("types", "expected_fields"),
+    [
+        (None, None),
+        ((HitokotoType.ANIME, HitokotoType.GAME), [("c", "a"), ("c", "c")]),
+    ],
+    ids=["unfiltered", "multiple-types"],
+)
+async def test_client_requests_api_with_optional_type_filters(
+    types: tuple[HitokotoType, ...] | None,
+    expected_fields: list[tuple[str, str]] | None,
+) -> None:
+    pool = RecordingPool({API_URL: hitokoto_payload()})
+    client = HitokotoClient(
+        url=API_URL,
+        http_pool=pool,
     )
 
-    hitokoto = await read_cached_hitokoto(cache_path, (HitokotoType.GAME,))
+    async with client:
+        result = await client.get_hitokoto(types)
 
-    assert hitokoto.hitokoto == "cached game"
-    assert hitokoto.type is HitokotoType.GAME
+    expected_call: dict[str, object] = {"method": "GET", "url": API_URL}
+    if expected_fields is not None:
+        expected_call["fields"] = expected_fields
+    assert result.hitokoto == "hello"
+    assert pool.calls == [expected_call]
+    assert pool.cleared is True
+
+
+async def test_client_closes_pool_when_request_fails() -> None:
+    pool = RecordingPool({API_URL: HTTPError("offline")})
+    client = HitokotoClient(
+        url=API_URL,
+        http_pool=pool,
+    )
+
+    with pytest.raises(HTTPError, match="offline"):
+        async with client:
+            await client.get_hitokoto()
+
+    assert pool.cleared is True
+
+
+async def test_client_populates_and_reuses_real_sqlite_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache" / "hitokoto.db"
+    pool = RecordingPool(bundle_routes())
+    client = HitokotoClient(
+        bundle_url=BUNDLE_URL,
+        http_pool=pool,
+        cache_path=cache_path,
+    )
+
+    async with client:
+        first = await client.get_hitokoto((HitokotoType.ANIME,), use_cache=True)
+        download_calls = list(pool.calls)
+        second = await client.get_hitokoto((HitokotoType.ANIME,), use_cache=True)
+
+    assert first.hitokoto == second.hitokoto == "cached hello"
+    assert cache_path.is_file()
+    assert await is_cache_valid(cache_path) is True
+    assert pool.calls == download_calls
+    assert [call["url"] for call in pool.calls] == [
+        f"{BUNDLE_URL}version.json",
+        f"{BUNDLE_URL}categories.json",
+        f"{BUNDLE_URL}sentences/a.json",
+    ]
+    assert pool.cleared is True
+
+
+async def test_real_sqlite_cache_filters_types_and_rejects_empty_matches(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "hitokoto.db"
+    await write_cache(cache_path, bundle(include_game=True))
+
+    result = await read_cached_hitokoto(cache_path, (HitokotoType.GAME,))
+
+    assert result.hitokoto == "cached game"
     with pytest.raises(RuntimeError, match="no matching"):
         await read_cached_hitokoto(cache_path, (HitokotoType.JOKE,))
 
 
-def test_bundle_url_helpers_normalize_base_and_file_paths() -> None:
-    base_url = bundle_base_url(
-        "https://sentences-bundle.hitokoto.cn/api?unused=1#fragment",
-    )
+async def test_cache_validity_handles_missing_and_current_database(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "hitokoto.db"
 
-    assert base_url.url == "https://sentences-bundle.hitokoto.cn/api/"
-    assert bundle_file_url(base_url, "./sentences/a.json") == (
-        "https://sentences-bundle.hitokoto.cn/api/sentences/a.json"
-    )
-    assert bundle_file_url(base_url, "/version.json") == (
-        "https://sentences-bundle.hitokoto.cn/api/version.json"
-    )
+    assert await is_cache_valid(cache_path) is False
+    await write_cache(cache_path, bundle())
+    assert await is_cache_valid(cache_path) is True
+
+
+@pytest.mark.parametrize(
+    "updated_at",
+    [
+        (datetime.now(UTC) - timedelta(hours=73)).isoformat(),
+        "not-a-date",
+    ],
+    ids=["stale", "malformed-timestamp"],
+)
+async def test_cache_validity_rejects_bad_update_time(
+    tmp_path: Path,
+    updated_at: str,
+) -> None:
+    cache_path = tmp_path / "hitokoto.db"
+    await write_cache(cache_path, bundle())
+    async with aclosing(await apsw.Connection.as_async(str(cache_path))) as db:
+        await db.execute("UPDATE version SET updated_at = ?", (updated_at,))
+
+    assert await is_cache_valid(cache_path) is False
+
+
+@pytest.mark.parametrize(
+    ("url", "path", "expected"),
+    [
+        (
+            "https://bundle.example.test/api?unused=1#fragment",
+            "./sentences/a.json",
+            "https://bundle.example.test/api/sentences/a.json",
+        ),
+        (
+            "bundle.example.test",
+            "/version.json",
+            "https://bundle.example.test/version.json",
+        ),
+    ],
+    ids=["strip-query-and-fragment", "supply-scheme-and-root-path"],
+)
+def test_bundle_url_helpers_normalize_paths(
+    url: str,
+    path: str,
+    expected: str,
+) -> None:
+    assert bundle_file_url(bundle_base_url(url), path) == expected
+
+
+def test_bundle_base_url_rejects_empty_value() -> None:
     with pytest.raises(RuntimeError, match="empty"):
         bundle_base_url(" ")

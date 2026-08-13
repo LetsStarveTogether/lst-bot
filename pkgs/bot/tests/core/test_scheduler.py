@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from asyncio import Event as AsyncEvent
-from asyncio import Queue, wait_for
+from asyncio import Event, Queue, wait_for
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from typing import override
@@ -12,16 +11,13 @@ from bot import (
     Bot,
     BotSelf,
     Connection,
-    CronJob,
-    CronScheduler,
     EventPayload,
     Injected,
     PrivateMessageEvent,
     State,
 )
+from bot.testing import RecordingGateway
 from logbook import TestHandler as LogbookTestHandler
-
-from tests.conftest import RecordingGateway
 
 
 @dataclass(frozen=True)
@@ -29,15 +25,22 @@ class Service:
     value: str
 
 
-class BlockingSleep:
+class ScriptedSleep:
     def __init__(self) -> None:
-        self.started = AsyncEvent()
-        self.delay: float | None = None
+        self.calls: Queue[tuple[float, Event]] = Queue()
 
     async def __call__(self, delay: float) -> None:
-        self.delay = delay
-        self.started.set()
-        await AsyncEvent().wait()
+        release = Event()
+        await self.calls.put((delay, release))
+        await release.wait()
+
+    async def advance(self) -> float:
+        delay, release = await self.next_call()
+        release.set()
+        return delay
+
+    async def next_call(self) -> tuple[float, Event]:
+        return await wait_for(self.calls.get(), timeout=1)
 
 
 class AlternateGateway(RecordingGateway):
@@ -63,27 +66,22 @@ def make_private_event(
         "alt_message": "hello",
         "user_id": "42",
     }).root
-    if not isinstance(event, PrivateMessageEvent):
-        msg = "event factory must build private message events"
-        raise TypeError(msg)
+    assert isinstance(event, PrivateMessageEvent)
     return event
 
 
-async def trigger_and_wait(job: CronJob) -> None:
-    await job._trigger()
-    if job._running is not None:
-        await job._running
+def utc_clock(timezone: tzinfo) -> datetime:
+    return datetime(2026, 1, 1, tzinfo=UTC).astimezone(timezone)
 
 
-def install_scheduler(bot: Bot, scheduler: CronScheduler) -> None:
-    bot._scheduler = scheduler
+def use_scripted_time(bot: Bot) -> ScriptedSleep:
+    sleep = ScriptedSleep()
+    bot.scheduler.clock = utc_clock
+    bot.scheduler.sleep = sleep
+    return sleep
 
 
-def utc_clock(tz: tzinfo) -> datetime:
-    return datetime(2026, 1, 1, tzinfo=UTC).astimezone(tz)
-
-
-def test_on_cron_registers_validated_job_and_timezone() -> None:
+def test_on_cron_registers_validated_jobs_in_the_public_view() -> None:
     bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
 
     @bot.on_cron("*/5 * * * *", name="five")
@@ -94,8 +92,9 @@ def test_on_cron_registers_validated_job_and_timezone() -> None:
     def tokyo() -> None:
         pass
 
-    five_job, tokyo_job = bot._scheduler.jobs
+    five_job, tokyo_job = bot.scheduler.jobs
 
+    assert isinstance(bot.scheduler.jobs, tuple)
     assert five_job.name == "five"
     assert str(five_job.timezone) == "UTC"
     assert tokyo_job.name == "tokyo"
@@ -109,29 +108,30 @@ def test_on_cron_rejects_invalid_cron_expression() -> None:
         bot.on_cron("0 0 31 2 *")(lambda: None)
 
 
-async def test_scheduler_starts_with_bot_and_close_cancels_runner() -> None:
+async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> None:
     bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
-    sleeper = BlockingSleep()
-    install_scheduler(bot, CronScheduler(bot, clock=utc_clock, sleep=sleeper))
+    sleep = use_scripted_time(bot)
+    started = Event()
+    cancelled = Event()
 
     @bot.on_cron("* * * * *", self_=None)
-    def job() -> None:
-        pass
+    async def job() -> None:
+        try:
+            started.set()
+            await Event().wait()
+        finally:
+            cancelled.set()
 
-    await bot.start()
-    await wait_for(sleeper.started.wait(), timeout=1)
+    async with bot:
+        assert await sleep.advance() == 60
+        await wait_for(started.wait(), timeout=1)
 
-    registered = bot._scheduler.jobs[0]
-    assert registered._runner is not None
-    assert sleeper.delay == 60
-
-    await bot.close()
-
-    assert registered._runner is None
+    assert cancelled.is_set()
 
 
-async def test_recent_account_job_uses_latest_dispatched_event_self() -> None:
+async def test_recent_account_job_uses_the_latest_dispatched_event() -> None:
     bot = Bot()
+    sleep = use_scripted_time(bot)
     gateway = RecordingGateway(bot)
     bot.add_gateway(gateway)
     seen: Queue[str] = Queue()
@@ -140,72 +140,75 @@ async def test_recent_account_job_uses_latest_dispatched_event_self() -> None:
     async def collect(connection: Injected[Connection]) -> None:
         await seen.put(connection.self_.user_id)
 
-    registered = bot._scheduler.jobs[0]
+    async with bot:
+        self_a = BotSelf(platform="test", user_id="bot-a")
+        await bot.dispatch(
+            gateway.connection_for(self_a),
+            make_private_event(self_id="bot-a", event_id="evt-a"),
+        )
+        await sleep.advance()
+        assert await wait_for(seen.get(), timeout=1) == "bot-a"
 
-    self_a = BotSelf(platform="test", user_id="bot-a")
-    await bot.dispatch(
-        gateway.connection_for(self_a),
-        make_private_event(self_id="bot-a", event_id="evt-a"),
-    )
-    await registered._trigger()
-    assert await wait_for(seen.get(), timeout=1) == "bot-a"
-
-    self_b = BotSelf(platform="test", user_id="bot-b")
-    await bot.dispatch(
-        gateway.connection_for(self_b),
-        make_private_event(self_id="bot-b", event_id="evt-b"),
-    )
-    await registered._trigger()
-    assert await wait_for(seen.get(), timeout=1) == "bot-b"
-
-    if registered._running is not None:
-        await registered._running
+        self_b = BotSelf(platform="test", user_id="bot-b")
+        await bot.dispatch(
+            gateway.connection_for(self_b),
+            make_private_event(self_id="bot-b", event_id="evt-b"),
+        )
+        await sleep.advance()
+        assert await wait_for(seen.get(), timeout=1) == "bot-b"
 
 
-async def test_recent_account_job_skips_without_recent_event_self() -> None:
+async def test_recent_account_job_skips_without_a_recent_event() -> None:
     bot = Bot()
-    called = False
+    sleep = use_scripted_time(bot)
+    called = Event()
 
     @bot.on_cron("* * * * *", name="recent")
     def collect() -> None:
-        nonlocal called
-        called = True
-
-    registered = bot._scheduler.jobs[0]
+        called.set()
 
     with LogbookTestHandler() as handler:
-        await trigger_and_wait(registered)
+        async with bot:
+            await sleep.advance()
+            await sleep.next_call()
 
-    assert not called
+    assert not called.is_set()
     assert any(
         "no recent bot account exists" in record.message for record in handler.records
     )
 
 
-async def test_none_self_job_runs_without_connection_target() -> None:
+async def test_none_target_job_has_fresh_state_and_dependencies() -> None:
     bot = Bot()
+    sleep = use_scripted_time(bot)
     bot.container.add_instance(Service("ready"), provides=Service)
-    seen: list[str] = []
+    seen: Queue[tuple[str, bool]] = Queue()
 
     @bot.on_cron("* * * * *", self_=None)
-    def collect(state: Injected[State], service: Injected[Service]) -> None:
+    async def collect(state: Injected[State], service: Injected[Service]) -> None:
+        fresh = "value" not in state
         state["value"] = service.value
-        seen.append(str(state["value"]))
+        await seen.put((str(state["value"]), fresh))
 
-    await trigger_and_wait(bot._scheduler.jobs[0])
+    async with bot:
+        await sleep.advance()
+        await sleep.advance()
+        assert await wait_for(seen.get(), timeout=1) == ("ready", True)
+        assert await wait_for(seen.get(), timeout=1) == ("ready", True)
 
-    assert seen == ["ready"]
 
-
-async def test_none_self_connection_injection_failure_is_logged() -> None:
+async def test_none_target_connection_injection_failure_is_logged() -> None:
     bot = Bot()
+    sleep = use_scripted_time(bot)
 
     @bot.on_cron("* * * * *", name="bad", self_=None)
     def bad(connection: Injected[Connection]) -> None:
         _ = connection
 
     with LogbookTestHandler() as handler:
-        await trigger_and_wait(bot._scheduler.jobs[0])
+        async with bot:
+            await sleep.advance()
+            await sleep.next_call()
 
     assert any(
         "Scheduled job failed" in record.message and "bad" in record.message
@@ -213,8 +216,9 @@ async def test_none_self_connection_injection_failure_is_logged() -> None:
     )
 
 
-async def test_fixed_account_uses_single_gateway() -> None:
+async def test_fixed_account_uses_the_registered_gateway() -> None:
     bot = Bot()
+    sleep = use_scripted_time(bot)
     gateway = RecordingGateway(bot)
     bot.add_gateway(gateway)
     seen: Queue[str] = Queue()
@@ -224,13 +228,14 @@ async def test_fixed_account_uses_single_gateway() -> None:
     async def collect(connection: Injected[Connection]) -> None:
         await seen.put(connection.self_.user_id)
 
-    await bot._scheduler.jobs[0]._trigger()
+    async with bot:
+        await sleep.advance()
+        assert await wait_for(seen.get(), timeout=1) == "fixed"
 
-    assert await wait_for(seen.get(), timeout=1) == "fixed"
 
-
-async def test_fixed_account_logs_multiple_gateway_ambiguity() -> None:
+async def test_fixed_account_logs_gateway_ambiguity() -> None:
     bot = Bot()
+    sleep = use_scripted_time(bot)
     bot.add_gateway(RecordingGateway(bot))
     bot.add_gateway(AlternateGateway(bot))
 
@@ -243,91 +248,60 @@ async def test_fixed_account_logs_multiple_gateway_ambiguity() -> None:
         _ = connection
 
     with LogbookTestHandler() as handler:
-        await trigger_and_wait(bot._scheduler.jobs[0])
+        async with bot:
+            await sleep.advance()
+            await sleep.next_call()
 
     assert any(
         "failed to resolve target" in record.message for record in handler.records
     )
 
 
-async def test_overlapping_job_skips_trigger() -> None:
+async def test_overlapping_tick_is_skipped() -> None:
     bot = Bot()
-    started = AsyncEvent()
-    release = AsyncEvent()
+    sleep = use_scripted_time(bot)
+    started = Event()
+    release = Event()
 
     @bot.on_cron("* * * * *", name="slow", self_=None)
     async def slow() -> None:
         started.set()
         await release.wait()
 
-    registered = bot._scheduler.jobs[0]
-
-    await registered._trigger()
-    await wait_for(started.wait(), timeout=1)
-
     with LogbookTestHandler() as handler:
-        await registered._trigger()
+        async with bot:
+            await sleep.advance()
+            await wait_for(started.wait(), timeout=1)
+            await sleep.advance()
+            await sleep.next_call()
+            release.set()
 
     assert any("still running" in record.message for record in handler.records)
 
-    release.set()
-    if registered._running is not None:
-        await registered._running
 
-
-async def test_handler_exception_does_not_block_later_triggers() -> None:
+async def test_handler_failure_does_not_block_later_ticks() -> None:
     bot = Bot()
-    attempts = 0
-    first = AsyncEvent()
-    second = AsyncEvent()
+    sleep = use_scripted_time(bot)
+    attempts: Queue[int] = Queue()
+    count = 0
 
     @bot.on_cron("* * * * *", name="flaky", self_=None)
     def flaky() -> None:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            first.set()
+        nonlocal count
+        count += 1
+        attempts.put_nowait(count)
+        if count == 1:
             msg = "boom"
             raise RuntimeError(msg)
-        second.set()
-
-    registered = bot._scheduler.jobs[0]
 
     with LogbookTestHandler() as handler:
-        await registered._trigger()
-        await wait_for(first.wait(), timeout=1)
-        if registered._running is not None:
-            await registered._running
-        await registered._trigger()
-        await wait_for(second.wait(), timeout=1)
+        async with bot:
+            await sleep.advance()
+            assert await wait_for(attempts.get(), timeout=1) == 1
+            await sleep.advance()
+            assert await wait_for(attempts.get(), timeout=1) == 2
 
-    assert attempts == 2
     assert any(
         "Scheduled job failed" in record.message and "flaky" in record.message
         for record in handler.records
     )
-
-
-async def test_scheduler_close_cancels_running_handler() -> None:
-    bot = Bot()
-    started = AsyncEvent()
-    cancelled = AsyncEvent()
-
-    @bot.on_cron("* * * * *", self_=None)
-    async def slow() -> None:
-        try:
-            started.set()
-            await AsyncEvent().wait()
-        finally:
-            cancelled.set()
-
-    registered = bot._scheduler.jobs[0]
-    await registered._trigger()
-    await wait_for(started.wait(), timeout=1)
-
-    await bot._scheduler.close()
-
-    assert cancelled.is_set()
-    assert registered._running is None
-
-    await bot.close()

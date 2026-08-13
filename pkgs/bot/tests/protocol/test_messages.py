@@ -3,106 +3,189 @@ from __future__ import annotations
 import pytest
 from bot import Msg, MsgSegmentType
 from bot.protocol.msg import TextSegment, TextSegmentData
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
-from tests.conftest import EventFactory
-
-
-def test_msg_parses_protocol_message_segments() -> None:
-    msg = Msg.model_validate(
-        [
-            {"type": "text", "data": {"text": "hello"}},
-            {"type": "mention", "data": {"user_id": "123"}},
-            {"type": "text", "data": {"text": " world"}},
-        ],
-    )
-
-    assert msg.text == "hello world"
-    assert len(msg) == 3
-
-
-def test_msg_text_strips_by_default() -> None:
-    msg = Msg.from_input("  hello  ")
-
-    assert msg.text == "hello"
-    assert str(msg) == "  hello  "
-
-
-def test_msg_mention_and_reply_prepend_protocol_segments() -> None:
-    mention = Msg.mention("123", " hello")
-    reply = Msg.reply("msg-1", " received", user_id="123")
-
-    assert mention.model_dump(mode="json", by_alias=True) == [
-        {"type": "mention", "data": {"user_id": "123"}},
-        {"type": "text", "data": {"text": " hello"}},
-    ]
-    assert reply.model_dump(mode="json", by_alias=True) == [
+SEGMENT_CASES: tuple[object, ...] = (
+    pytest.param(
+        {"type": "text", "data": {"text": "hello"}},
+        MsgSegmentType.TEXT,
+        id="text",
+    ),
+    pytest.param(
+        {"type": "mention", "data": {"user_id": "42"}},
+        MsgSegmentType.MENTION,
+        id="mention",
+    ),
+    pytest.param(
+        {"type": "mention_all", "data": {}},
+        MsgSegmentType.MENTION_ALL,
+        id="mention-all",
+    ),
+    pytest.param(
+        {"type": "image", "data": {"file_id": "image-1"}},
+        MsgSegmentType.IMAGE,
+        id="image",
+    ),
+    pytest.param(
+        {"type": "voice", "data": {"file_id": "voice-1"}},
+        MsgSegmentType.VOICE,
+        id="voice",
+    ),
+    pytest.param(
+        {"type": "audio", "data": {"file_id": "audio-1"}},
+        MsgSegmentType.AUDIO,
+        id="audio",
+    ),
+    pytest.param(
+        {"type": "video", "data": {"file_id": "video-1"}},
+        MsgSegmentType.VIDEO,
+        id="video",
+    ),
+    pytest.param(
+        {"type": "file", "data": {"file_id": "file-1"}},
+        MsgSegmentType.FILE,
+        id="file",
+    ),
+    pytest.param(
+        {
+            "type": "location",
+            "data": {
+                "latitude": 39.9,
+                "longitude": 116.4,
+                "title": "Beijing",
+                "content": "China",
+            },
+        },
+        MsgSegmentType.LOCATION,
+        id="location",
+    ),
+    pytest.param(
         {
             "type": "reply",
-            "data": {"message_id": "msg-1", "user_id": "123"},
+            "data": {"message_id": "message-1", "user_id": "42"},
         },
-        {"type": "text", "data": {"text": " received"}},
+        MsgSegmentType.REPLY,
+        id="reply",
+    ),
+    pytest.param(
+        {
+            "type": "qq.face",
+            "data": {"id": "1", "animated": True, "metadata": None},
+        },
+        "qq.face",
+        id="extension",
+    ),
+)
+
+
+@pytest.mark.parametrize(("payload", "segment_type"), SEGMENT_CASES)
+def test_each_message_segment_variant_round_trips_json(
+    payload: dict[str, JsonValue],
+    segment_type: MsgSegmentType | str,
+) -> None:
+    message = Msg.model_validate([payload])
+
+    assert message[0].type == segment_type
+    assert Msg.model_validate_json(message.model_dump_json()) == message
+
+
+def test_message_normalization_is_idempotent() -> None:
+    payload = [
+        {"type": "text", "data": {"text": "hello"}},
+        {"type": "mention", "data": {"user_id": "42"}},
+        {"type": "vendor.segment", "data": {"value": None}},
     ]
 
+    normalized = Msg.model_validate(payload).model_dump(mode="json", by_alias=True)
 
-def test_msg_iterates_segments() -> None:
-    msg = Msg.t("hello")
-
-    assert [segment.type for segment in msg] == [MsgSegmentType.TEXT]
-
-
-def test_msg_segment_type_defaults_to_protocol_tag() -> None:
-    segment = TextSegment(data=TextSegmentData(text="hello"))
-
-    assert segment.type == MsgSegmentType.TEXT
-    assert segment.model_dump(
-        mode="json",
-        by_alias=True,
-    ) == {
-        "type": "text",
-        "data": {"text": "hello"},
-    }
+    assert Msg.model_validate(normalized).model_dump(mode="json", by_alias=True) == (
+        normalized
+    )
 
 
-def test_msg_append_uses_message_input() -> None:
-    msg = Msg()
-    msg.append("hello")
-    msg.append({"type": "text", "data": {"text": " world"}})
-
-    assert msg.text == "hello world"
-
-
-def test_msg_extend_appends_message_input() -> None:
-    msg = Msg.t("hello")
-    msg.extend([
-        {"type": "mention", "data": {"user_id": "123"}},
-        {"type": "text", "data": {"text": " world"}},
+def test_message_text_and_mutation_helpers_use_protocol_segments() -> None:
+    message = Msg.mention("42", " hello")
+    message.append({"type": "text", "data": {"text": " world"}})
+    message.extend([
+        {"type": "mention_all", "data": {}},
+        {"type": "text", "data": {"text": "!"}},
     ])
 
-    assert [segment.type for segment in msg] == [
-        MsgSegmentType.TEXT,
+    assert str(message) == " hello world!"
+    assert message.text == "hello world!"
+    assert [segment.type for segment in message] == [
         MsgSegmentType.MENTION,
         MsgSegmentType.TEXT,
+        MsgSegmentType.TEXT,
+        MsgSegmentType.MENTION_ALL,
+        MsgSegmentType.TEXT,
     ]
-    assert msg.text == "hello world"
 
 
-def test_event_message_uses_msg_model(make_event: EventFactory) -> None:
-    event = make_event("  hello world  ", user_id="u1")
+def test_reply_helper_omits_null_user_id_on_wire() -> None:
+    message = Msg.reply("message-1", "received")
 
-    assert str(event.message) == "  hello world  "
-    assert event.message.text == "hello world"
+    assert message.model_dump(mode="json", by_alias=True) == [
+        {"type": "reply", "data": {"message_id": "message-1"}},
+        {"type": "text", "data": {"text": "received"}},
+    ]
 
 
-def test_msg_segments_use_standard_and_extension_discriminators() -> None:
-    segments = Msg.model_validate([
-        {"type": "qq.face", "data": {"id": "1"}},
-    ]).root
+def test_message_accepts_text_segment_model_and_preserves_whitespace() -> None:
+    message = Msg.from_input(TextSegment(data=TextSegmentData(text="  hello  ")))
+    message.append(TextSegment(data=TextSegmentData(text="world")))
 
-    assert segments[0].type == "qq.face"
-    with pytest.raises(ValidationError):
-        Msg.model_validate([{"type": "text", "data": {}}])
+    assert str(message) == "  hello  world"
+    assert message.text == "hello  world"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param([{"data": {}}], id="missing-type"),
+        pytest.param([{"type": 1, "data": {}}], id="non-string-type"),
+        pytest.param([{"type": "text"}], id="missing-data"),
+        pytest.param([{"type": "text", "data": []}], id="non-object-data"),
+        pytest.param([{"type": "text", "data": {}}], id="text-missing-text"),
+        pytest.param(
+            [{"type": "qq.face", "data": {"type": "reserved"}}],
+            id="extension-reserved-data-type",
+        ),
+    ],
+)
+def test_message_rejects_invalid_discriminator_or_shape(payload: object) -> None:
+    with pytest.raises((TypeError, ValidationError)):
+        Msg.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_location_rejects_non_finite_coordinates(value: float) -> None:
     with pytest.raises(ValidationError):
         Msg.model_validate([
-            {"type": "qq.face", "data": {"type": "reserved"}},
+            {
+                "type": "location",
+                "data": {
+                    "latitude": value,
+                    "longitude": 0,
+                    "title": "invalid",
+                    "content": "invalid",
+                },
+            },
+        ])
+
+
+def test_extension_segment_rejects_nested_non_finite_number() -> None:
+    with pytest.raises(ValidationError):
+        Msg.model_validate([
+            {
+                "type": "vendor.segment",
+                "data": {"values": [float("nan")]},
+            },
         ])

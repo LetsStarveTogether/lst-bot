@@ -1,27 +1,25 @@
 from __future__ import annotations
 
 from asyncio import (
-    CancelledError,
     Future,
-    Queue,
-    Task,
-    create_task,
     get_running_loop,
-    wait_for,
+    timeout,
 )
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from hmac import compare_digest
-from inspect import isawaitable
+from math import isfinite
 from types import TracebackType
-from typing import TYPE_CHECKING, Protocol, Self, cast
+from typing import TYPE_CHECKING, Protocol, Self
+from urllib.parse import parse_qs
 
 import orjson
 from logbook import Logger
 from pydantic import BaseModel, JsonValue, SecretStr
 from robyn import Headers, Response
 from ulid import ULID
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
 from bot.protocol.actions import (
     ActionCall,
@@ -48,9 +46,6 @@ if TYPE_CHECKING:
 logger = Logger(__name__)
 
 type AccessToken = SecretStr | str | None
-type State = dict[str, object]
-type RobynResult = Response | BaseModel | None
-type RobynPayloadHandler = Callable[[BaseModel], RobynResult | Awaitable[RobynResult]]
 
 
 class RobynServer(Protocol):
@@ -60,23 +55,54 @@ class RobynServer(Protocol):
 
 
 class WebSocketConnection(Protocol):
-    async def receive_bytes(self) -> bytes: ...
+    async def receive_text(self) -> str: ...
 
-    async def send_bytes(self, payload: bytes) -> None: ...
+    async def send_text(self, payload: str) -> None: ...
 
     async def close(self) -> None: ...
 
 
-@dataclass(slots=True)
-class _QueuedRobynPayload:
-    payload: BaseModel
-    handler: RobynPayloadHandler
-    response: Future[RobynResult]
+class _NativeWebSocketConnection(Protocol):
+    async def recv(self) -> str | bytes: ...
+
+    async def send(self, message: str) -> None: ...
+
+    async def close(self) -> None: ...
 
 
-type _QueuedRobynItem = _QueuedRobynPayload | None
+class WebsocketsConnection:
+    def __init__(self, websocket: _NativeWebSocketConnection) -> None:
+        self.websocket = websocket
 
-_MOUNTED_LIFECYCLES: set[tuple[int, int]] = set()
+    async def receive_text(self) -> str:
+        payload = await self._receive()
+        if isinstance(payload, bytes):
+            msg = "WebSocket text frame required"
+            raise TypeError(msg)
+        return payload
+
+    async def send_text(self, payload: str) -> None:
+        await self.websocket.send(payload)
+
+    async def close(self) -> None:
+        await self.websocket.close()
+
+    async def _receive(self) -> str | bytes:
+        try:
+            return await self.websocket.recv()
+        except ConnectionClosedOK as exc:
+            raise StopAsyncIteration from exc
+        except ConnectionClosed as exc:
+            msg = "WebSocket connection closed"
+            raise ConnectionError(msg) from exc
+
+
+async def connect_websocket(
+    url: str,
+    headers: dict[str, str] | None,
+) -> WebsocketsConnection:
+    websocket = await connect(url, additional_headers=headers, proxy=None)
+    return WebsocketsConnection(websocket)
 
 
 class Connection:
@@ -222,12 +248,7 @@ class Connection:
 class Gateway:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
-        self._connections: dict[BotSelf, Connection] = {}
-        self._server_queue: Queue[_QueuedRobynItem] = Queue()
-        self._server_task: Task[None] | None = None
-        self._server_payload_tasks: set[Task[None]] = set()
-        self._server_closing = False
-        self._mounted_servers: set[int] = set()
+        self._mounted_servers: list[RobynServer] = []
 
     def __str__(self) -> str:
         return type(self).__name__
@@ -246,30 +267,18 @@ class Gateway:
         await self.close()
 
     async def start(self) -> None:
-        if self._server_task is None or self._server_task.done():
-            self._server_closing = False
-            self._server_task = create_task(self._run_server())
+        pass
 
     async def close(self) -> None:
-        self._server_closing = True
-        task = self._server_task
-        if task is not None:
-            if not task.done():
-                await self._server_queue.put(None)
-            await task
-            self._server_task = None
-        await self._cancel_server_payload_tasks()
+        pass
 
     def connection_for(self, self_: BotSelf) -> Connection:
-        connection = self._connections.get(self_)
-        if connection is None:
-            connection = Connection(self, self_)
-            self._connections[self_] = connection
-            if __debug__:
-                logger.trace(
-                    "create connection : {connection}",
-                    connection=connection,
-                )
+        connection = Connection(self, self_)
+        if __debug__:
+            logger.trace(
+                "create connection : {connection}",
+                connection=connection,
+            )
         return connection
 
     async def dispatch_event(self, event: Event) -> list[DispatchResult]:
@@ -283,6 +292,18 @@ class Gateway:
             self.connection_for(event.self_) if event.self_ is not None else None
         )
         return await self.bot.dispatch(connection, event, gateway=self)
+
+    def enqueue_event(self, event: Event) -> None:
+        if __debug__:
+            logger.trace(
+                "gateway enqueue event : {gateway} {event}",
+                gateway=self,
+                event=event,
+            )
+        connection = (
+            self.connection_for(event.self_) if event.self_ is not None else None
+        )
+        self.bot.enqueue_event(connection, event, gateway=self)
 
     async def request_action(
         self,
@@ -329,94 +350,24 @@ class Gateway:
         raise TypeError(msg)
 
     def _mount_server_once(self, server: RobynServer) -> bool:
-        server_id = id(server)
-        if server_id in self._mounted_servers:
+        if any(mounted is server for mounted in self._mounted_servers):
             if __debug__:
                 logger.debug(
-                    "gateway already mounted: {gateway}@server#{server_id}",
+                    "gateway already mounted: {gateway}@{server}",
                     gateway=type(self).__name__,
-                    server_id=server_id,
+                    server=type(server).__name__,
                 )
             return False
-        self._mounted_servers.add(server_id)
 
-        lifecycle_key = (server_id, id(self.bot))
-        if lifecycle_key not in _MOUNTED_LIFECYCLES:
-            startup_handler = server.startup_handler
-            shutdown_handler = server.shutdown_handler
-            startup_handler(self.bot.start)
-            shutdown_handler(self.bot.close)
-            _MOUNTED_LIFECYCLES.add(lifecycle_key)
-            if __debug__:
-                logger.debug(
-                    "mount bot lifecycle hooks: server#{server_id}",
-                    server_id=server_id,
-                )
+        self.bot.mount_server(server)
+        self._mounted_servers.append(server)
+        if __debug__:
+            logger.debug(
+                "mount bot lifecycle hooks: {gateway}@{server}",
+                gateway=type(self).__name__,
+                server=type(server).__name__,
+            )
         return True
-
-    async def _run_on_server_task(
-        self,
-        payload: BaseModel,
-        handler: RobynPayloadHandler,
-    ) -> RobynResult:
-        if (
-            self._server_closing
-            or self._server_task is None
-            or self._server_task.done()
-        ):
-            msg = "Gateway server task is not running"
-            raise RuntimeError(msg)
-
-        loop = get_running_loop()
-        response: Future[RobynResult] = loop.create_future()
-        await self._server_queue.put(
-            _QueuedRobynPayload(
-                payload=payload,
-                handler=handler,
-                response=response,
-            ),
-        )
-        return await response
-
-    async def _run_server(self) -> None:
-        try:
-            while True:
-                item = await self._server_queue.get()
-                try:
-                    if item is None:
-                        return
-                    task = create_task(self._handle_server_payload(item))
-                    self._server_payload_tasks.add(task)
-                    task.add_done_callback(self._server_payload_tasks.discard)
-                finally:
-                    self._server_queue.task_done()
-        finally:
-            await self._cancel_server_payload_tasks()
-
-    async def _handle_server_payload(self, item: _QueuedRobynPayload) -> None:
-        try:
-            value = item.handler(item.payload)
-            if isawaitable(value):
-                value = await value
-        except CancelledError:
-            if not item.response.done():
-                item.response.cancel()
-            raise
-        except Exception as exc:
-            if not item.response.done():
-                item.response.set_exception(exc)
-        else:
-            if not item.response.done():
-                item.response.set_result(cast(RobynResult, value))
-
-    async def _cancel_server_payload_tasks(self) -> None:
-        tasks = tuple(self._server_payload_tasks)
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with suppress(CancelledError):
-                await task
-        self._server_payload_tasks.clear()
 
 
 @dataclass(slots=True)
@@ -433,6 +384,9 @@ class _PendingAction:
 
 class WebSocketActionManager:
     def __init__(self, timeout: float) -> None:
+        if not isfinite(timeout) or timeout <= 0:
+            msg = "WebSocket action timeout must be finite and positive"
+            raise ValueError(msg)
         self.timeout = timeout
         self._sessions: list[WebSocketActionSession] = []
         self._pending: dict[str, _PendingAction] = {}
@@ -443,6 +397,9 @@ class WebSocketActionManager:
         return session
 
     def bind_self(self, session: WebSocketActionSession, self_: BotSelf) -> None:
+        if not any(current is session for current in self._sessions):
+            msg = "WebSocket action session is not registered"
+            raise LookupError(msg)
         session.selfs.add(self_)
         if __debug__:
             logger.trace(
@@ -452,8 +409,9 @@ class WebSocketActionManager:
             )
 
     def unregister(self, session: WebSocketActionSession) -> None:
-        with suppress(ValueError):
-            self._sessions.remove(session)
+        self._sessions = [
+            current for current in self._sessions if current is not session
+        ]
         exc = ConnectionError("WebSocket action connection closed")
         for echo, pending in list(self._pending.items()):
             if pending.session is session:
@@ -464,7 +422,7 @@ class WebSocketActionManager:
     async def request(
         self,
         self_: BotSelf,
-        build_payload: Callable[[str], bytes],
+        build_payload: Callable[[str], str],
     ) -> ActionResponse:
         session = self._session_for(self_)
         if session is None:
@@ -476,18 +434,25 @@ class WebSocketActionManager:
         future: Future[ActionResponse] = loop.create_future()
         self._pending[echo] = _PendingAction(session=session, future=future)
         try:
-            if __debug__:
-                logger.debug(
-                    "send WebSocket action request: {echo} @ {self_}",
-                    echo=echo,
-                    self_=self_,
-                )
-            await session.websocket.send_bytes(build_payload(echo))
-            return await wait_for(future, timeout=self.timeout)
+            async with timeout(self.timeout):
+                if __debug__:
+                    logger.debug(
+                        "send WebSocket action request: {echo} @ {self_}",
+                        echo=echo,
+                        self_=self_,
+                    )
+                await session.websocket.send_text(build_payload(echo))
+                return await future
         finally:
             self._pending.pop(echo, None)
+            if not future.done():
+                future.cancel()
 
-    def receive(self, response: ActionResponse) -> bool:
+    def receive(
+        self,
+        session: WebSocketActionSession,
+        response: ActionResponse,
+    ) -> bool:
         echo = response.echo
         if echo is None:
             logger.warning(
@@ -503,8 +468,16 @@ class WebSocketActionManager:
                 response=response,
             )
             return False
-        if not pending.future.done():
-            pending.future.set_result(response)
+        if pending.session is not session:
+            logger.warning(
+                "mismatched WebSocket action response source: echo={echo} {response}",
+                echo=echo,
+                response=response,
+            )
+            return False
+        if pending.future.done():
+            return False
+        pending.future.set_result(response)
         if __debug__:
             logger.debug(
                 "receive WebSocket action response: echo={echo} {response}",
@@ -526,10 +499,8 @@ class WebSocketActionManager:
         self._sessions.clear()
 
     def _session_for(self, self_: BotSelf) -> WebSocketActionSession | None:
-        for session in self._sessions:
-            if self_ in session.selfs:
-                return session
-        return self._sessions[0] if self._sessions else None
+        matches = [session for session in self._sessions if self_ in session.selfs]
+        return matches[0] if len(matches) == 1 else None
 
 
 def json_response(status: int, payload: BaseModel | JsonValue) -> Response:
@@ -561,49 +532,91 @@ def access_token_value(access_token: AccessToken) -> str | None:
 
 
 def bearer_or_query_token(source: object) -> str | None:
-    authorization = header_value(getattr(source, "headers", None), "Authorization")
-    if authorization is None:
-        connector = getattr(source, "_connector", None)
-        authorization = header_value(
-            getattr(connector, "headers", None), "Authorization"
-        )
-    if authorization is not None:
+    authorizations = _field_values(
+        getattr(source, "headers", None),
+        "Authorization",
+        case_insensitive=True,
+    )
+    if authorizations:
+        if len(authorizations) != 1 or not isinstance(authorizations[0], str):
+            return None
+        authorization = authorizations[0]
         prefix = "Bearer "
-        if authorization.startswith(prefix):
-            return authorization[len(prefix) :]
+        return (
+            authorization[len(prefix) :] if authorization.startswith(prefix) else None
+        )
 
     query_params = getattr(source, "query_params", None)
-    get_first = getattr(query_params, "get_first", None)
-    if callable(get_first):
-        value = get_first("access_token")
-    else:
-        get = getattr(query_params, "get", None)
-        value = get("access_token", None) if callable(get) else None
+    values = _field_values(query_params, "access_token")
+    if not values:
+        target = _request_target_parts(source)
+        if target is None:
+            return None
+        values = parse_qs(target[1], keep_blank_values=True).get(
+            "access_token",
+            [],
+        )
 
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list | tuple) and value and isinstance(value[0], str):
-        return value[0]
-    return None
+    return values[0] if len(values) == 1 and isinstance(values[0], str) else None
+
+
+def request_target_path(source: object) -> str | None:
+    target = _request_target_parts(source)
+    return target[0] if target is not None else None
+
+
+def _request_target_parts(source: object) -> tuple[str, str] | None:
+    target = getattr(source, "path", None)
+    if not isinstance(target, str):
+        return None
+    path, _, query = target.partition("?")
+    if not path.startswith("/") or path.startswith("//") or "#" in target:
+        return None
+    return path, query
+
+
+def _field_values(
+    fields: object,
+    name: str,
+    *,
+    case_insensitive: bool = False,
+) -> list[object]:
+    get_all = getattr(fields, "get_all", None)
+    if callable(get_all):
+        values = get_all(name)
+        if not values and case_insensitive and name.lower() != name:
+            values = get_all(name.lower())
+        if values is None:
+            return []
+        return list(values) if isinstance(values, list | tuple) else [values]
+
+    if not isinstance(fields, Mapping):
+        return []
+
+    matches: list[object] = []
+    target = name.casefold() if case_insensitive else name
+    for key, value in fields.items():
+        if not isinstance(key, str):
+            continue
+        candidate = key.casefold() if case_insensitive else key
+        if candidate != target:
+            continue
+        if isinstance(value, list | tuple):
+            matches.extend(value)
+        else:
+            matches.append(value)
+    return matches
 
 
 def header_value(headers: object, name: str) -> str | None:
-    get = getattr(headers, "get", None)
-    if callable(get):
-        for key in (name, name.lower()):
-            value = get(key)
-            if isinstance(value, str):
-                return value
-
-    if isinstance(headers, Mapping):
-        for key, value in headers.items():
-            if isinstance(key, str) and key.lower() == name.lower():
-                return value if isinstance(value, str) else None
-    return None
+    values = _field_values(headers, name, case_insensitive=True)
+    return values[0] if len(values) == 1 and isinstance(values[0], str) else None
 
 
 def token_matches(expected: str | None, actual: str | None) -> bool:
-    return expected is None or (actual is not None and compare_digest(actual, expected))
+    return expected is None or (
+        actual is not None and compare_digest(actual.encode(), expected.encode())
+    )
 
 
 __all__ = [
@@ -613,11 +626,14 @@ __all__ = [
     "WebSocketActionManager",
     "WebSocketActionSession",
     "WebSocketConnection",
+    "WebsocketsConnection",
     "access_token_value",
     "bearer_or_query_token",
+    "connect_websocket",
     "empty_response",
     "header_value",
     "json_response",
+    "request_target_path",
     "text_response",
     "token_matches",
 ]

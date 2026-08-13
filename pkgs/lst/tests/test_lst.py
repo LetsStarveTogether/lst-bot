@@ -1,71 +1,129 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from lst import ClusterConfig, LstClient, ServerConfig
 
+type ConsoleOperation = Callable[[LstClient, list[int]], None]
+type SystemdOperation = Callable[[LstClient, list[int]], None]
 
-class FakeSystemdInterface:
+
+class RecordingSystemd:
     def __init__(self) -> None:
         self.calls: list[tuple[str, bytes, bytes]] = []
 
-    def StartUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # ruff:ignore[invalid-function-name]
+    def StartUnit(  # ruff:ignore[invalid-function-name]
+        self,
+        unit_name: bytes,
+        mode: bytes,
+    ) -> bytes:
         self.calls.append(("StartUnit", unit_name, mode))
         return b"/job/start"
 
-    def StopUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # ruff:ignore[invalid-function-name]
+    def StopUnit(  # ruff:ignore[invalid-function-name]
+        self,
+        unit_name: bytes,
+        mode: bytes,
+    ) -> bytes:
         self.calls.append(("StopUnit", unit_name, mode))
         return b"/job/stop"
 
-    def RestartUnit(self, unit_name: bytes, mode: bytes) -> bytes:  # ruff:ignore[invalid-function-name]
+    def RestartUnit(  # ruff:ignore[invalid-function-name]
+        self,
+        unit_name: bytes,
+        mode: bytes,
+    ) -> bytes:
         self.calls.append(("RestartUnit", unit_name, mode))
         return b"/job/restart"
 
 
-class BlockingSystemdClient(LstClient):
-    @property
-    def systemd_manager(self) -> object:
-        msg = "systemd manager should not be loaded"
+class RejectSystemdAccess:
+    def __getattr__(self, name: str) -> object:
+        msg = f"console command unexpectedly accessed systemd: {name}"
         raise AssertionError(msg)
 
 
-def test_lst_client_writes_console_commands(tmp_path: Path) -> None:
-    (tmp_path / "1").mkdir()
-    (tmp_path / "2").mkdir()
-    client = LstClient(data_path=tmp_path)
-
-    client.save_rooms([1, 2])
-
-    paths = [tmp_path / "1" / "console", tmp_path / "2" / "console"]
-    assert paths[0].read_text(encoding="utf-8") == "c_save()\n"
-    assert paths[1].read_text(encoding="utf-8") == "c_save()\n"
-
-
-def test_lst_client_console_commands_do_not_load_systemd(tmp_path: Path) -> None:
-    (tmp_path / "1").mkdir()
-    client = BlockingSystemdClient(data_path=tmp_path)
-
-    client.save_rooms([1])
-
-    assert (tmp_path / "1" / "console").read_text(encoding="utf-8") == "c_save()\n"
-
-
-def test_lst_client_formats_console_commands(tmp_path: Path) -> None:
-    (tmp_path / "1").mkdir()
-    client = LstClient(data_path=tmp_path)
-
-    client.rollback_rooms([1], 3)
-    assert (tmp_path / "1" / "console").read_text(encoding="utf-8") == (
-        "c_rollback(3)\n"
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        (lambda client, rooms: client.save_rooms(rooms), "c_save()\n"),
+        (lambda client, rooms: client.rollback_rooms(rooms, 3), "c_rollback(3)\n"),
+        (
+            lambda client, rooms: client.regenerate_rooms(rooms),
+            "c_regenerateworld()\n",
+        ),
+    ],
+    ids=["save", "rollback", "regenerate"],
+)
+def test_console_operations_write_each_room(
+    tmp_path: Path,
+    operation: ConsoleOperation,
+    expected: str,
+) -> None:
+    for room_id in (1, 2):
+        (tmp_path / str(room_id)).mkdir()
+    client = LstClient(
+        data_path=tmp_path,
+        systemd_manager=RejectSystemdAccess(),
     )
 
-    client.regenerate_rooms([1])
-    assert (tmp_path / "1" / "console").read_text(encoding="utf-8") == (
-        "c_regenerateworld()\n"
+    operation(client, [1, 2])
+
+    assert (tmp_path / "1" / "console").read_text(encoding="utf-8") == expected
+    assert (tmp_path / "2" / "console").read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [("say('hello')", "say('hello')\n"), ("say('hello')\n", "say('hello')\n")],
+    ids=["append-newline", "preserve-newline"],
+)
+def test_send_console_command_writes_exactly_one_trailing_newline(
+    tmp_path: Path,
+    command: str,
+    expected: str,
+) -> None:
+    (tmp_path / "1").mkdir()
+    client = LstClient(data_path=tmp_path)
+
+    client.send_console_command((1,), command)
+
+    assert (tmp_path / "1" / "console").read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize(
+    ("operation", "method"),
+    [
+        (lambda client, rooms: client.start_rooms(rooms), "StartUnit"),
+        (lambda client, rooms: client.stop_rooms(rooms), "StopUnit"),
+        (lambda client, rooms: client.restart_rooms(rooms), "RestartUnit"),
+    ],
+    ids=["start", "stop", "restart"],
+)
+def test_systemd_operations_pass_exact_unit_and_mode(
+    tmp_path: Path,
+    operation: SystemdOperation,
+    method: str,
+) -> None:
+    manager = RecordingSystemd()
+    client = LstClient(
+        data_path=tmp_path,
+        service_template_name=b"custom-dst",
+        systemd_mode=b"fail",
+        systemd_manager=manager,
     )
 
+    operation(client, [1, 12])
 
-def test_lst_ini_configs_round_trip_typed_values(tmp_path: Path) -> None:
+    assert manager.calls == [
+        (method, b"custom-dst@1.service", b"fail"),
+        (method, b"custom-dst@12.service", b"fail"),
+    ]
+
+
+def test_ini_configs_round_trip_typed_values(tmp_path: Path) -> None:
     cluster_path = tmp_path / "Cluster_1" / "cluster.ini"
     server_path = tmp_path / "Cluster_1" / "Master" / "server.ini"
     cluster = ClusterConfig.model_validate({
@@ -84,9 +142,9 @@ def test_lst_ini_configs_round_trip_typed_values(tmp_path: Path) -> None:
 
     cluster.save(cluster_path)
     server.save(server_path)
+
     loaded_cluster = ClusterConfig.load(cluster_path)
     loaded_server = ServerConfig.load(server_path)
-
     assert "console_enabled = false" in cluster_path.read_text(encoding="utf-8")
     assert loaded_cluster.misc.console_enabled is False
     assert loaded_cluster.shard.shard_enabled is True
@@ -98,39 +156,3 @@ def test_lst_ini_configs_round_trip_typed_values(tmp_path: Path) -> None:
     assert loaded_server.shard.name == "Caves"
     assert loaded_server.shard.id == 2
     assert loaded_server.network.server_port == 11000
-
-
-def test_lst_client_controls_dst_systemd_units_without_waiting(
-    tmp_path: Path,
-) -> None:
-    manager = FakeSystemdInterface()
-    client = LstClient(
-        data_path=tmp_path,
-        systemd_manager=manager,
-    )
-
-    client.restart_rooms([1, 2])
-    client.stop_rooms([3])
-    client.start_rooms([4])
-
-    assert manager.calls == [
-        ("RestartUnit", b"dst@1.service", b"replace"),
-        ("RestartUnit", b"dst@2.service", b"replace"),
-        ("StopUnit", b"dst@3.service", b"replace"),
-        ("StartUnit", b"dst@4.service", b"replace"),
-    ]
-
-
-def test_lst_client_accepts_custom_service_template_name(tmp_path: Path) -> None:
-    manager = FakeSystemdInterface()
-    client = LstClient(
-        data_path=tmp_path,
-        service_template_name=b"custom-dst",
-        systemd_manager=manager,
-    )
-
-    client.restart_rooms([12])
-
-    assert manager.calls == [
-        ("RestartUnit", b"custom-dst@12.service", b"replace"),
-    ]

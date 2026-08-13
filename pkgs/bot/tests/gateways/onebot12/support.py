@@ -1,49 +1,56 @@
 from __future__ import annotations
 
-from typing import override
-
-from bot import ActionResponse, Bot, BotSelf
-from bot.gateways.onebot12 import HttpAction, OneBot12Gateway
-from bot.protocol.actions import ActionParamModel
+from bot import BotSelf
 from pydantic import JsonValue
 
-from tests.gateways.support import (
-    FakePool,
-    QueuedRequest,
-    QueuedWebSocket,
-    RobynServer,
-    response_body,
-)
+SELF = BotSelf(platform="qq", user_id="10000")
 
 
-class CaptureOneBot12Gateway(OneBot12Gateway):
-    @override
-    def __init__(self, bot: Bot) -> None:
-        super().__init__(bot, action=HttpAction(base_url="https://capture.invalid"))
-        self.calls: list[tuple[str, dict[str, JsonValue], BotSelf | None]] = []
-
-    @override
-    async def _request_http_action(
-        self,
-        backend: HttpAction,
-        action: str,
-        params: ActionParamModel,
-        self_: BotSelf | None,
-    ) -> ActionResponse:
-        _ = backend
-        self.calls.append((
-            action,
-            params.model_dump(mode="json", by_alias=True),
-            self_,
-        ))
-        return ActionResponse.ok({"message_id": "out-1", "time": 1.0})
+def private_message_payload(message: str = "hello") -> dict[str, JsonValue]:
+    return {
+        "id": "evt-private",
+        "self": SELF.model_dump(mode="json"),
+        "time": 1.0,
+        "type": "message",
+        "detail_type": "private",
+        "sub_type": "",
+        "message_id": "message-1",
+        "message": [{"type": "text", "data": {"text": message}}],
+        "alt_message": message,
+        "user_id": "42",
+    }
 
 
-__all__ = [
-    "CaptureOneBot12Gateway",
-    "FakePool",
-    "QueuedRequest",
-    "QueuedWebSocket",
-    "RobynServer",
-    "response_body",
-]
+def connect_payload(*, impl: str = "test") -> dict[str, JsonValue]:
+    return {
+        "id": "evt-connect",
+        "time": 1.0,
+        "type": "meta",
+        "detail_type": "connect",
+        "sub_type": "",
+        "version": {
+            "impl": impl,
+            "version": "1.0.0",
+            "onebot_version": "12",
+        },
+    }
+
+
+def status_payload(*selfs: BotSelf) -> dict[str, JsonValue]:
+    return {
+        "id": "evt-status",
+        "time": 1.0,
+        "type": "meta",
+        "detail_type": "status_update",
+        "sub_type": "",
+        "status": {
+            "good": True,
+            "bots": [
+                {"self": self_.model_dump(mode="json"), "online": True}
+                for self_ in selfs
+            ],
+        },
+    }
+
+
+__all__ = ["SELF", "connect_payload", "private_message_payload", "status_payload"]

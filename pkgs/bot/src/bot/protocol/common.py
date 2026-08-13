@@ -29,7 +29,7 @@ class BotSelf(Model):
 class Version(Model):
     impl: StrictStr
     version: StrictStr
-    onebot_version: Literal["12"] = "12"
+    onebot_version: Literal["12"]
 
     def __str__(self) -> str:
         return f"{self.impl}@{self.version} ob{self.onebot_version}"
@@ -54,7 +54,7 @@ class BotStatus(Model):
 
 class Status(Model):
     good: StrictBool
-    bots: list[BotStatus] = Field(default_factory=list)
+    bots: list[BotStatus]
 
     def __str__(self) -> str:
         state = "good" if self.good else "bad"

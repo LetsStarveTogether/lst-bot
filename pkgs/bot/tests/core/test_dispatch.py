@@ -27,10 +27,9 @@ from bot import (
     ReturnEffect,
 )
 from bot.protocol.actions import ActionParamModel
+from bot.testing import RecordingGateway
 from diwire import Lifetime, Scope
 from logbook import TestHandler as LogbookTestHandler
-
-from tests.conftest import EventFactory, RecordingGateway, RecordingGatewayFactory
 
 
 @dataclass(frozen=True)
@@ -46,6 +45,12 @@ class RequestService:
 class Greeter:
     def reply(self, value: str) -> str:
         return f"pong {value}".strip()
+
+
+def recording_gateway(bot: Bot) -> RecordingGateway:
+    gateway = RecordingGateway(bot)
+    bot.add_gateway(gateway)
+    return gateway
 
 
 class FailingActionGateway(RecordingGateway):
@@ -95,10 +100,20 @@ def message_event_payload(
     return payload
 
 
-async def test_dispatch_runs_matching_cmd_with_injection(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+def make_event(
+    text: str,
+    *,
+    user_id: str = "42",
+    event_id: str = "evt-1",
+) -> PrivateMessageEvent:
+    event = EventPayload.model_validate(
+        message_event_payload(text, user_id=user_id, event_id=event_id)
+    ).root
+    assert isinstance(event, PrivateMessageEvent)
+    return event
+
+
+async def test_dispatch_runs_matching_cmd_with_injection() -> None:
     bot = Bot()
     bot.container.add_instance(Service("pong"), provides=Service)
     gateway = recording_gateway(bot)
@@ -108,17 +123,16 @@ async def test_dispatch_runs_matching_cmd_with_injection(
     def ping(event: Injected[PrivateMessageEvent], service: Injected[Service]) -> None:
         seen.append(f"{event.user_id}:{service.value}")
 
-    await bot.dispatch(
-        gateway.connection,
-        make_event("/ping", user_id="42"),
-    )
+    async with bot:
+        await bot.dispatch(
+            gateway.connection,
+            make_event("/ping", user_id="42"),
+        )
 
     assert seen == ["42:pong"]
 
 
-async def test_connection_send_msg_builds_standard_action(
-    recording_gateway: RecordingGatewayFactory,
-) -> None:
+async def test_connection_send_msg_builds_standard_action() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -135,9 +149,7 @@ async def test_connection_send_msg_builds_standard_action(
     }
 
 
-async def test_connection_action_failed_response_raises(
-    make_event: EventFactory,
-) -> None:
+async def test_connection_action_failed_response_raises() -> None:
     bot = Bot()
     gateway = FailingActionGateway(bot)
     bot.add_gateway(gateway)
@@ -147,7 +159,8 @@ async def test_connection_action_failed_response_raises(
         await connection.send_msg("pong", user_id="42")
 
     with LogbookTestHandler() as handler:
-        results = await bot.dispatch(gateway.connection, make_event("ping"))
+        async with bot:
+            results = await bot.dispatch(gateway.connection, make_event("ping"))
 
     exception = results[0].exception
     assert isinstance(exception, RuntimeError)
@@ -160,10 +173,7 @@ async def test_connection_action_failed_response_raises(
     )
 
 
-async def test_dispatch_injects_connection_and_enforces_permission(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_injects_connection_and_enforces_permission() -> None:
     bot = Bot(cmd_prefixes=("!",), admin_ids={"u1"})
     bot.container.add_instance(Greeter(), provides=Greeter)
     gateway = recording_gateway(bot)
@@ -181,10 +191,11 @@ async def test_dispatch_injects_connection_and_enforces_permission(
             message=Msg.t(greeter.reply(cmd.arg)),
         )
 
-    results = await bot.dispatch(
-        gateway.connection,
-        make_event("!ping hi", user_id="u1"),
-    )
+    async with bot:
+        results = await bot.dispatch(
+            gateway.connection,
+            make_event("!ping hi", user_id="u1"),
+        )
 
     assert len(results) == 1
     assert results[0].values == []
@@ -195,9 +206,7 @@ async def test_dispatch_injects_connection_and_enforces_permission(
     ]
 
 
-async def test_admin_permission_allows_bot_admin_or_sender_admin(
-    recording_gateway: RecordingGatewayFactory,
-) -> None:
+async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
     bot = Bot(admin_ids={"root"})
     gateway = recording_gateway(bot)
     seen: list[str] = []
@@ -206,39 +215,37 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin(
     def secure(cmd: Injected[Cmd]) -> None:
         seen.append(cmd.arg)
 
-    for payload in [
-        message_event_payload("/secure bot", user_id="root", event_id="bot-admin"),
-        message_event_payload(
-            "/secure group",
-            user_id="group-admin",
-            event_id="group-admin",
-            sender_role="admin",
-        ),
-        message_event_payload(
-            "/secure owner",
-            user_id="group-owner",
-            event_id="group-owner",
-            sender_role="owner",
-        ),
-        message_event_payload(
-            "/secure member",
-            user_id="member",
-            event_id="member",
-            sender_role="member",
-        ),
-    ]:
-        await bot.dispatch(
-            gateway.connection,
-            EventPayload.model_validate(payload).root,
-        )
+    async with bot:
+        for payload in [
+            message_event_payload("/secure bot", user_id="root", event_id="bot-admin"),
+            message_event_payload(
+                "/secure group",
+                user_id="group-admin",
+                event_id="group-admin",
+                sender_role="admin",
+            ),
+            message_event_payload(
+                "/secure owner",
+                user_id="group-owner",
+                event_id="group-owner",
+                sender_role="owner",
+            ),
+            message_event_payload(
+                "/secure member",
+                user_id="member",
+                event_id="member",
+                sender_role="member",
+            ),
+        ]:
+            await bot.dispatch(
+                gateway.connection,
+                EventPayload.model_validate(payload).root,
+            )
 
     assert seen == ["bot", "group", "owner"]
 
 
-async def test_dispatch_auto_replies_string_return(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_auto_replies_string_return() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -246,7 +253,8 @@ async def test_dispatch_auto_replies_string_return(
     def handle() -> str:
         return "pong"
 
-    results = await bot.dispatch(gateway.connection, make_event("ping"))
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert results[0].values == ["pong"]
     assert len(results[0].effects) == 1
@@ -265,10 +273,7 @@ async def test_dispatch_auto_replies_string_return(
     }
 
 
-async def test_dispatch_executes_list_returns_in_order(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_executes_list_returns_in_order() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -276,7 +281,8 @@ async def test_dispatch_executes_list_returns_in_order(
     def handle() -> list[Msg]:
         return [Msg.from_input("one"), Msg.from_input("two")]
 
-    results = await bot.dispatch(gateway.connection, make_event("ping"))
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("ping"))
 
     effects = results[0].effects
     assert all(isinstance(effect, ReturnEffect) for effect in effects)
@@ -295,10 +301,7 @@ async def test_dispatch_executes_list_returns_in_order(
     ]
 
 
-async def test_dispatch_executes_action_returns(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_executes_action_returns() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -319,7 +322,8 @@ async def test_dispatch_executes_action_returns(
             }),
         ]
 
-    results = await bot.dispatch(gateway.connection, make_event("ping"))
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [action.root.action for action in gateway.actions] == [
         "send_message",
@@ -329,10 +333,7 @@ async def test_dispatch_executes_action_returns(
     assert [effect.action.kind for effect in results[0].effects] == ["call", "call"]
 
 
-async def test_dispatch_injects_reply_and_mention_helpers(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_injects_reply_and_mention_helpers() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -343,7 +344,11 @@ async def test_dispatch_injects_reply_and_mention_helpers(
     ) -> list[ReturnAction]:
         return [mention(" look"), reply("done")]
 
-    results = await bot.dispatch(gateway.connection, make_event("ping", user_id="u1"))
+    async with bot:
+        results = await bot.dispatch(
+            gateway.connection,
+            make_event("ping", user_id="u1"),
+        )
 
     assert [effect.action.kind for effect in results[0].effects] == [
         "message",
@@ -367,10 +372,7 @@ async def test_dispatch_injects_reply_and_mention_helpers(
     ]
 
 
-async def test_dispatch_rejects_unsupported_return_values(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_rejects_unsupported_return_values() -> None:
     cases = [
         (True, "bool"),
         ({"not": "supported"}, "dict"),
@@ -382,10 +384,11 @@ async def test_dispatch_rejects_unsupported_return_values(
 
         bot.on_msg(block=True)(return_value_handler(value))
 
-        results = await bot.dispatch(
-            gateway.connection,
-            make_event(f"ping-{type_name}"),
-        )
+        async with bot:
+            results = await bot.dispatch(
+                gateway.connection,
+                make_event(f"ping-{type_name}"),
+            )
 
         assert len(results) == 1
         exception = results[0].exception
@@ -393,10 +396,7 @@ async def test_dispatch_rejects_unsupported_return_values(
         assert str(exception) == f"Unsupported handler return value: {type_name}"
 
 
-async def test_dispatch_stops_batch_on_return_execution_error(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_stops_batch_on_return_execution_error() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -408,7 +408,8 @@ async def test_dispatch_stops_batch_on_return_execution_error(
             Msg.from_input("never"),
         ]
 
-    results = await bot.dispatch(gateway.connection, make_event("ping"))
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [action.root.action for action in gateway.actions] == ["send_message"]
     assert len(results) == 1
@@ -417,10 +418,7 @@ async def test_dispatch_stops_batch_on_return_execution_error(
     assert str(exception) == "Unsupported handler return value: dict"
 
 
-async def test_dispatch_continues_after_failed_blocking_route(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_continues_after_failed_blocking_route() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
@@ -434,7 +432,8 @@ async def test_dispatch_continues_after_failed_blocking_route(
     def recover() -> None:
         seen.append("recovered")
 
-    results = await bot.dispatch(gateway.connection, make_event("anything"))
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["recovered"]
     assert len(results) == 2
@@ -442,10 +441,31 @@ async def test_dispatch_continues_after_failed_blocking_route(
     assert results[1].exception is None
 
 
-async def test_dispatch_records_check_and_dependency_exceptions(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_treats_handler_timeout_error_as_a_route_error() -> None:
+    bot = Bot()
+    gateway = recording_gateway(bot)
+    seen: list[str] = []
+
+    @bot.on_msg(priority=1, block=True)
+    def fail() -> None:
+        msg = "business timeout"
+        raise TimeoutError(msg)
+
+    @bot.on_msg(priority=2, block=True)
+    def recover() -> None:
+        seen.append("recovered")
+
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("anything"))
+
+    assert seen == ["recovered"]
+    assert len(results) == 2
+    assert isinstance(results[0].exception, TimeoutError)
+    assert str(results[0].exception) == "business timeout"
+    assert results[1].exception is None
+
+
+async def test_dispatch_records_check_and_dependency_exceptions() -> None:
     bot = Bot()
     router = EventRouter()
     gateway = recording_gateway(bot)
@@ -481,7 +501,8 @@ async def test_dispatch_records_check_and_dependency_exceptions(
 
     bot.add_router(router)
 
-    results = await bot.dispatch(gateway.connection, make_event("anything"))
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["recovered"]
     exceptions = [result.exception for result in results]
@@ -491,10 +512,7 @@ async def test_dispatch_records_check_and_dependency_exceptions(
     assert exceptions[3] is None
 
 
-async def test_dispatch_respects_priority_and_block(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_respects_priority_and_block() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
@@ -507,15 +525,13 @@ async def test_dispatch_respects_priority_and_block(
     def early() -> None:
         seen.append("early")
 
-    await bot.dispatch(gateway.connection, make_event("anything"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["early"]
 
 
-async def test_dispatch_cmd_blocks_by_default(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_cmd_blocks_by_default() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
@@ -528,15 +544,13 @@ async def test_dispatch_cmd_blocks_by_default(
     def message() -> None:
         seen.append("message")
 
-    await bot.dispatch(gateway.connection, make_event("/ping"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("/ping"))
 
     assert seen == ["command"]
 
 
-async def test_dispatch_cmd_can_opt_out_of_blocking(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_cmd_can_opt_out_of_blocking() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
@@ -549,15 +563,13 @@ async def test_dispatch_cmd_can_opt_out_of_blocking(
     def message() -> None:
         seen.append("message")
 
-    await bot.dispatch(gateway.connection, make_event("/ping"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("/ping"))
 
     assert seen == ["command", "message"]
 
 
-async def test_dispatch_uses_request_scoped_container_dependencies(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_uses_request_scoped_container_dependencies() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     created: list[RequestService] = []
@@ -579,16 +591,20 @@ async def test_dispatch_uses_request_scoped_container_dependencies(
     def handle(service: Injected[RequestService]) -> None:
         seen.append(service.value)
 
-    await bot.dispatch(gateway.connection, make_event("first", event_id="evt-first"))
-    await bot.dispatch(gateway.connection, make_event("second", event_id="evt-second"))
+    async with bot:
+        await bot.dispatch(
+            gateway.connection,
+            make_event("first", event_id="evt-first"),
+        )
+        await bot.dispatch(
+            gateway.connection,
+            make_event("second", event_id="evt-second"),
+        )
 
     assert seen == [1, 2]
 
 
-async def test_dispatch_timeout_cancels_current_route_and_future_dispatch_recovers(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers() -> None:
     bot = Bot(dispatch_timeout=timedelta(seconds=0.01))
     gateway = recording_gateway(bot)
     slow_cancelled = AsyncEvent()
@@ -611,11 +627,12 @@ async def test_dispatch_timeout_cancels_current_route_and_future_dispatch_recove
     def fast() -> None:
         seen.append("fast")
 
-    results = await bot.dispatch(gateway.connection, make_event("slow"))
-    fast_results = await bot.dispatch(
-        gateway.connection,
-        make_event("fast", event_id="evt-fast"),
-    )
+    async with bot:
+        results = await bot.dispatch(gateway.connection, make_event("slow"))
+        fast_results = await bot.dispatch(
+            gateway.connection,
+            make_event("fast", event_id="evt-fast"),
+        )
 
     assert slow_cancelled.is_set()
     assert len(results) == 1
@@ -625,21 +642,25 @@ async def test_dispatch_timeout_cancels_current_route_and_future_dispatch_recove
     assert fast_results[0].exception is None
 
 
-async def test_dispatch_external_cancellation_propagates(
-    recording_gateway: RecordingGatewayFactory,
-    make_event: EventFactory,
-) -> None:
+async def test_dispatch_external_cancellation_propagates() -> None:
     bot = Bot(dispatch_timeout=None)
     gateway = recording_gateway(bot)
     started = AsyncEvent()
+    release = AsyncEvent()
+    completed = AsyncEvent()
 
     @bot.on_msg(block=True)
     async def slow() -> None:
         started.set()
-        await AsyncEvent().wait()
+        await release.wait()
+        completed.set()
 
-    task = create_task(bot.dispatch(gateway.connection, make_event("slow")))
-    await started.wait()
-    task.cancel()
-    with pytest.raises(CancelledError):
-        await task
+    async with bot:
+        task = create_task(bot.dispatch(gateway.connection, make_event("slow")))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(CancelledError):
+            await task
+        assert not completed.is_set()
+        release.set()
+        await completed.wait()

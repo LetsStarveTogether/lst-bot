@@ -1,46 +1,57 @@
 from __future__ import annotations
 
+from asyncio import Event, QueueFull, TaskGroup
+from hashlib import sha1
+from hmac import new
 from http import HTTPStatus
-from typing import cast
+from unittest.mock import AsyncMock, patch
 
+import orjson
+import pytest
 from bot import (
     Bot,
+    Connection,
     Injected,
     Msg,
     PrivateMessageEvent,
     RequestResponse,
     ReturnAction,
 )
-from bot.gateways.onebot11 import HttpWebhook, OneBot11Gateway
+from bot.gateways.onebot11 import HttpAction, HttpWebhook, OneBot11Gateway
 from bot.protocol.base import Model
-from robyn import Response as RobynResponse
-from robyn import Robyn
+from pydantic import JsonValue
+from robyn import Response, Robyn
+from robyn.testing import TestClient as RobynTestClient
 
 from .support import (
-    CaptureOneBot11Gateway,
-    QueuedRequest,
-    RobynServer,
+    ActionServer,
     friend_request_payload,
     group_request_payload,
     private_msg_payload,
-    response_body,
 )
 
 
-async def test_http_webhook_event_dispatches_and_returns_no_content() -> None:
+def response_json(response: Response) -> JsonValue:
+    return orjson.loads(response.description)
+
+
+async def test_http_webhook_dispatches_event_and_returns_no_content() -> None:
     bot = Bot()
     gateway = OneBot11Gateway(bot)
     bot.add_gateway(gateway)
-    events: list[str] = []
+    messages: list[str] = []
 
     @bot.on_msg()
     def collect(event: Injected[PrivateMessageEvent]) -> None:
-        events.append(event.message.text)
+        messages.append(event.message.text)
 
-    response = await gateway.handle_http(Model.model_validate(private_msg_payload()))
+    async with bot:
+        response = await gateway.handle_http(
+            Model.model_validate(private_msg_payload())
+        )
 
     assert response.status_code == HTTPStatus.NO_CONTENT
-    assert events == ["hello"]
+    assert messages == ["hello"]
 
 
 async def test_http_webhook_rejects_invalid_event_shape() -> None:
@@ -48,51 +59,51 @@ async def test_http_webhook_rejects_invalid_event_shape() -> None:
     payload = {**private_msg_payload(), "self_id": True}
 
     response = await gateway.handle_http(Model.model_validate(payload))
-    description = (
-        response.description.decode()
-        if isinstance(response.description, bytes)
-        else response.description
-    )
 
     assert response.status_code == HTTPStatus.BAD_REQUEST
-    assert "self_id" in description
+    assert "self_id" in str(response.description)
 
 
-async def test_http_webhook_quick_reply_falls_back_after_first_reply() -> None:
-    bot = Bot()
-    gateway = CaptureOneBot11Gateway(bot)
-    bot.add_gateway(gateway)
+async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> None:
+    async with ActionServer() as server:
+        bot = Bot()
+        gateway = OneBot11Gateway(
+            bot,
+            action=HttpAction(server.base_url),
+        )
+        bot.add_gateway(gateway)
 
-    @bot.on_msg(block=True)
-    def collect() -> list[Msg | ReturnAction]:
-        return [
-            Msg.from_input("one"),
-            Msg.from_input("two"),
-            ReturnAction.call("get_user_info", {"user_id": "42"}),
-        ]
+        @bot.on_msg(block=True)
+        def collect() -> list[Msg | ReturnAction]:
+            return [
+                Msg.from_input("one"),
+                Msg.from_input("two"),
+                ReturnAction.call("send_like", {"user_id": "42"}),
+            ]
 
-    response = await gateway.handle_http(Model.model_validate(private_msg_payload()))
+        async with bot:
+            response = await gateway.handle_http(
+                Model.model_validate(private_msg_payload())
+            )
 
     assert response.status_code == HTTPStatus.OK
-    assert response.headers["Content-Type"] == "application/json"
-    assert response_body(response) == {
+    assert response_json(response) == {
         "reply": [{"type": "text", "data": {"text": "one"}}],
         "at_sender": False,
     }
-    assert gateway.calls == [
+    assert [(request.path, request.json) for request in server.requests] == [
         (
-            "send_private_msg",
+            "/send_private_msg",
             {
                 "user_id": 42,
                 "message": [{"type": "text", "data": {"text": "two"}}],
             },
-            None,
         ),
-        ("get_stranger_info", {"user_id": 42}, None),
+        ("/send_like", {"user_id": 42}),
     ]
 
 
-async def test_http_webhook_quick_reply_does_not_need_action_backend() -> None:
+async def test_http_quick_reply_does_not_need_action_backend() -> None:
     bot = Bot()
     gateway = OneBot11Gateway(bot)
     bot.add_gateway(gateway)
@@ -101,142 +112,210 @@ async def test_http_webhook_quick_reply_does_not_need_action_backend() -> None:
     def collect() -> str:
         return "pong"
 
-    response = await gateway.handle_http(Model.model_validate(private_msg_payload()))
+    async with bot:
+        response = await gateway.handle_http(
+            Model.model_validate(private_msg_payload())
+        )
 
     assert response.status_code == HTTPStatus.OK
-    assert response_body(response) == {
+    assert response_json(response) == {
         "reply": [{"type": "text", "data": {"text": "pong"}}],
         "at_sender": False,
     }
 
 
-async def test_http_webhook_quick_friend_request_response() -> None:
-    bot = Bot()
-    gateway = OneBot11Gateway(bot)
-    bot.add_gateway(gateway)
+async def test_http_quick_operation_context_expires_with_response() -> None:
+    release = Event()
+    completed = Event()
 
-    @bot.on_event(block=True)
-    def collect(request: Injected[RequestResponse]) -> ReturnAction:
-        return request.approve(remark="tester")
+    async with ActionServer() as server, TaskGroup() as tasks:
+        bot = Bot()
+        gateway = OneBot11Gateway(bot, action=HttpAction(server.base_url))
+        bot.add_gateway(gateway)
 
-    response = await gateway.handle_http(Model.model_validate(friend_request_payload()))
+        @bot.on_msg(block=True)
+        def reply_later(
+            event: Injected[PrivateMessageEvent],
+            connection: Injected[Connection],
+        ) -> None:
+            async def send() -> None:
+                await release.wait()
+                try:
+                    await connection.execute_return_action(
+                        event,
+                        ReturnAction.message("late"),
+                    )
+                finally:
+                    completed.set()
 
-    assert response.status_code == HTTPStatus.OK
-    assert response_body(response) == {
-        "approve": True,
-        "remark": "tester",
-    }
+            tasks.create_task(send())
 
+        async with bot:
+            response = await gateway.handle_http(
+                Model.model_validate(private_msg_payload())
+            )
+            release.set()
+            await completed.wait()
 
-async def test_http_webhook_quick_group_request_response() -> None:
-    bot = Bot()
-    gateway = OneBot11Gateway(bot)
-    bot.add_gateway(gateway)
-
-    @bot.on_event(block=True)
-    def collect(request: Injected[RequestResponse]) -> ReturnAction:
-        return request.reject("not now")
-
-    response = await gateway.handle_http(Model.model_validate(group_request_payload()))
-
-    assert response.status_code == HTTPStatus.OK
-    assert response_body(response) == {
-        "approve": False,
-        "reason": "not now",
-    }
-
-
-async def test_http_webhook_request_response_falls_back_after_first_operation() -> None:
-    bot = Bot()
-    gateway = CaptureOneBot11Gateway(bot)
-    bot.add_gateway(gateway)
-
-    @bot.on_event(block=True)
-    def collect(request: Injected[RequestResponse]) -> list[ReturnAction]:
-        return [
-            request.reject("first"),
-            ReturnAction.request(False, reason="later"),
-        ]
-
-    response = await gateway.handle_http(Model.model_validate(group_request_payload()))
-
-    assert response.status_code == HTTPStatus.OK
-    assert response_body(response) == {
-        "approve": False,
-        "reason": "first",
-    }
-    assert gateway.calls == [
+    assert response.status_code == HTTPStatus.NO_CONTENT
+    assert [(request.path, request.json) for request in server.requests] == [
         (
-            "set_group_add_request",
+            "/send_private_msg",
             {
-                "flag": "group-flag",
-                "sub_type": "add",
-                "approve": False,
-                "reason": "later",
+                "user_id": 42,
+                "message": [{"type": "text", "data": {"text": "late"}}],
             },
-            None,
-        ),
+        )
     ]
 
 
-def test_http_webhook_mounts_lifecycle_and_route_idempotently() -> None:
+@pytest.mark.parametrize(
+    ("payload", "approve", "expected"),
+    [
+        pytest.param(friend_request_payload(), True, {"remark": "tester"}, id="friend"),
+        pytest.param(group_request_payload(), False, {"reason": "not now"}, id="group"),
+    ],
+)
+async def test_http_request_quick_response(
+    payload: dict[str, JsonValue],
+    approve: bool,
+    expected: dict[str, JsonValue],
+) -> None:
+    bot = Bot()
+    gateway = OneBot11Gateway(bot)
+    bot.add_gateway(gateway)
+
+    @bot.on_event(block=True)
+    def collect(request: Injected[RequestResponse]) -> ReturnAction:
+        if approve:
+            return request.approve(remark="tester")
+        return request.reject("not now")
+
+    async with bot:
+        response = await gateway.handle_http(Model.model_validate(payload))
+
+    assert response.status_code == HTTPStatus.OK
+    assert response_json(response) == {"approve": approve, **expected}
+
+
+def test_robyn_route_enforces_onebot11_http_headers_and_signature() -> None:
+    credential = "secret"
+    bot = Bot()
+    gateway = OneBot11Gateway(
+        bot,
+        ingress=[HttpWebhook("/onebot", secret=credential)],
+    )
+    bot.add_gateway(gateway)
+    app = Robyn(__file__)
+    gateway.mount(app)
+    gateway.mount(app)
+    body = orjson.dumps(private_msg_payload())
+    signature = "sha1=" + new(credential.encode(), body, sha1).hexdigest()
+
+    with (
+        patch.object(bot, "dispatch", AsyncMock(return_value=[])) as dispatch,
+        patch.object(bot, "wait_until_running", AsyncMock()),
+        RobynTestClient(app) as client,
+    ):
+        missing_signature = client.post(
+            "/onebot",
+            body=body,
+            headers={"Content-Type": "application/json", "X-Self-ID": "10000"},
+        )
+        wrong_signature = client.post(
+            "/onebot",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Self-ID": "10000",
+                "X-Signature": "sha1=" + "0" * 40,
+            },
+        )
+        missing_self = client.post(
+            "/onebot",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": signature,
+            },
+        )
+        wrong_self = client.post(
+            "/onebot",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Self-ID": "99999",
+                "X-Signature": signature,
+            },
+        )
+        accepted = client.post(
+            "/onebot",
+            body=body,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "X-Self-ID": "10000",
+                "X-Signature": signature,
+            },
+        )
+
+    assert missing_signature.status_code == HTTPStatus.UNAUTHORIZED
+    assert wrong_signature.status_code == HTTPStatus.UNAUTHORIZED
+    assert missing_self.status_code == HTTPStatus.BAD_REQUEST
+    assert wrong_self.status_code == HTTPStatus.BAD_REQUEST
+    assert accepted.status_code == HTTPStatus.NO_CONTENT
+    dispatch.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("body", "headers", "status"),
+    [
+        pytest.param(
+            b"{",
+            {"Content-Type": "application/json"},
+            HTTPStatus.BAD_REQUEST,
+            id="malformed-json",
+        ),
+        pytest.param(
+            orjson.dumps(private_msg_payload()),
+            {"Content-Type": "text/plain"},
+            HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+            id="wrong-content-type",
+        ),
+    ],
+)
+def test_robyn_route_rejects_invalid_http_payload(
+    body: bytes,
+    headers: dict[str, str],
+    status: HTTPStatus,
+) -> None:
     bot = Bot()
     gateway = OneBot11Gateway(bot, ingress=[HttpWebhook("/onebot")])
     bot.add_gateway(gateway)
-    raw_server = RobynServer()
-    server = cast(Robyn, raw_server)
+    app = Robyn(__file__)
+    gateway.mount(app)
 
-    mounted = gateway.mount(server)
-    mounted_again = gateway.mount(server)
+    with RobynTestClient(app) as client:
+        response = client.post("/onebot", body=body, headers=headers)
 
-    assert mounted is server
-    assert mounted_again is server
-    assert raw_server.startup == bot.start
-    assert raw_server.shutdown == bot.close
-    assert [(method, path) for method, path, _ in raw_server.routes] == [
-        ("POST", "/onebot"),
-    ]
+    assert response.status_code == status
 
 
-async def test_http_webhook_robyn_route_checks_bearer_or_query_token() -> None:
+def test_http_queue_overload_maps_to_service_unavailable() -> None:
     bot = Bot()
-    credential = "secret"
-    gateway = OneBot11Gateway(
-        bot,
-        ingress=[HttpWebhook("/onebot")],
-        access_token=credential,
-    )
+    gateway = OneBot11Gateway(bot, ingress=[HttpWebhook("/onebot")])
     bot.add_gateway(gateway)
-    events: list[str] = []
+    app = Robyn(__file__)
+    gateway.mount(app)
 
-    @bot.on_msg(block=True)
-    def collect(event: Injected[PrivateMessageEvent]) -> None:
-        events.append(event.message.text)
-
-    raw_server = RobynServer()
-    gateway.mount(cast(Robyn, raw_server))
-    post_handler = raw_server.routes[0][2]
-
-    async with bot:
-        rejected = cast(
-            RobynResponse,
-            await post_handler(
-                QueuedRequest(
-                    private_msg_payload(),
-                    headers={"Authorization": "Bearer wrong"},
-                )
-            ),
-        )
-        accepted = cast(
-            RobynResponse,
-            await post_handler(
-                QueuedRequest(
-                    private_msg_payload(),
-                    query_params={"access_token": credential},
-                )
-            ),
+    with (
+        patch.object(bot, "dispatch", AsyncMock(side_effect=QueueFull)),
+        patch.object(bot, "wait_until_running", AsyncMock()),
+        RobynTestClient(app) as client,
+    ):
+        response = client.post(
+            "/onebot",
+            json_data=private_msg_payload(),
+            headers={"X-Self-ID": "10000"},
         )
 
-    assert rejected.status_code == HTTPStatus.UNAUTHORIZED
-    assert accepted.status_code == HTTPStatus.NO_CONTENT
-    assert events == ["hello"]
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE

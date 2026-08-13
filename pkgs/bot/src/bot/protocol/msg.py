@@ -252,6 +252,21 @@ type MsgInput = Msg | MsgSegmentInput | Iterable[MsgSegmentInput] | str | None
 def _msg_input_value(value: object) -> object:
     if isinstance(value, Msg):
         return value.root
+    if isinstance(
+        value,
+        TextSegment
+        | MentionSegment
+        | MentionAllSegment
+        | ImageSegment
+        | VoiceSegment
+        | AudioSegment
+        | VideoSegment
+        | FileSegment
+        | LocationSegment
+        | ReplySegment
+        | ExtensionSegment,
+    ):
+        return [value]
     if value is None:
         return []
     if isinstance(value, str):

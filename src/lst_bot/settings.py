@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from logbook import DEBUG, NOTSET, TRACE, Logger, lookup_level
+from logbook import DEBUG, NOTSET, TRACE, lookup_level
 from logbook.compat import redirect_logging
 from logbook.more import ColorizedStderrHandler
 from pydantic import Field, SecretStr, field_validator
@@ -22,6 +24,7 @@ class Settings(BaseSettings):
     log_level: int = NOTSET
     http_proxy: str = "http://127.0.0.1:1080"
 
+    onebot_self_id: str
     onebot_ws_url: str = ""
     onebot_access_token: SecretStr = SecretStr("")
 
@@ -48,18 +51,29 @@ class Settings(BaseSettings):
         return level
 
 
-settings = Settings()
-logger = Logger(__name__)
-redirect_logging()
-logging.getLogger("httpcore").setLevel(logging.INFO)
-logging.getLogger("websockets").setLevel(logging.INFO)
-logging.getLogger("mcp").setLevel(logging.INFO)
-ColorizedStderrHandler(level=settings.log_level).push_application()
-logger.notice(
-    "settings loaded: log={log_level} admins={admin_count} prefixes={prefixes}",
-    log_level=settings.log_level,
-    admin_count=len(settings.bot_admin),
-    prefixes=",".join(settings.bot_cmd_prefixes),
-)
+@contextmanager
+def configure_logging(settings: Settings) -> Iterator[None]:
+    root = logging.getLogger()
+    handlers = root.handlers[:]
+    root_level = root.level
+    library_loggers = tuple(
+        logging.getLogger(name) for name in ("httpcore", "websockets", "mcp")
+    )
+    library_levels = tuple(logger.level for logger in library_loggers)
+    handler = ColorizedStderrHandler(level=settings.log_level)
 
-__all__ = ["Settings", "logger"]
+    redirect_logging()
+    for logger in library_loggers:
+        logger.setLevel(logging.INFO)
+    handler.push_application()
+    try:
+        yield
+    finally:
+        handler.pop_application()
+        root.handlers[:] = handlers
+        root.setLevel(root_level)
+        for logger, level in zip(library_loggers, library_levels, strict=True):
+            logger.setLevel(level)
+
+
+__all__ = ["Settings", "configure_logging"]

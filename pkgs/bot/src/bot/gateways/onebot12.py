@@ -1,27 +1,42 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, Task, create_task, sleep
+from asyncio import (
+    CancelledError,
+    Lock,
+    QueueFull,
+    Task,
+    create_task,
+    sleep,
+)
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from http import HTTPMethod, HTTPStatus
+from math import isfinite
 from typing import cast, override
 
 from logbook import Logger
 from pydantic import BaseModel, JsonValue, ValidationError
-from robyn import Request, Response, Robyn, WebSocketDisconnect
+from robyn import Request, Response, Robyn
 from urllib3_future import AsyncPoolManager
-from urllib3_future.util import parse_url
-from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
+from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.headers import parse_subprotocol
+from websockets.http11 import Request as WebSocketRequest
+from websockets.http11 import Response as WebSocketResponse
+from websockets.typing import Subprotocol
 
 from bot.core import Bot
 from bot.protocol.actions import ActionParamModel, ActionRequest, ActionResponse
 from bot.protocol.base import Model
 from bot.protocol.common import BotSelf
-from bot.protocol.enums import Retcode
-from bot.protocol.events import EventPayload
+from bot.protocol.constants import NAME_PATTERN
+from bot.protocol.events import (
+    ConnectMetaEvent,
+    EventPayload,
+    MetaEvent,
+    StatusUpdateMetaEvent,
+)
 
 from .base import (
     AccessToken,
@@ -30,10 +45,14 @@ from .base import (
     WebSocketActionManager,
     WebSocketActionSession,
     WebSocketConnection,
+    WebsocketsConnection,
     access_token_value,
     bearer_or_query_token,
+    connect_websocket,
     empty_response,
+    header_value,
     json_response,
+    request_target_path,
     token_matches,
 )
 
@@ -44,16 +63,29 @@ type WebSocketConnector = Callable[
 
 logger = Logger(__name__)
 
+_MAX_PORT = 2**16 - 1
+
 
 @dataclass(frozen=True, slots=True)
 class HttpWebhook:
     path: str = "/onebot/v12/http"
     quick_response: bool = True
 
+    def __post_init__(self) -> None:
+        _validate_ingress_path(self.path)
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ReverseWebSocket:
+    host: str = "127.0.0.1"
+    port: int = 8082
     path: str = "/onebot/v12/ws"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.port, bool) or not 0 <= self.port <= _MAX_PORT:
+            msg = "OneBot 12 reverse WebSocket port must be between 0 and 65535"
+            raise ValueError(msg)
+        _validate_ingress_path(self.path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,37 +93,37 @@ class ForwardWebSocket:
     url: str
     reconnect_interval: float = 3.0
 
+    def __post_init__(self) -> None:
+        if not isfinite(self.reconnect_interval) or self.reconnect_interval <= 0:
+            msg = "OneBot 12 reconnect interval must be positive"
+            raise ValueError(msg)
+
 
 @dataclass(slots=True)
 class HttpAction:
-    base_url: str | None = None
-    quick_response: bool = True
+    base_url: str
     http_pool: AsyncPoolManager | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class WebSocketAction:
     timeout: float = 30.0
-    quick_response: bool = True
 
 
 type Ingress = HttpWebhook | ReverseWebSocket | ForwardWebSocket
 type ActionBackend = HttpAction | WebSocketAction
 
-_HTTP_QUICK_ACTIONS: ContextVar[list[ActionRequest] | None] = ContextVar(
+
+@dataclass(slots=True)
+class _HttpQuickActions:
+    actions: list[ActionRequest] = field(default_factory=list)
+    active: bool = True
+
+
+_HTTP_QUICK_ACTIONS: ContextVar[_HttpQuickActions | None] = ContextVar(
     "bot_onebot12_http_quick_actions",
     default=None,
 )
-
-
-def _payload_kind(data: Mapping[str, JsonValue]) -> str:
-    if "type" in data and "detail_type" in data:
-        return f"event:{data.get('type')}:{data.get('detail_type')}"
-    if "action" in data:
-        return "action"
-    if "status" in data and "retcode" in data:
-        return "action_response"
-    return "unknown"
 
 
 class OneBot12Gateway(Gateway):
@@ -106,38 +138,69 @@ class OneBot12Gateway(Gateway):
     ) -> None:
         super().__init__(bot)
         self.ingress = tuple(ingress)
+        self._validate_ingress()
         self.action_backend = action
         self.access_token = access_token_value(access_token)
-        self.http_pool = (
-            action.http_pool
-            if isinstance(action, HttpAction) and action.http_pool is not None
-            else AsyncPoolManager()
-            if isinstance(action, HttpAction)
-            else None
+        self._owns_http_pool = (
+            isinstance(action, HttpAction) and action.http_pool is None
         )
+        self.http_pool = action.http_pool if isinstance(action, HttpAction) else None
         self._ws_actions = (
             WebSocketActionManager(action.timeout)
             if isinstance(action, WebSocketAction)
             else None
         )
-        self._websocket_connector = websocket_connector or _connect_websockets_client
+        self._websocket_connector = websocket_connector or connect_websocket
         self._forward_tasks: dict[ForwardWebSocket, Task[None]] = {}
+        self._reverse_servers: dict[ReverseWebSocket, Server] = {}
+        self._lifecycle_lock = Lock()
+        self._started = False
+        self._closed = False
         self._closing = False
 
     @override
     async def start(self) -> None:
-        await super().start()
-        self._closing = False
+        async with self._lifecycle_lock:
+            if self._started:
+                return
+            await super().start()
+            self._closing = False
+            self._closed = False
+            try:
+                await self._start_transports()
+            except BaseException:
+                await self._close_transports()
+                raise
+            self._started = True
+
+    async def _start_transports(self) -> None:
         for ingress in self.ingress:
-            if isinstance(ingress, ForwardWebSocket) and (
-                ingress not in self._forward_tasks
-                or self._forward_tasks[ingress].done()
-            ):
+            if isinstance(ingress, ReverseWebSocket):
+                reverse_server = await self._start_reverse_websocket(ingress)
+                self._reverse_servers[ingress] = reverse_server
+        for ingress in self.ingress:
+            if isinstance(ingress, ForwardWebSocket):
                 task = create_task(self._run_forward_websocket(ingress))
                 self._forward_tasks[ingress] = task
 
     @override
     async def close(self) -> None:
+        async with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closing = True
+            if self._started:
+                await self._close_transports()
+            if self._ws_actions is not None:
+                self._ws_actions.fail_all()
+            if self._owns_http_pool and self.http_pool is not None:
+                await self.http_pool.clear()
+                self.http_pool = None
+            await super().close()
+            self._started = False
+            self._closed = True
+
+    async def _close_transports(self) -> None:
         self._closing = True
         for task in self._forward_tasks.values():
             task.cancel()
@@ -145,11 +208,26 @@ class OneBot12Gateway(Gateway):
             with suppress(CancelledError):
                 await task
         self._forward_tasks.clear()
-        if self._ws_actions is not None:
-            self._ws_actions.fail_all()
-        if self.http_pool is not None:
-            await self.http_pool.clear()
-        await super().close()
+        for server in self._reverse_servers.values():
+            server.close()
+        for server in self._reverse_servers.values():
+            await server.wait_closed()
+        self._reverse_servers.clear()
+
+    def _validate_ingress(self) -> None:
+        keys: set[object] = set()
+        for ingress in self.ingress:
+            match ingress:
+                case HttpWebhook(path=path):
+                    key = (HttpWebhook, path)
+                case ReverseWebSocket(host=host, port=port):
+                    key = (ReverseWebSocket, host, port)
+                case ForwardWebSocket(url=url):
+                    key = (ForwardWebSocket, url)
+            if key in keys:
+                msg = "OneBot 12 ingress endpoints must be unique"
+                raise ValueError(msg)
+            keys.add(key)
 
     def mount(self, server: Robyn) -> Robyn:
         if not self._mount_server_once(server):
@@ -158,41 +236,32 @@ class OneBot12Gateway(Gateway):
         for ingress in self.ingress:
             if isinstance(ingress, HttpWebhook):
                 self._mount_http_webhook(server, ingress)
-            elif isinstance(ingress, ReverseWebSocket):
-                self._mount_reverse_websocket(server, ingress)
         return server
 
     async def handle_http(
         self,
-        payload: BaseModel,
+        event: EventPayload,
         *,
         quick_response: bool = True,
     ) -> Response:
+        await self.bot.wait_until_running()
         if __debug__:
             logger.trace(
                 "handle OneBot 12 HTTP payload : {payload} {quick}",
-                payload=payload,
+                payload=event,
                 quick=quick_response,
             )
-        token = _HTTP_QUICK_ACTIONS.set([] if quick_response else None)
+        collector = _HttpQuickActions() if quick_response else None
+        token = _HTTP_QUICK_ACTIONS.set(collector)
         try:
             try:
-                await self.handle_payload(payload)
-            except (TypeError, ValueError, ValidationError) as exc:
-                error = str(exc)
-                logger.warning(
-                    "reject OneBot 12 HTTP payload: {kind} ({error})",
-                    kind=_payload_kind(_model_dump_object(payload)),
-                    error=f"{type(exc).__name__}: {error}"
-                    if error
-                    else type(exc).__name__,
-                )
-                return json_response(
-                    HTTPStatus.OK,
-                    ActionResponse.failed(Retcode.BAD_REQUEST, str(exc)),
-                )
-            actions = _HTTP_QUICK_ACTIONS.get() or []
+                await self.dispatch_event(event.root)
+            except QueueFull:
+                return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
+            actions = collector.actions if collector is not None else []
         finally:
+            if collector is not None:
+                collector.active = False
             _HTTP_QUICK_ACTIONS.reset(token)
 
         if actions:
@@ -207,79 +276,12 @@ class OneBot12Gateway(Gateway):
                     action.model_dump(
                         mode="json",
                         by_alias=True,
-                        exclude_none=True,
+                        exclude_unset=True,
                     )
                     for action in actions
                 ],
             )
         return empty_response(HTTPStatus.NO_CONTENT)
-
-    async def handle_ws(
-        self,
-        payload: BaseModel,
-        *,
-        session: WebSocketActionSession | None = None,
-    ) -> ActionResponse | None:
-        if __debug__:
-            logger.trace(
-                "handle OneBot 12 WebSocket payload : {payload}",
-                payload=payload,
-            )
-        try:
-            return await self.handle_payload(payload, session=session)
-        except (TypeError, ValueError, ValidationError) as exc:
-            error = str(exc)
-            logger.warning(
-                "reject OneBot 12 WebSocket payload: {kind} ({error})",
-                kind=_payload_kind(_model_dump_object(payload)),
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
-            return ActionResponse.failed(Retcode.BAD_REQUEST, str(exc))
-
-    async def handle_payload(
-        self,
-        payload: BaseModel,
-        *,
-        session: WebSocketActionSession | None = None,
-    ) -> ActionResponse | None:
-        data = _model_dump_object(payload)
-        if __debug__:
-            logger.trace(
-                "handle OneBot 12 payload data : {data}",
-                data=data,
-            )
-        if "action" in data:
-            msg = "Inbound OneBot 12 action requests are not accepted"
-            raise ValueError(msg)
-        if "status" in data and "retcode" in data:
-            response = ActionResponse.model_validate(data)
-            if self._ws_actions is not None:
-                matched = self._ws_actions.receive(response)
-                if __debug__:
-                    logger.trace(
-                        "process OneBot 12 action response : {response} {matched}",
-                        response=response,
-                        matched=matched,
-                    )
-            return None
-
-        event = EventPayload.model_validate(data).root
-        if __debug__:
-            logger.trace(
-                "dispatch OneBot 12 event : {event}",
-                event=event,
-            )
-        connection = (
-            self.connection_for(event.self_) if event.self_ is not None else None
-        )
-        if (
-            session is not None
-            and self._ws_actions is not None
-            and event.self_ is not None
-        ):
-            self._ws_actions.bind_self(session, event.self_)
-        await self.bot.dispatch(connection, event, gateway=self)
-        return None
 
     @override
     async def request_action(
@@ -288,14 +290,17 @@ class OneBot12Gateway(Gateway):
         action: str,
         params: ActionParamModel,
     ) -> ActionRequest | ActionResponse:
+        if self._closing or self._closed:
+            msg = "OneBot 12 gateway is closed"
+            raise RuntimeError(msg)
         quick_actions = _HTTP_QUICK_ACTIONS.get()
-        if quick_actions is not None:
+        if quick_actions is not None and quick_actions.active:
             request = ActionRequest(
                 action=action,
                 params=params,
                 self=connection.self_,
             )
-            quick_actions.append(request)
+            quick_actions.actions.append(request)
             if __debug__:
                 logger.trace(
                     "queue OneBot 12 quick action : {request} {connection}",
@@ -314,18 +319,14 @@ class OneBot12Gateway(Gateway):
         if self._ws_actions is not None:
             return await self._ws_actions.request(
                 connection.self_,
-                lambda echo: (
-                    ActionRequest(
-                        action=action,
-                        params=params,
-                        echo=echo,
-                        self=connection.self_,
-                    )
-                    .model_dump_json(
-                        by_alias=True,
-                        exclude_none=True,
-                    )
-                    .encode()
+                lambda echo: ActionRequest(
+                    action=action,
+                    params=params,
+                    echo=echo,
+                    self=connection.self_,
+                ).model_dump_json(
+                    by_alias=True,
+                    exclude_unset=True,
                 ),
             )
 
@@ -339,25 +340,36 @@ class OneBot12Gateway(Gateway):
         params: ActionParamModel,
         self_: BotSelf | None,
     ) -> ActionResponse:
-        if backend.base_url is None:
-            msg = "HTTP action backend requires a base URL"
-            raise LookupError(msg)
         if self.http_pool is None:
-            msg = "HTTP action pool is closed"
-            raise RuntimeError(msg)
+            if not self._owns_http_pool:
+                msg = "OneBot 12 HTTP action pool is unavailable"
+                raise RuntimeError(msg)
+            self.http_pool = AsyncPoolManager()
 
-        parsed_url = parse_url(backend.base_url)
         request = ActionRequest(action=action, params=params, self=self_)
         response = await self.http_pool.request(
             HTTPMethod.POST,
-            parsed_url._replace(path=(parsed_url.path or "").rstrip("/") or None).url,
+            backend.base_url,
             headers=self._authorization_headers,
             json=request.model_dump(
                 mode="json",
                 by_alias=True,
-                exclude_none=True,
+                exclude_unset=True,
             ),
         )
+        if response.status != HTTPStatus.OK:
+            msg = f"OneBot 12 action request failed: HTTP {response.status}"
+            raise RuntimeError(msg)
+        content_type = header_value(response.headers, "Content-Type")
+        media_type = (
+            content_type.split(";", 1)[0].strip().lower() if content_type else ""
+        )
+        if media_type != "application/json":
+            msg = (
+                "OneBot 12 action response has unsupported Content-Type: "
+                f"{content_type or '-'}"
+            )
+            raise RuntimeError(msg)
         action_response = ActionResponse.model_validate_json(await response.data)
         if __debug__:
             logger.debug(
@@ -379,6 +391,13 @@ class OneBot12Gateway(Gateway):
             return None
         return {"Authorization": f"Bearer {self.access_token}"}
 
+    @property
+    def reverse_websocket_ports(self) -> tuple[int, ...]:
+        return tuple(
+            cast(tuple[str, int], server.sockets[0].getsockname())[1]
+            for server in self._reverse_servers.values()
+        )
+
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
             if not self._authenticate(request):
@@ -387,162 +406,180 @@ class OneBot12Gateway(Gateway):
                     path=ingress.path,
                 )
                 return empty_response(HTTPStatus.UNAUTHORIZED)
-            payload = Model.model_validate_json(request.body)
-            return cast(
-                Response,
-                await self._run_on_server_task(
-                    payload,
-                    lambda item: self.handle_http(
-                        item,
-                        quick_response=ingress.quick_response,
-                    ),
-                ),
+            version = header_value(request.headers, "X-OneBot-Version")
+            impl = header_value(request.headers, "X-Impl")
+            if version != "12" or impl is None or NAME_PATTERN.fullmatch(impl) is None:
+                return empty_response(HTTPStatus.BAD_REQUEST)
+            content_type = header_value(request.headers, "Content-Type")
+            media_type = (
+                content_type.split(";", 1)[0].strip().lower() if content_type else ""
+            )
+            if media_type != "application/json":
+                return empty_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+            try:
+                payload = EventPayload.model_validate_json(request.body)
+            except ValidationError as exc:
+                logger.warning(
+                    "reject OneBot 12 HTTP webhook payload: {error}",
+                    error=str(exc),
+                )
+                return empty_response(HTTPStatus.BAD_REQUEST)
+            return await self.handle_http(
+                payload,
+                quick_response=ingress.quick_response,
             )
 
         server.post(ingress.path)(handle)
 
-    def _mount_reverse_websocket(
-        self,
-        server: Robyn,
-        ingress: ReverseWebSocket,
-    ) -> None:
-        async def handle(websocket: WebSocketConnection) -> None:
+    async def _start_reverse_websocket(self, ingress: ReverseWebSocket) -> Server:
+        def authenticate(
+            websocket: ServerConnection,
+            request: WebSocketRequest,
+        ) -> WebSocketResponse | None:
+            path = request_target_path(request)
+            if path is None:
+                return websocket.respond(HTTPStatus.BAD_REQUEST, "Bad path\n")
+            if path != ingress.path:
+                return websocket.respond(HTTPStatus.NOT_FOUND, "Not found\n")
+            if not token_matches(
+                self.access_token,
+                bearer_or_query_token(request),
+            ):
+                return websocket.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
             try:
-                if not self._authenticate(websocket):
-                    logger.warning(
-                        "reject OneBot 12 reverse WebSocket token: {path}",
-                        path=ingress.path,
-                    )
-                    await websocket.close()
-                    return
-                await self._serve_websocket(websocket)
-            except CancelledError:
-                raise
-            except Exception as exc:
-                error = str(exc)
-                logger.exception(
-                    "OneBot 12 reverse WebSocket failed: {path} ({error})",
-                    path=ingress.path,
-                    error=f"{type(exc).__name__}: {error}"
-                    if error
-                    else type(exc).__name__,
-                )
+                protocols = [
+                    protocol
+                    for value in request.headers.get_all("Sec-WebSocket-Protocol")
+                    for protocol in parse_subprotocol(value)
+                ]
+            except ValueError:
+                return websocket.respond(HTTPStatus.BAD_REQUEST, "Bad subprotocol\n")
+            if not any(_is_onebot12_subprotocol(protocol) for protocol in protocols):
+                return websocket.respond(HTTPStatus.BAD_REQUEST, "Bad subprotocol\n")
+            return None
 
-        server.websocket(ingress.path)(handle)
+        async def handle(websocket: ServerConnection) -> None:
+            protocol = websocket.subprotocol
+            if protocol is None:
+                msg = "OneBot 12 reverse WebSocket subprotocol was not negotiated"
+                raise ValueError(msg)
+            await self._serve_websocket(
+                WebsocketsConnection(websocket),
+                expected_impl=protocol.removeprefix("12."),
+            )
 
-    async def _serve_websocket(self, websocket: WebSocketConnection) -> None:
+        def select_subprotocol(
+            _websocket: ServerConnection,
+            protocols: Sequence[Subprotocol],
+        ) -> Subprotocol | None:
+            return next(
+                (
+                    protocol
+                    for protocol in protocols
+                    if _is_onebot12_subprotocol(protocol)
+                ),
+                None,
+            )
+
+        return await serve(
+            handle,
+            ingress.host,
+            ingress.port,
+            select_subprotocol=select_subprotocol,
+            process_request=authenticate,
+        )
+
+    async def _serve_websocket(
+        self,
+        websocket: WebSocketConnection,
+        *,
+        expected_impl: str | None = None,
+    ) -> None:
+        await self.bot.wait_until_running()
         session = (
             self._ws_actions.register(websocket)
             if self._ws_actions is not None
             else None
         )
-        tasks: set[Task[None]] = set()
-        graceful_close = False
         try:
-            while True:
-                try:
-                    payload = Model.model_validate_json(await websocket.receive_bytes())
-                except StopAsyncIteration:
-                    graceful_close = True
-                    break
-                except WebSocketDisconnect:
-                    graceful_close = True
-                    break
-
-                data = _model_dump_object(payload)
-                if "status" in data and "retcode" in data:
-                    response = ActionResponse.model_validate(data)
-                    if self._ws_actions is not None:
-                        self._ws_actions.receive(response)
-                    continue
-
-                self._start_ws_payload_task(websocket, tasks, payload, session)
+            await self._read_ws_payloads(
+                websocket,
+                session=session,
+                expected_impl=expected_impl,
+            )
         finally:
             if session is not None and self._ws_actions is not None:
                 self._ws_actions.unregister(session)
-            if not graceful_close:
-                for task in tuple(tasks):
-                    task.cancel()
-            for task in tuple(tasks):
-                with suppress(CancelledError, Exception):
-                    await task
             await self._close_websocket(websocket)
 
-    def _start_ws_payload_task(
+    async def _read_ws_payloads(
         self,
         websocket: WebSocketConnection,
-        tasks: set[Task[None]],
-        payload: BaseModel,
-        session: WebSocketActionSession | None,
-    ) -> None:
-        if __debug__:
-            logger.trace(
-                "receive OneBot 12 WebSocket payload : {payload}",
-                payload=payload,
-            )
-        task = create_task(
-            self._process_ws_payload(websocket, payload, session=session)
-        )
-        tasks.add(task)
-        task.add_done_callback(
-            lambda done: self._close_ws_on_payload_failure(
-                websocket,
-                tasks,
-                done,
-            )
-        )
-
-    async def _process_ws_payload(
-        self,
-        websocket: WebSocketConnection,
-        payload: BaseModel,
         *,
         session: WebSocketActionSession | None,
+        expected_impl: str | None,
     ) -> None:
-        try:
-            response = await self._run_on_server_task(
-                payload,
-                lambda item: self.handle_ws(item, session=session),
-            )
-            response = cast(ActionResponse | None, response)
-            if response is None:
+        connected = False
+        while True:
+            try:
+                payload = Model.model_validate_json(await websocket.receive_text())
+            except StopAsyncIteration:
                 return
-            await self._send_ws_response(websocket, response)
-        except Exception as exc:
-            error = str(exc)
-            logger.exception(
-                "handle OneBot 12 WebSocket payload failed: {kind} ({error})",
-                kind=_payload_kind(_model_dump_object(payload)),
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
-            raise
 
-    def _close_ws_on_payload_failure(
+            data = _model_dump_object(payload)
+            if not connected:
+                event = _connect_event(data, expected_impl=expected_impl)
+                connected = True
+                self._enqueue_ws_event(event)
+                continue
+            if "type" in data and "detail_type" in data:
+                event = EventPayload.model_validate(data)
+                match event.root:
+                    case ConnectMetaEvent():
+                        msg = (
+                            "OneBot 12 WebSocket meta.connect must appear exactly once"
+                        )
+                        raise ValueError(msg)
+                self._bind_session_event(session, event)
+                self._enqueue_ws_event(event)
+                continue
+            if "status" in data and "retcode" in data:
+                if session is None:
+                    msg = (
+                        "OneBot 12 WebSocket action response requires an action session"
+                    )
+                    raise ValueError(msg)
+                response = ActionResponse.model_validate(data)
+                if self._ws_actions is not None:
+                    self._ws_actions.receive(session, response)
+                continue
+
+            EventPayload.model_validate(data)
+
+    def _enqueue_ws_event(self, payload: EventPayload) -> None:
+        try:
+            self.enqueue_event(payload.root)
+        except QueueFull:
+            msg = "OneBot 12 WebSocket event queue is full"
+            raise ConnectionError(msg) from None
+
+    def _bind_session_event(
         self,
-        websocket: WebSocketConnection,
-        tasks: set[Task[None]],
-        task: Task[None],
+        session: WebSocketActionSession | None,
+        payload: EventPayload,
     ) -> None:
-        tasks.discard(task)
-        if task.cancelled() or task.exception() is None:
+        if session is None or self._ws_actions is None:
             return
-        close_task = create_task(self._close_websocket(websocket))
-        close_task.add_done_callback(self._consume_close_task_result)
-
-    def _consume_close_task_result(self, task: Task[None]) -> None:
-        with suppress(CancelledError, Exception):
-            task.result()
+        event = payload.root
+        if isinstance(event, StatusUpdateMetaEvent):
+            for bot in event.status.bots:
+                self._ws_actions.bind_self(session, bot.self_)
+        elif not isinstance(event, MetaEvent):
+            self._ws_actions.bind_self(session, event.self_)
 
     async def _close_websocket(self, websocket: WebSocketConnection) -> None:
         with suppress(Exception):
             await websocket.close()
-
-    async def _send_ws_response(
-        self,
-        websocket: WebSocketConnection,
-        response: BaseModel,
-    ) -> None:
-        await websocket.send_bytes(response.model_dump_json(by_alias=True).encode())
 
     async def _run_forward_websocket(self, ingress: ForwardWebSocket) -> None:
         while not self._closing:
@@ -584,46 +621,45 @@ class OneBot12Gateway(Gateway):
         return token_matches(self.access_token, bearer_or_query_token(source))
 
 
-class _WebsocketsClientConnection:
-    def __init__(self, websocket: ClientConnection) -> None:
-        self._websocket = websocket
-
-    async def receive_bytes(self) -> bytes:
-        try:
-            payload = await self._websocket.recv()
-        except ConnectionClosedOK as exc:
-            raise StopAsyncIteration from exc
-        except ConnectionClosed as exc:
-            msg = "WebSocket connection closed"
-            raise ConnectionError(msg) from exc
-        if isinstance(payload, str):
-            return payload.encode()
-        return payload
-
-    async def send_bytes(self, payload: bytes) -> None:
-        await self._websocket.send(payload)
-
-    async def close(self) -> None:
-        await self._websocket.close()
-
-
-async def _connect_websockets_client(
-    url: str,
-    headers: dict[str, str] | None,
-) -> WebSocketConnection:
-    websocket = await connect(url, additional_headers=headers, proxy=None)
-    return _WebsocketsClientConnection(websocket)
-
-
 def _model_dump_object(value: BaseModel) -> dict[str, JsonValue]:
     return cast(
         dict[str, JsonValue],
         value.model_dump(
             mode="json",
             by_alias=True,
-            exclude_none=True,
+            exclude_none=False,
         ),
     )
+
+
+def _connect_event(
+    data: Mapping[str, JsonValue],
+    *,
+    expected_impl: str | None,
+) -> EventPayload:
+    event = EventPayload.model_validate(data)
+    match event.root:
+        case ConnectMetaEvent():
+            pass
+        case _:
+            msg = "OneBot 12 WebSocket must start with meta.connect"
+            raise ValueError(msg)
+    if expected_impl is not None and event.root.version.impl != expected_impl:
+        msg = "OneBot 12 implementation does not match its subprotocol"
+        raise ValueError(msg)
+    return event
+
+
+def _is_onebot12_subprotocol(protocol: str) -> bool:
+    return protocol.startswith("12.") and (
+        NAME_PATTERN.fullmatch(protocol.removeprefix("12.")) is not None
+    )
+
+
+def _validate_ingress_path(path: str) -> None:
+    if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+        msg = "OneBot 12 ingress path must be an origin-form path"
+        raise ValueError(msg)
 
 
 __all__ = [

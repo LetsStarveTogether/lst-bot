@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+from base64 import b64decode, b64encode
+from binascii import Error as Base64Error
 from collections.abc import Mapping
 from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
     AliasChoices,
-    Base64Bytes,
     BaseModel,
-    ConfigDict,
+    BeforeValidator,
     Discriminator,
     Field,
     JsonValue,
+    PlainSerializer,
     RootModel,
     SerializeAsAny,
     StrictBool,
+    StrictBytes,
     StrictInt,
     StrictStr,
     StringConstraints,
@@ -26,12 +29,9 @@ from .base import Model
 from .common import BotSelf
 from .constants import (
     ACTION_CALL_TAGS,
-    BOOL_ACTION_PARAMS,
-    INT_ACTION_PARAMS,
     MAX_RETCODE,
     SEND_MSG_DETAIL_TYPES,
     SHA256_STRING_PATTERN,
-    STRING_ACTION_PARAMS,
     UPLOAD_FILE_TYPES,
 )
 from .enums import (
@@ -46,7 +46,7 @@ from .enums import (
 from .msg import MsgValue
 
 type ActionParamInput = BaseModel | JsonValue | bytes | bytearray
-type NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0)]
+type NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
 type Sha256String = Annotated[
     StrictStr,
     StringConstraints(pattern=SHA256_STRING_PATTERN, to_lower=True),
@@ -54,7 +54,38 @@ type Sha256String = Annotated[
 type HeaderMap = dict[StrictStr, StrictStr]
 
 
+def _load_base64_bytes(value: object) -> object:
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, bytes) or not isinstance(value, str):
+        return value
+    try:
+        return b64decode(value, validate=True)
+    except Base64Error, ValueError:
+        msg = "bytes must be valid Base64"
+        raise ValueError(msg) from None
+
+
+def _dump_base64_bytes(value: bytes) -> str:
+    return b64encode(value).decode()
+
+
+type WireBytes = Annotated[
+    StrictBytes,
+    BeforeValidator(_load_base64_bytes),
+    PlainSerializer(_dump_base64_bytes, return_type=str, when_used="json"),
+]
+type _ActionParamValue = JsonValue | WireBytes | SerializeAsAny[BaseModel]
+
+
 class ActionParamModel(Model):
+    __pydantic_extra__: dict[str, _ActionParamValue] = Field(init=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def model_input(cls, value: object) -> object:
+        return value.model_dump() if isinstance(value, BaseModel) else value
+
     def __str__(self) -> str:
         parts: list[str] = []
 
@@ -94,35 +125,6 @@ class ActionParamModel(Model):
             and getattr(self, key, None) is not None
         }
         return f"params={len(fields)}" if fields else "-"
-
-    @model_validator(mode="after")
-    def extra_types(self) -> Self:
-        for key, value in (self.model_extra or {}).items():
-            if key in STRING_ACTION_PARAMS and not isinstance(value, str):
-                msg = f"action param {key} must be a string"
-                raise TypeError(msg)
-            if key in INT_ACTION_PARAMS and (
-                isinstance(value, bool) or not isinstance(value, int)
-            ):
-                msg = f"action param {key} must be an integer"
-                raise TypeError(msg)
-            if key in BOOL_ACTION_PARAMS and not isinstance(value, bool):
-                msg = f"action param {key} must be a boolean"
-                raise TypeError(msg)
-
-        headers = (self.model_extra or {}).get("headers")
-        if headers is None:
-            return self
-        if not isinstance(headers, Mapping):
-            msg = "action param headers must be an object"
-            raise TypeError(msg)
-        if not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in headers.items()
-        ):
-            msg = "action param headers must map strings to strings"
-            raise TypeError(msg)
-        return self
 
 
 class ActionRequest(Model):
@@ -256,12 +258,10 @@ def _action_call_tag(value: object) -> ActionCallTag:
 
 
 class EmptyActionParams(ActionParamModel):
-    model_config = ConfigDict(extra="forbid")
+    pass
 
 
 class LatestEventsParams(ActionParamModel):
-    model_config = ConfigDict(extra="forbid")
-
     limit: NonNegativeStrictInt | None = None
     timeout: NonNegativeStrictInt | None = None
 
@@ -279,9 +279,6 @@ class SendMsgBaseParams(ActionParamModel):
         if not isinstance(value, Mapping):
             return value
         data = dict(value)
-        if "session_id" in data:
-            msg = "send_message params must not include session_id"
-            raise ValueError(msg)
         if data.get("detail_type") is None:
             if data.get("guild_id") and data.get("channel_id"):
                 data["detail_type"] = MsgTargetTag.CHANNEL
@@ -362,7 +359,7 @@ class UploadFilePathParams(UploadFileBaseParams):
 
 class UploadFileDataParams(UploadFileBaseParams):
     type: Literal[UploadFileTag.DATA] = UploadFileTag.DATA
-    data: Base64Bytes
+    data: WireBytes
 
 
 class UploadFileExtensionParams(UploadFileBaseParams):
@@ -388,7 +385,7 @@ class FragmentedUploadTransferParams(ActionParamModel):
     stage: Literal[FileStage.TRANSFER] = FileStage.TRANSFER
     file_id: StrictStr
     offset: NonNegativeStrictInt
-    data: Base64Bytes
+    data: WireBytes
 
 
 class FragmentedUploadFinishParams(ActionParamModel):

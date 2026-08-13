@@ -134,6 +134,7 @@ class EventTag(StrEnum):
     META_STATUS_UPDATE = "meta:status_update"
     EXTENSION = auto()
     META_EXTENSION = auto()
+    NOTICE_EXTENSION = auto()
     REQUEST_EXTENSION = auto()
 
 

@@ -51,35 +51,6 @@ ACTION_CALL_TAGS = {
     **dict.fromkeys(NO_PARAM_ACTIONS, ActionCallTag.EMPTY),
 }
 
-STRING_ACTION_PARAMS = frozenset({
-    "channel_id",
-    "channel_name",
-    "data",
-    "detail_type",
-    "file_id",
-    "group_id",
-    "group_name",
-    "guild_id",
-    "guild_name",
-    "message_id",
-    "name",
-    "operator_id",
-    "path",
-    "sha256",
-    "stage",
-    "type",
-    "url",
-    "user_id",
-})
-
-INT_ACTION_PARAMS = frozenset({
-    "limit",
-    "offset",
-    "size",
-    "timeout",
-    "total_size",
-})
-BOOL_ACTION_PARAMS = frozenset({"joined_only"})
 SEND_MSG_DETAIL_TYPES = frozenset({
     MsgTargetTag.PRIVATE,
     MsgTargetTag.GROUP,
@@ -93,13 +64,10 @@ UPLOAD_FILE_TYPES = frozenset({
 
 __all__ = [
     "ACTION_CALL_TAGS",
-    "BOOL_ACTION_PARAMS",
-    "INT_ACTION_PARAMS",
     "MAX_RETCODE",
     "NAME_PATTERN",
     "NO_PARAM_ACTIONS",
     "SEND_MSG_DETAIL_TYPES",
     "SHA256_STRING_PATTERN",
-    "STRING_ACTION_PARAMS",
     "UPLOAD_FILE_TYPES",
 ]

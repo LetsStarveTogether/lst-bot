@@ -45,8 +45,11 @@ flowchart LR
 | --- | --- |
 | `ONEBOT_WS_URL` | OneBot WebSocket 地址 |
 | `ONEBOT_ACCESS_TOKEN` | OneBot 访问令牌 |
+| `ONEBOT_SELF_ID` | OneBot 账号 ID |
 | `BOT_ADMIN` | 管理员账号 ID |
 | `BOT_CMD_PREFIXES` | 命令前缀 |
+| `BOT_TIMEOUT` | ISO 8601 duration 格式的事件处理超时 |
+| `BOT_TIMEZONE` | 定时任务时区 |
 | `REPORT_GROUP_ID` | 定时报告群 |
 | `KLEI_ACCESS_TOKEN` | Klei 访问令牌 |
 | `KLEI_HOST_ID` | 托管的 DST 主机 ID |

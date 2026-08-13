@@ -10,13 +10,12 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
-from diwire import Scope
 from logbook import Logger
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
 
-from .di import InjectionContext, State, call_with_injection
+from .di import InjectionContext, State, call_with_injection, request_scope
 
 if TYPE_CHECKING:
     from .bot import Bot
@@ -147,7 +146,7 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
-        async with self.bot.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
+        async with request_scope(self.bot.container) as resolver:
             state: State = {}
             context = InjectionContext(
                 bot=self.bot,
@@ -202,8 +201,8 @@ class CronScheduler:
         default_timezone: tzinfo | None = None,
     ) -> None:
         self.bot = bot
-        self._clock = clock
-        self._sleep = sleep
+        self.clock = clock
+        self.sleep = sleep
         self._default_timezone = (
             default_timezone if default_timezone is not None else bot.scheduler_timezone
         )
@@ -236,8 +235,8 @@ class CronScheduler:
             timezone=self._timezone(timezone),
             self_=self_,
             gateway_type=gateway,
-            clock=self._clock,
-            sleep=self._sleep,
+            clock=self.clock,
+            sleep=self.sleep,
         )
         self._jobs.append(job)
         if self._running:

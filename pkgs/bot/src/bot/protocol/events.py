@@ -7,6 +7,7 @@ from pydantic import (
     Discriminator,
     Field,
     RootModel,
+    StrictFloat,
     StrictInt,
     StrictStr,
     Tag,
@@ -15,13 +16,14 @@ from pydantic import (
 from .base import Model
 from .common import BotSelf, Status, Version
 from .enums import EventDetailType, EventKind, EventTag
-from .field import UnixSecondsFloat
 from .msg import Msg
+
+type UnixSeconds = Annotated[StrictFloat, Field(allow_inf_nan=False)]
 
 
 class Event(Model):
     id: StrictStr
-    time: UnixSecondsFloat
+    time: UnixSeconds
     type: EventKind
     detail_type: StrictStr
     sub_type: StrictStr
@@ -220,40 +222,12 @@ class ConnectMetaEvent(MetaEvent):
 
 class HeartbeatMetaEvent(MetaEvent):
     detail_type: Literal[EventDetailType.HEARTBEAT] = EventDetailType.HEARTBEAT
-    interval: StrictInt
+    interval: Annotated[StrictInt, Field(gt=0, le=2**63 - 1)]
 
 
 class StatusUpdateMetaEvent(MetaEvent):
     detail_type: Literal[EventDetailType.STATUS_UPDATE] = EventDetailType.STATUS_UPDATE
     status: Status
-
-
-type EventVariant = (
-    PrivateMessageEvent
-    | GroupMessageEvent
-    | ChannelMessageEvent
-    | FriendIncreaseNoticeEvent
-    | FriendDecreaseNoticeEvent
-    | PrivateMessageDeleteNoticeEvent
-    | GroupMemberIncreaseNoticeEvent
-    | GroupMemberDecreaseNoticeEvent
-    | GroupMessageDeleteNoticeEvent
-    | GuildMemberIncreaseNoticeEvent
-    | GuildMemberDecreaseNoticeEvent
-    | ChannelMemberIncreaseNoticeEvent
-    | ChannelMemberDecreaseNoticeEvent
-    | ChannelMessageDeleteNoticeEvent
-    | ChannelCreateNoticeEvent
-    | ChannelDeleteNoticeEvent
-    | FriendRequestEvent
-    | GroupRequestEvent
-    | RequestEvent
-    | ConnectMetaEvent
-    | HeartbeatMetaEvent
-    | StatusUpdateMetaEvent
-    | MetaEvent
-    | Event
-)
 
 
 def _field_value(value: object, key: str) -> object:
@@ -272,6 +246,8 @@ def _event_tag(value: object) -> EventTag:
             pass
     if event_type == EventKind.META:
         return EventTag.META_EXTENSION
+    if event_type == EventKind.NOTICE:
+        return EventTag.NOTICE_EXTENSION
     if event_type == EventKind.REQUEST:
         return EventTag.REQUEST_EXTENSION
     return EventTag.EXTENSION
@@ -336,6 +312,7 @@ type EventPayloadVariant = Annotated[
     | Annotated[FriendRequestEvent, Tag(EventTag.REQUEST_FRIEND)]
     | Annotated[GroupRequestEvent, Tag(EventTag.REQUEST_GROUP)]
     | Annotated[RequestEvent, Tag(EventTag.REQUEST_EXTENSION)]
+    | Annotated[NoticeEvent, Tag(EventTag.NOTICE_EXTENSION)]
     | Annotated[ConnectMetaEvent, Tag(EventTag.META_CONNECT)]
     | Annotated[HeartbeatMetaEvent, Tag(EventTag.META_HEARTBEAT)]
     | Annotated[
@@ -363,7 +340,6 @@ __all__ = [
     "Event",
     "EventPayload",
     "EventPayloadVariant",
-    "EventVariant",
     "FriendDecreaseNoticeEvent",
     "FriendIncreaseNoticeEvent",
     "FriendRequestEvent",

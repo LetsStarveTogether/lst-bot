@@ -1,39 +1,359 @@
 from __future__ import annotations
 
-from warnings import catch_warnings, simplefilter
+import json
+from base64 import b64encode
 
-import orjson
 import pytest
 from bot import (
     Action,
     ActionCall,
+    ActionParamInput,
     ActionRequest,
     ActionResponse,
-    FileStage,
-    Msg,
-    MsgTargetTag,
-    Retcode,
-    UploadFileTag,
+    BotSelf,
+    ReturnAction,
 )
 from bot.protocol.actions import (
+    FragmentedGetPrepareParams,
+    FragmentedGetTransferParams,
+    FragmentedUploadFinishParams,
     FragmentedUploadPrepareParams,
-    LatestEventsActionCall,
+    FragmentedUploadTransferParams,
     LatestEventsParams,
-    SendGroupMsgParams,
-    UploadFileUrlParams,
+    UploadFileBaseParams,
 )
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
+
+ACTION_CASES: tuple[tuple[str, str, dict[str, object]], ...] = (
+    ("get-latest-events", "get_latest_events", {"limit": 10, "timeout": 0}),
+    ("get-supported-actions", "get_supported_actions", {}),
+    ("get-status", "get_status", {}),
+    ("get-version", "get_version", {}),
+    ("get-self-info", "get_self_info", {}),
+    ("get-user-info", "get_user_info", {"user_id": "42"}),
+    ("get-friend-list", "get_friend_list", {}),
+    (
+        "send-message",
+        "send_message",
+        {"detail_type": "private", "user_id": "42", "message": "hello"},
+    ),
+    ("delete-message", "delete_message", {"message_id": "message-1"}),
+    ("get-group-info", "get_group_info", {"group_id": "20000"}),
+    ("get-group-list", "get_group_list", {}),
+    (
+        "get-group-member-info",
+        "get_group_member_info",
+        {"group_id": "20000", "user_id": "42"},
+    ),
+    (
+        "get-group-member-list",
+        "get_group_member_list",
+        {"group_id": "20000"},
+    ),
+    (
+        "set-group-name",
+        "set_group_name",
+        {"group_id": "20000", "group_name": "group"},
+    ),
+    ("leave-group", "leave_group", {"group_id": "20000"}),
+    ("get-guild-info", "get_guild_info", {"guild_id": "30000"}),
+    ("get-guild-list", "get_guild_list", {}),
+    (
+        "set-guild-name",
+        "set_guild_name",
+        {"guild_id": "30000", "guild_name": "guild"},
+    ),
+    (
+        "get-guild-member-info",
+        "get_guild_member_info",
+        {"guild_id": "30000", "user_id": "42"},
+    ),
+    (
+        "get-guild-member-list",
+        "get_guild_member_list",
+        {"guild_id": "30000"},
+    ),
+    ("leave-guild", "leave_guild", {"guild_id": "30000"}),
+    (
+        "get-channel-info",
+        "get_channel_info",
+        {"guild_id": "30000", "channel_id": "40000"},
+    ),
+    (
+        "get-channel-list",
+        "get_channel_list",
+        {"guild_id": "30000", "joined_only": None},
+    ),
+    (
+        "set-channel-name",
+        "set_channel_name",
+        {
+            "guild_id": "30000",
+            "channel_id": "40000",
+            "channel_name": "channel",
+        },
+    ),
+    (
+        "get-channel-member-info",
+        "get_channel_member_info",
+        {"guild_id": "30000", "channel_id": "40000", "user_id": "42"},
+    ),
+    (
+        "get-channel-member-list",
+        "get_channel_member_list",
+        {"guild_id": "30000", "channel_id": "40000"},
+    ),
+    (
+        "leave-channel",
+        "leave_channel",
+        {"guild_id": "30000", "channel_id": "40000"},
+    ),
+    (
+        "upload-file",
+        "upload_file",
+        {"type": "url", "name": "file.bin", "url": "https://example.test/file"},
+    ),
+    (
+        "upload-file-fragmented",
+        "upload_file_fragmented",
+        {"stage": "prepare", "name": "file.bin", "total_size": 1},
+    ),
+    ("get-file", "get_file", {"file_id": "file-1", "type": "url"}),
+    (
+        "get-file-fragmented",
+        "get_file_fragmented",
+        {"stage": "prepare", "file_id": "file-1"},
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [(action, params) for _, action, params in ACTION_CASES],
+    ids=[case_id for case_id, _, _ in ACTION_CASES],
+)
+def test_each_standard_action_round_trips_json(
+    action: str,
+    params: dict[str, object],
+) -> None:
+    call = ActionCall.model_validate({"action": action, "params": params})
+
+    assert call.root.action == action
+    assert ActionCall.model_validate_json(call.model_dump_json()) == call
+
+
+def test_action_matrix_covers_every_declared_standard_action() -> None:
+    assert {Action(action) for _, action, _ in ACTION_CASES} == set(Action)
+
+
+@pytest.mark.parametrize(
+    ("params", "detail_type"),
+    [
+        pytest.param(
+            {"user_id": "42", "message": "private"},
+            "private",
+            id="private-inferred",
+        ),
+        pytest.param(
+            {"group_id": "20000", "message": "group"},
+            "group",
+            id="group-inferred",
+        ),
+        pytest.param(
+            {"guild_id": "30000", "channel_id": "40000", "message": "channel"},
+            "channel",
+            id="channel-inferred",
+        ),
+        pytest.param(
+            {
+                "detail_type": "vendor.thread",
+                "thread_id": "thread-1",
+                "message": "extension",
+            },
+            "vendor.thread",
+            id="extension-explicit",
+        ),
+    ],
+)
+def test_send_message_discriminator_selects_each_target_variant(
+    params: dict[str, object],
+    detail_type: str,
+) -> None:
+    call = ActionCall.model_validate({"action": "send_message", "params": params})
+    normalized = call.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    assert normalized["params"]["detail_type"] == detail_type
+    assert normalized["params"]["message"] == [
+        {"type": "text", "data": {"text": params["message"]}},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("params", "file_type"),
+    [
+        pytest.param(
+            {
+                "type": "url",
+                "name": "file.bin",
+                "url": "https://example.test/file",
+                "headers": {"Authorization": "Bearer token"},
+            },
+            "url",
+            id="url",
+        ),
+        pytest.param(
+            {"type": "path", "name": "file.bin", "path": "files/file.bin"},
+            "path",
+            id="path",
+        ),
+        pytest.param(
+            {"type": "data", "name": "file.bin", "data": "/w=="},
+            "data",
+            id="data",
+        ),
+        pytest.param(
+            {"type": "vendor.storage", "name": "file.bin", "token": None},
+            "vendor.storage",
+            id="extension",
+        ),
+    ],
+)
+def test_upload_file_discriminator_selects_each_source_variant(
+    params: dict[str, object],
+    file_type: str,
+) -> None:
+    call = ActionCall.model_validate({"action": "upload_file", "params": params})
+
+    assert isinstance(call.root.params, UploadFileBaseParams)
+    assert call.root.params.type == file_type
+    assert ActionCall.model_validate_json(call.model_dump_json()) == call
+
+
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [
+        pytest.param(
+            "upload_file_fragmented",
+            {"stage": "prepare", "name": "file.bin", "total_size": 0},
+            id="upload-prepare",
+        ),
+        pytest.param(
+            "upload_file_fragmented",
+            {"stage": "transfer", "file_id": "file-1", "offset": 0, "data": "AA=="},
+            id="upload-transfer",
+        ),
+        pytest.param(
+            "upload_file_fragmented",
+            {
+                "stage": "finish",
+                "file_id": "file-1",
+                "sha256": "0" * 64,
+            },
+            id="upload-finish",
+        ),
+        pytest.param(
+            "get_file_fragmented",
+            {"stage": "prepare", "file_id": "file-1"},
+            id="get-prepare",
+        ),
+        pytest.param(
+            "get_file_fragmented",
+            {"stage": "transfer", "file_id": "file-1", "offset": 0, "size": 1},
+            id="get-transfer",
+        ),
+    ],
+)
+def test_fragmented_file_discriminators_accept_each_stage(
+    action: str,
+    params: dict[str, object],
+) -> None:
+    call = ActionCall.model_validate({"action": action, "params": params})
+
+    assert isinstance(
+        call.root.params,
+        FragmentedUploadPrepareParams
+        | FragmentedUploadTransferParams
+        | FragmentedUploadFinishParams
+        | FragmentedGetPrepareParams
+        | FragmentedGetTransferParams,
+    )
+    assert call.root.params.stage == params["stage"]
+    assert ActionCall.model_validate_json(call.model_dump_json()) == call
+
+
+def test_extension_action_preserves_nested_json_values_and_null() -> None:
+    payload = {
+        "action": "vendor.do_something",
+        "params": {"payload": {"values": [True, 1, 1.5, "text", None]}},
+    }
+
+    call = ActionCall.model_validate(payload)
+
+    assert call.model_dump(mode="json", by_alias=True) == payload
+    assert ActionCall.model_validate_json(call.model_dump_json()) == call
+
+
+def test_action_normalization_is_idempotent() -> None:
+    call = ActionCall.model_validate({
+        "action": "send_message",
+        "params": {"group_id": "20000", "msg": "hello"},
+    })
+    normalized = call.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    assert (
+        ActionCall.model_validate(normalized).model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        )
+        == normalized
+    )
+
+
+def test_action_request_round_trips_explicit_null_envelope_fields() -> None:
+    call = ActionCall.model_validate({"action": "get_status", "params": {}})
+    request = ActionRequest(
+        action="get_status",
+        params=call.root.params,
+        echo=None,
+        self_=None,
+    )
+
+    payload = request.model_dump(mode="json", by_alias=True)
+
+    assert (
+        ActionRequest.model_validate_json(request.model_dump_json()).model_dump(
+            mode="json",
+            by_alias=True,
+        )
+        == payload
+    )
+    assert payload == {
+        "action": "get_status",
+        "params": {},
+        "echo": None,
+        "self": None,
+    }
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"params": {}},
-        {"action": "send_message"},
-        {"action": 1, "params": {}},
-        {"action": "send_message", "params": []},
-        {"action": "send_message", "params": {}, "echo": 1},
-        {"action": "send_message", "params": {}, "self": {"platform": "qq"}},
+        pytest.param({"params": {}}, id="missing-action"),
+        pytest.param({"action": "send_message"}, id="missing-params"),
+        pytest.param({"action": 1, "params": {}}, id="non-string-action"),
+        pytest.param(
+            {"action": "send_message", "params": []},
+            id="non-object-params",
+        ),
+        pytest.param(
+            {"action": "send_message", "params": {}, "echo": 1},
+            id="non-string-echo",
+        ),
+        pytest.param(
+            {"action": "send_message", "params": {}, "self": {"platform": "qq"}},
+            id="incomplete-self",
+        ),
     ],
 )
 def test_action_request_rejects_invalid_protocol_shape(payload: object) -> None:
@@ -41,27 +361,93 @@ def test_action_request_rejects_invalid_protocol_shape(payload: object) -> None:
         ActionRequest.model_validate(payload)
 
 
+def test_action_response_round_trips_required_null_data_and_omits_null_echo() -> None:
+    response = ActionResponse.ok(echo="")
+
+    assert response.model_dump(mode="json", by_alias=True) == {
+        "status": "ok",
+        "retcode": 0,
+        "data": None,
+        "message": "",
+    }
+    assert ActionResponse.model_validate_json(response.model_dump_json()) == response
+
+
 @pytest.mark.parametrize(
     "payload",
     [
-        {"retcode": Retcode.OK, "data": None, "message": ""},
-        {"status": "ok", "data": None, "message": ""},
-        {"status": "ok", "retcode": Retcode.OK, "message": ""},
-        {"status": "ok", "retcode": Retcode.OK, "data": None},
-        {
-            "status": "done",
-            "retcode": Retcode.OK,
-            "data": None,
-            "message": "",
-        },
-        {"status": "ok", "retcode": "0", "data": None, "message": ""},
-        {"status": "ok", "retcode": 1, "data": None, "message": ""},
-        {
-            "status": "failed",
-            "retcode": Retcode.OK,
-            "data": None,
-            "message": "bad",
-        },
+        pytest.param(
+            {"status": "ok", "retcode": 0, "data": None, "message": ""},
+            id="ok",
+        ),
+        pytest.param(
+            {"status": "failed", "retcode": 1, "data": None, "message": "failed"},
+            id="failed-minimum-retcode",
+        ),
+        pytest.param(
+            {
+                "status": "failed",
+                "retcode": 99999,
+                "data": {"retry": False},
+                "message": "failed",
+                "echo": "echo-1",
+            },
+            id="failed-maximum-retcode",
+        ),
+    ],
+)
+def test_action_response_accepts_status_retcode_contract(
+    payload: dict[str, object],
+) -> None:
+    response = ActionResponse.model_validate(payload)
+
+    assert response.status == payload["status"]
+    assert ActionResponse.model_validate_json(response.model_dump_json()) == response
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {"retcode": 0, "data": None, "message": ""},
+            id="missing-status",
+        ),
+        pytest.param(
+            {"status": "ok", "data": None, "message": ""},
+            id="missing-retcode",
+        ),
+        pytest.param(
+            {"status": "ok", "retcode": 0, "message": ""},
+            id="missing-data",
+        ),
+        pytest.param(
+            {"status": "ok", "retcode": 0, "data": None},
+            id="missing-message",
+        ),
+        pytest.param(
+            {"status": "done", "retcode": 0, "data": None, "message": ""},
+            id="unknown-status",
+        ),
+        pytest.param(
+            {"status": "ok", "retcode": "0", "data": None, "message": ""},
+            id="string-retcode",
+        ),
+        pytest.param(
+            {"status": "ok", "retcode": 1, "data": None, "message": ""},
+            id="ok-with-failed-retcode",
+        ),
+        pytest.param(
+            {"status": "failed", "retcode": 0, "data": None, "message": "bad"},
+            id="failed-with-ok-retcode",
+        ),
+        pytest.param(
+            {"status": "failed", "retcode": -1, "data": None, "message": "bad"},
+            id="retcode-below-minimum",
+        ),
+        pytest.param(
+            {"status": "failed", "retcode": 100000, "data": None, "message": "bad"},
+            id="retcode-above-maximum",
+        ),
     ],
 )
 def test_action_response_rejects_invalid_protocol_shape(payload: object) -> None:
@@ -69,140 +455,237 @@ def test_action_response_rejects_invalid_protocol_shape(payload: object) -> None
         ActionResponse.model_validate(payload)
 
 
-def test_action_response_dump_includes_required_data_and_non_empty_echo() -> None:
-    response = ActionResponse.ok(echo="")
-    expected = {
-        "status": "ok",
-        "retcode": Retcode.OK,
-        "data": None,
-        "message": "",
-    }
-
-    assert response.model_dump(mode="json", by_alias=True) == expected
-    assert orjson.loads(response.model_dump_json(by_alias=True)) == expected
-    assert (
-        ActionResponse.failed(
-            Retcode.UNSUPPORTED_ACTION,
-            "no",
-            echo="x",
-        ).model_dump(mode="json", by_alias=True)["echo"]
-        == "x"
-    )
-
-
-def test_action_params_use_discriminators_for_nested_protocol_tags() -> None:
-    action_call = ActionCall.model_validate({
-        "action": "send_message",
-        "params": {"group_id": "20000", "message": "hello"},
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(0, id="zero"),
+        pytest.param(2**63 - 1, id="int64-maximum"),
+    ],
+)
+def test_non_negative_int_params_accept_int64_boundaries(value: int) -> None:
+    call = ActionCall.model_validate({
+        "action": "get_latest_events",
+        "params": {"limit": value},
     })
-    assert action_call.root.params.model_dump(
-        mode="json",
-        by_alias=True,
-        exclude_none=True,
-    ) == {
-        "detail_type": "group",
-        "group_id": "20000",
-        "message": [{"type": "text", "data": {"text": "hello"}}],
-    }
-    action_call = ActionCall.model_validate({
-        "action": "upload_file",
-        "params": {
-            "type": "url",
-            "name": "logo.png",
-            "url": "https://example.test/logo.png",
-        },
-    })
-    assert action_call.root.params.model_dump(
-        mode="json",
-        by_alias=True,
-        exclude_none=True,
-    ) == {
-        "type": "url",
-        "name": "logo.png",
-        "url": "https://example.test/logo.png",
-    }
 
+    assert isinstance(call.root.params, LatestEventsParams)
+    assert call.root.params.limit == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(True, id="boolean"),
+        pytest.param(1.0, id="float"),
+        pytest.param(-1, id="negative"),
+        pytest.param(2**63, id="above-int64-maximum"),
+    ],
+)
+def test_non_negative_int_params_reject_non_int64_values(value: object) -> None:
     with pytest.raises(ValidationError):
         ActionCall.model_validate({
-            "action": "upload_file_fragmented",
-            "params": {"stage": "transfer", "file_id": "file-1", "offset": 0},
+            "action": "get_latest_events",
+            "params": {"limit": value},
         })
 
 
-def test_action_literal_fields_default_to_protocol_tags() -> None:
-    assert (
-        SendGroupMsgParams(group_id="20000", message=Msg.t("hello")).detail_type
-        == MsgTargetTag.GROUP
-    )
-    assert (
-        UploadFileUrlParams(name="logo.png", url="https://example.test/logo.png").type
-        == UploadFileTag.URL
-    )
-    assert (
-        FragmentedUploadPrepareParams(name="logo.png", total_size=1024).stage
-        == FileStage.PREPARE
-    )
-    assert LatestEventsActionCall(params=LatestEventsParams()).action == (
-        Action.GET_LATEST_EVENTS
-    )
-
-
-def test_action_discriminators_accept_model_instances_for_validation_and_dump() -> None:
-    action_call = ActionCall.model_validate({
-        "action": "send_message",
-        "params": {"group_id": "20000", "message": "hello"},
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [
+        pytest.param(
+            "upload_file",
+            {"type": "data", "name": "bytes.bin"},
+            id="upload-file",
+        ),
+        pytest.param(
+            "upload_file_fragmented",
+            {"stage": "transfer", "file_id": "file-1", "offset": 0},
+            id="fragmented-transfer",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "input_type",
+    [
+        pytest.param(bytes, id="bytes"),
+        pytest.param(bytearray, id="bytearray"),
+    ],
+)
+def test_upload_data_treats_python_bytes_as_raw_and_dumps_base64(
+    action: str,
+    params: dict[str, object],
+    input_type: type[bytes | bytearray],
+) -> None:
+    raw = b"\xff\x00"
+    call = ActionCall.model_validate({
+        "action": action,
+        "params": {**params, "data": input_type(raw)},
     })
-    validated = ActionCall.model_validate({
-        "action": "send_message",
-        "params": action_call.root.params,
-    })
 
-    assert validated.root.params.model_dump(
-        mode="json",
-        by_alias=True,
-        exclude_none=True,
-    ) == {
-        "detail_type": "group",
-        "group_id": "20000",
-        "message": [{"type": "text", "data": {"text": "hello"}}],
+    assert call.root.params.model_dump()["data"] == raw
+    assert (
+        call.model_dump(mode="json", by_alias=True, exclude_none=True)["params"]["data"]
+        == b64encode(raw).decode()
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [
+        pytest.param(
+            "upload_file",
+            {"type": "data", "name": "bytes.bin", "data": "/w=="},
+            id="upload-file",
+        ),
+        pytest.param(
+            "upload_file_fragmented",
+            {
+                "stage": "transfer",
+                "file_id": "file-1",
+                "offset": 0,
+                "data": "/w==",
+            },
+            id="fragmented-transfer",
+        ),
+    ],
+)
+def test_upload_data_decodes_json_base64_and_round_trips(
+    action: str,
+    params: dict[str, object],
+) -> None:
+    call = ActionCall.model_validate_json(
+        json.dumps({
+            "action": action,
+            "params": params,
+        }),
+    )
+
+    assert call.root.params.model_dump()["data"] == b"\xff"
+    assert call.model_dump(mode="json", by_alias=True, exclude_none=True) == {
+        "action": action,
+        "params": params,
     }
 
-    with catch_warnings(record=True) as caught:
-        simplefilter("always")
-        payload = ActionCall.model_validate(validated.root).model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-        )
 
-    assert payload == {
-        "action": "send_message",
-        "params": {
-            "detail_type": "group",
-            "group_id": "20000",
-            "message": [{"type": "text", "data": {"text": "hello"}}],
-        },
-    }
-    assert caught == []
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("%%%", id="invalid-alphabet"),
+        pytest.param("a", id="invalid-padding"),
+        pytest.param(None, id="null"),
+    ],
+)
+def test_upload_data_rejects_invalid_base64(value: object) -> None:
+    with pytest.raises(ValidationError):
+        ActionCall.model_validate({
+            "action": "upload_file",
+            "params": {"type": "data", "name": "bytes.bin", "data": value},
+        })
 
 
-def test_sha256_params_normalize_uppercase_hex() -> None:
-    action_call = ActionCall.model_validate({
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("0" * 64, "0" * 64, id="lowercase"),
+        pytest.param("ABCDEF01" * 8, "abcdef01" * 8, id="uppercase-normalized"),
+        pytest.param(None, None, id="optional-null"),
+    ],
+)
+def test_sha256_accepts_valid_or_null_value(
+    value: object,
+    expected: str | None,
+) -> None:
+    call = ActionCall.model_validate({
         "action": "upload_file",
         "params": {
-            "type": "data",
-            "name": "bytes.bin",
-            "data": "/w==",
-            "sha256": "ABCDEF0123456789ABCDEF0123456789"
-            "ABCDEF0123456789ABCDEF0123456789",
+            "type": "url",
+            "name": "file.bin",
+            "url": "https://example.test/file",
+            "sha256": value,
         },
     })
 
-    assert (
-        action_call.root.params.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-        )["sha256"]
-        == "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    assert isinstance(call.root.params, UploadFileBaseParams)
+    assert call.root.params.sha256 == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("0" * 63, id="too-short"),
+        pytest.param("0" * 65, id="too-long"),
+        pytest.param("z" * 64, id="non-hex"),
+    ],
+)
+def test_sha256_rejects_invalid_value(value: str) -> None:
+    with pytest.raises(ValidationError):
+        ActionCall.model_validate({
+            "action": "upload_file",
+            "params": {
+                "type": "url",
+                "name": "file.bin",
+                "url": "https://example.test/file",
+                "sha256": value,
+            },
+        })
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_action_extension_rejects_nested_non_finite_number(value: float) -> None:
+    with pytest.raises(ValidationError):
+        ActionCall.model_validate({
+            "action": "vendor.action",
+            "params": {"nested": [{"value": value}]},
+        })
+
+
+class VendorParams(BaseModel):
+    enabled: bool
+
+
+def test_return_action_serializes_python_parameter_values() -> None:
+    params: dict[str, ActionParamInput] = {
+        "bytes": b"\xff",
+        "bytearray": bytearray(b"\x00"),
+        "model": VendorParams(enabled=True),
+        "text": "/w==",
+    }
+
+    returned = ReturnAction.call(
+        "vendor.action",
+        params,
+        self_=BotSelf(platform="qq", user_id="10000"),
     )
+
+    assert returned.action_call is not None
+    assert returned.action_call.model_dump(mode="json") == {
+        "action": "vendor.action",
+        "params": {
+            "bytes": "/w==",
+            "bytearray": "AA==",
+            "model": {"enabled": True},
+            "text": "/w==",
+        },
+    }
+
+
+def test_return_action_factories_cover_message_call_and_request() -> None:
+    message = ReturnAction.message("hello")
+    call = ReturnAction.call("get_status")
+    request = ReturnAction.request(False, reason="denied")
+
+    assert (message.kind, message.msg.text if message.msg else None) == (
+        "message",
+        "hello",
+    )
+    assert call.kind == "call"
+    assert call.action_call is not None
+    assert request.kind == "request"
+    assert request.approve is False

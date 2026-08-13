@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Final
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from types import TracebackType
+from typing import Any, Final, Protocol, Self
 
 from fastmcp.client.transports import StreamableHttpTransport
 from httpx import AsyncClient, Auth, Timeout
@@ -57,6 +59,10 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 """
 
 
+class AgentBackend(AbstractAsyncContextManager[Any], Protocol):
+    async def run(self, question: str, /) -> Any: ...
+
+
 class DstQuestionAgent:
     def __init__(
         self,
@@ -65,45 +71,88 @@ class DstQuestionAgent:
         dosu_mcp_endpoint: str,
         dosu_api_key: SecretStr,
         http_proxy: str | None = None,
+        agent: AgentBackend | None = None,
     ) -> None:
-        self._openrouter_api_key = openrouter_api_key
-        self._dosu_mcp_endpoint = dosu_mcp_endpoint
-        self._dosu_api_key = dosu_api_key
-        self._http_proxy = http_proxy
+        self._exit_stack: AsyncExitStack | None = None
+        self._closed = False
+        self._http_client: AsyncClient | None = None
 
-    async def answer(self, question: str) -> str:
-        proxy = self._http_proxy or None
-
-        async with AsyncClient(
-            proxy=proxy,
-            timeout=REQUEST_TIMEOUT,
-        ) as http_client:
+        if agent is None:
+            proxy = http_proxy or None
+            self._http_client = AsyncClient(
+                proxy=proxy,
+                timeout=REQUEST_TIMEOUT,
+            )
             model = OpenRouterModel(
                 OPENROUTER_MODEL,
                 provider=OpenRouterProvider(
-                    api_key=self._openrouter_api_key.get_secret_value(),
-                    http_client=http_client,
+                    api_key=openrouter_api_key.get_secret_value(),
+                    http_client=self._http_client,
                 ),
             )
-            agent = Agent(
+            backend: AgentBackend = Agent(
                 model,
                 instructions=DST_AGENT_INSTRUCTIONS,
-                toolsets=[self._dosu_tools(proxy=proxy)],
+                toolsets=[
+                    self._dosu_tools(
+                        endpoint=dosu_mcp_endpoint,
+                        api_key=dosu_api_key,
+                        proxy=proxy,
+                    )
+                ],
                 capabilities=[NativeTool(WebSearchTool())],
             )
-            async with agent:
-                result = await agent.run(question)
+        else:
+            backend = agent
+        self._agent = backend
 
+    async def __aenter__(self) -> Self:
+        if self._closed:
+            msg = "DstQuestionAgent cannot be restarted after closing"
+            raise RuntimeError(msg)
+        if self._exit_stack is not None:
+            return self
+
+        async with AsyncExitStack() as stack:
+            if self._http_client is not None:
+                await stack.enter_async_context(self._http_client)
+            await stack.enter_async_context(self._agent)
+            self._exit_stack = stack.pop_all()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        stack, self._exit_stack = self._exit_stack, None
+        self._closed = True
+        if stack is None:
+            return None
+        return await stack.__aexit__(exc_type, exc, traceback)
+
+    async def answer(self, question: str) -> str:
+        if self._exit_stack is None:
+            msg = "DstQuestionAgent must be started before answering"
+            raise RuntimeError(msg)
+        result = await self._agent.run(question)
         return result.output
 
-    def _dosu_tools(self, *, proxy: str | None) -> AbstractToolset[Any]:
+    @staticmethod
+    def _dosu_tools(
+        *,
+        endpoint: str,
+        api_key: SecretStr,
+        proxy: str | None,
+    ) -> AbstractToolset[Any]:
         headers = {
-            DOSU_API_KEY_HEADER: self._dosu_api_key.get_secret_value(),
+            DOSU_API_KEY_HEADER: api_key.get_secret_value(),
         }
 
         if proxy is None:
             toolset = MCPToolset(
-                self._dosu_mcp_endpoint,
+                endpoint,
                 headers=headers,
                 init_timeout=REQUEST_TIMEOUT,
                 read_timeout=REQUEST_TIMEOUT,
@@ -129,7 +178,7 @@ class DstQuestionAgent:
 
             toolset = MCPToolset(
                 StreamableHttpTransport(
-                    self._dosu_mcp_endpoint,
+                    endpoint,
                     headers=headers,
                     httpx_client_factory=http_client_factory,
                 ),

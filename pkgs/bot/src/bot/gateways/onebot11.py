@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, Task, create_task, sleep
+from asyncio import (
+    CancelledError,
+    Lock,
+    QueueFull,
+    Task,
+    create_task,
+    sleep,
+)
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from hashlib import sha1
+from hmac import compare_digest, new
 from http import HTTPMethod, HTTPStatus
 from math import isfinite
-from typing import Annotated, Any, Literal, cast, override
+from typing import Annotated, Any, Literal, Self, cast, override
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import orjson
 from logbook import Logger
@@ -24,11 +34,14 @@ from pydantic import (
     StrictStr,
     Tag,
     ValidationError,
+    model_validator,
 )
 from robyn import Request, Response, Robyn, WebSocketDisconnect
 from ulid import ULID
 from urllib3_future import AsyncPoolManager
-from urllib3_future.util import parse_url
+from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.http11 import Request as WebSocketRequest
+from websockets.http11 import Response as WebSocketResponse
 
 from bot.core import Bot
 from bot.protocol.actions import (
@@ -39,12 +52,14 @@ from bot.protocol.actions import (
 )
 from bot.protocol.base import Model
 from bot.protocol.common import BotSelf, BotStatus, Status
-from bot.protocol.enums import Action, ApiStatus, Retcode
+from bot.protocol.enums import Action, ApiStatus
 from bot.protocol.events import (
     Event,
     EventPayload,
     FriendRequestEvent,
     GroupRequestEvent,
+    MessageEvent,
+    NoticeEvent,
 )
 from bot.protocol.msg import (
     AudioSegment,
@@ -71,14 +86,17 @@ from .base import (
     WebSocketActionManager,
     WebSocketActionSession,
     WebSocketConnection,
+    WebsocketsConnection,
     access_token_value,
     bearer_or_query_token,
+    connect_websocket,
     empty_response,
+    header_value,
     json_response,
+    request_target_path,
     text_response,
     token_matches,
 )
-from .onebot12 import _connect_websockets_client
 
 type WebSocketConnector = Callable[
     [str, dict[str, str] | None],
@@ -126,6 +144,10 @@ _NOTICE_DETAIL_TYPES = {
     "group_increase": "group_member_increase",
     "group_recall": "group_message_delete",
 }
+_NOTICE_SUB_TYPES = {
+    ("group_decrease", "kick_me"): "kick",
+    ("group_increase", "approve"): "join",
+}
 _OB11_MEDIA_SEGMENT_TYPES: Mapping[type[MsgSegment], str] = {
     ImageSegment: "image",
     VideoSegment: "video",
@@ -135,12 +157,53 @@ _OB11_MEDIA_SEGMENT_TYPES: Mapping[type[MsgSegment], str] = {
 
 type OneBot11Id = StrictInt | StrictStr
 type OneBot11Time = StrictInt | StrictFloat
+type WebSocketRole = Literal["api", "event", "universal"]
+
+_ACTION_ROLES = frozenset({"api", "universal"})
+_EVENT_ROLES = frozenset({"event", "universal"})
+_MAX_PORT = 65535
 
 
 def _field_value(value: object, key: str) -> object:
     if isinstance(value, Mapping):
         return cast(Mapping[str, object], value).get(key)
     return getattr(value, key, None)
+
+
+def _signature_matches(
+    secret: str | None,
+    body: str | bytes,
+    signature: str | None,
+) -> bool:
+    if secret is None:
+        return True
+    if signature is None:
+        return False
+    payload = body.encode() if isinstance(body, str) else body
+    expected = "sha1=" + new(secret.encode(), payload, sha1).hexdigest()
+    return compare_digest(signature, expected)
+
+
+def _websocket_role(value: str | None) -> WebSocketRole | None:
+    if value is None:
+        return None
+    role = value.lower()
+    return cast(WebSocketRole, role) if role in _ACTION_ROLES | _EVENT_ROLES else None
+
+
+def _event_self(data: Mapping[str, JsonValue]) -> BotSelf:
+    self_id = data.get("self_id")
+    if isinstance(self_id, bool) or not isinstance(self_id, int | str):
+        msg = "OneBot 11 event self_id must be an integer or string"
+        raise TypeError(msg)
+    return _qq_self(str(self_id))
+
+
+def _qq_self(user_id: str) -> BotSelf:
+    if not user_id.isdecimal():
+        msg = "OneBot 11 self ID must be a decimal integer"
+        raise ValueError(msg)
+    return BotSelf(platform="qq", user_id=user_id)
 
 
 def _event_payload_tag(value: object) -> str:
@@ -155,11 +218,8 @@ class OneBot11ActionRequest(Model):
 
 
 class OneBot11ActionResponse(Model):
-    status: StrictStr
-    retcode: StrictInt | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
+    status: Literal["ok", "async", "failed"]
+    retcode: StrictInt
     data: JsonValue = None
     message: StrictStr | None = Field(
         default=None,
@@ -170,6 +230,19 @@ class OneBot11ActionResponse(Model):
         exclude_if=lambda value: value is None,
     )
     echo: JsonValue = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def match_status_and_retcode(self) -> Self:
+        if self.status == "ok" and self.retcode != 0:
+            msg = "OneBot 11 ok action response must use retcode 0"
+            raise ValueError(msg)
+        if self.status == "async" and self.retcode != 1:
+            msg = "OneBot 11 async action response must use retcode 1"
+            raise ValueError(msg)
+        if self.status == "failed" and self.retcode in {0, 1}:
+            msg = "OneBot 11 failed action response must not use retcode 0 or 1"
+            raise ValueError(msg)
+        return self
 
 
 class OneBot11SegmentData(Model):
@@ -246,6 +319,55 @@ class OneBot11NoticeEvent(OneBot11Event):
     notice_type: StrictStr
 
 
+class OneBot11GroupUploadFile(Model):
+    id: StrictStr
+    name: StrictStr
+    size: StrictInt
+    busid: StrictInt
+
+
+class OneBot11GroupUploadNotice(OneBot11NoticeEvent):
+    notice_type: Literal["group_upload"] = "group_upload"
+    group_id: OneBot11Id
+    user_id: OneBot11Id
+    file: OneBot11GroupUploadFile
+
+
+class OneBot11GroupAdminNotice(OneBot11NoticeEvent):
+    notice_type: Literal["group_admin"] = "group_admin"
+    sub_type: Literal["set", "unset"]
+    group_id: OneBot11Id
+    user_id: OneBot11Id
+
+
+class OneBot11GroupBanNotice(OneBot11NoticeEvent):
+    notice_type: Literal["group_ban"] = "group_ban"
+    sub_type: Literal["ban", "lift_ban"]
+    group_id: OneBot11Id
+    operator_id: OneBot11Id
+    user_id: OneBot11Id
+    duration: StrictInt
+
+
+class OneBot11NotifyNotice(OneBot11NoticeEvent):
+    notice_type: Literal["notify"] = "notify"
+    sub_type: Literal["poke", "lucky_king", "honor"]
+    group_id: OneBot11Id
+    user_id: OneBot11Id
+    target_id: OneBot11Id | None = None
+    honor_type: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def require_subtype_fields(self) -> Self:
+        if self.sub_type in {"poke", "lucky_king"} and self.target_id is None:
+            msg = f"OneBot 11 notify.{self.sub_type} requires target_id"
+            raise ValueError(msg)
+        if self.sub_type == "honor" and self.honor_type is None:
+            msg = "OneBot 11 notify.honor requires honor_type"
+            raise ValueError(msg)
+        return self
+
+
 class OneBot11RequestEvent(OneBot11Event):
     post_type: Literal["request"] = "request"
     request_type: StrictStr
@@ -254,10 +376,35 @@ class OneBot11RequestEvent(OneBot11Event):
     flag: StrictStr
 
 
+class OneBot11GroupRequestEvent(OneBot11RequestEvent):
+    request_type: Literal["group"] = "group"
+    sub_type: Literal["add", "invite"]
+    group_id: OneBot11Id
+
+
+class OneBot11Status(Model):
+    good: StrictBool
+    online: StrictBool | None = None
+
+
 class OneBot11MetaEvent(OneBot11Event):
     post_type: Literal["meta_event"] = "meta_event"
     meta_event_type: StrictStr
     status: JsonValue = None
+
+
+class OneBot11HeartbeatEvent(OneBot11MetaEvent):
+    meta_event_type: Literal["heartbeat"] = "heartbeat"
+    status: OneBot11Status
+    interval: StrictInt
+
+
+_NOTICE_EVENT_MODELS: Mapping[str, type[OneBot11NoticeEvent]] = {
+    "group_admin": OneBot11GroupAdminNotice,
+    "group_ban": OneBot11GroupBanNotice,
+    "group_upload": OneBot11GroupUploadNotice,
+    "notify": OneBot11NotifyNotice,
+}
 
 
 type OneBot11EventVariant = Annotated[
@@ -273,40 +420,108 @@ class OneBot11EventPayload(RootModel[OneBot11EventVariant]):
     pass
 
 
+def _validate_ob11_event(data: Mapping[str, JsonValue]) -> OneBot11Event:
+    event = OneBot11EventPayload.model_validate(data).root
+    if isinstance(event, OneBot11NoticeEvent):
+        model = _NOTICE_EVENT_MODELS.get(event.notice_type)
+        if model is not None:
+            event = model.model_validate(data)
+    elif isinstance(event, OneBot11RequestEvent) and event.request_type == "group":
+        event = OneBot11GroupRequestEvent.model_validate(data)
+    elif isinstance(event, OneBot11MetaEvent) and event.meta_event_type == "heartbeat":
+        event = OneBot11HeartbeatEvent.model_validate(data)
+    return event
+
+
+def decode_event(payload: BaseModel | Mapping[str, JsonValue]) -> Event:
+    """Validate and convert a OneBot 11 event payload."""
+    data = _json_object(payload)
+    return _event_from_payload(_validate_ob11_event(data))
+
+
 @dataclass(frozen=True, slots=True)
 class HttpWebhook:
     path: str = "/onebot/v11/http"
+    secret: AccessToken = None
     quick_response: bool = True
 
+    def __post_init__(self) -> None:
+        if not self.path.startswith("/"):
+            msg = "OneBot 11 HTTP webhook path must start with /"
+            raise ValueError(msg)
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ReverseWebSocket:
+    host: str = "127.0.0.1"
+    port: int = 8081
     path: str = "/onebot/v11/ws"
+
+    def __post_init__(self) -> None:
+        if not self.host or not 0 <= self.port <= _MAX_PORT:
+            msg = "OneBot 11 reverse WebSocket address is invalid"
+            raise ValueError(msg)
+        if not self.path.startswith("/"):
+            msg = "OneBot 11 reverse WebSocket path must start with /"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
 class ForwardWebSocket:
     url: str
+    role: WebSocketRole
+    self_: BotSelf | None = None
     reconnect_interval: float = 3.0
+
+    def __post_init__(self) -> None:
+        endpoint = (urlsplit(self.url).path or "/").rstrip("/") or "/"
+        expected = {"api": "/api", "event": "/event", "universal": "/"}[self.role]
+        if endpoint != expected:
+            msg = f"OneBot 11 {self.role} WebSocket must use the {expected} endpoint"
+            raise ValueError(msg)
+        if self.role in _ACTION_ROLES and self.self_ is None:
+            msg = f"OneBot 11 {self.role} WebSocket requires a bot identity"
+            raise ValueError(msg)
+        if self.self_ is not None and (
+            self.self_.platform != "qq" or not self.self_.user_id.isdecimal()
+        ):
+            msg = "OneBot 11 WebSocket identity must be a decimal qq account"
+            raise ValueError(msg)
+        if self.reconnect_interval <= 0:
+            msg = "OneBot 11 reconnect interval must be positive"
+            raise ValueError(msg)
 
 
 @dataclass(slots=True)
 class HttpAction:
-    base_url: str | None = None
-    quick_response: bool = True
+    base_url: str
     http_pool: AsyncPoolManager | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class WebSocketAction:
     timeout: float = 30.0
-    quick_response: bool = True
 
 
 type Ingress = HttpWebhook | ReverseWebSocket | ForwardWebSocket
 type ActionBackend = HttpAction | WebSocketAction
 
-_HTTP_QUICK_OPERATIONS: ContextVar[list[OneBot11QuickOperation] | None] = ContextVar(
+
+def _ingress_resource(ingress: Ingress) -> tuple[object, ...]:
+    if isinstance(ingress, HttpWebhook):
+        return (HttpWebhook, ingress.path)
+    if isinstance(ingress, ReverseWebSocket):
+        return (ReverseWebSocket, ingress.host, ingress.port)
+    return (ForwardWebSocket, ingress.url)
+
+
+@dataclass(slots=True)
+class _QuickOperations:
+    active: bool = True
+    values: list[OneBot11QuickOperation] = field(default_factory=list)
+
+
+_HTTP_QUICK_OPERATIONS: ContextVar[_QuickOperations | None] = ContextVar(
     "bot_onebot11_http_quick_operations",
     default=None,
 )
@@ -334,22 +549,30 @@ class OneBot11Gateway(Gateway):
     ) -> None:
         super().__init__(bot)
         self.ingress = tuple(ingress)
+        resources = [_ingress_resource(item) for item in self.ingress]
+        if len(set(resources)) != len(resources):
+            msg = "OneBot 11 ingress resources must be unique"
+            raise ValueError(msg)
         self.action_backend = action
         self.access_token = access_token_value(access_token)
         self.http_pool = (
-            action.http_pool
-            if isinstance(action, HttpAction) and action.http_pool is not None
-            else AsyncPoolManager()
+            action.http_pool or AsyncPoolManager()
             if isinstance(action, HttpAction)
             else None
+        )
+        self._owns_http_pool = (
+            isinstance(action, HttpAction) and action.http_pool is None
         )
         self._ws_actions = (
             WebSocketActionManager(action.timeout)
             if isinstance(action, WebSocketAction)
             else None
         )
-        self._websocket_connector = websocket_connector or _connect_websockets_client
+        self._websocket_connector = websocket_connector or connect_websocket
         self._forward_tasks: dict[ForwardWebSocket, Task[None]] = {}
+        self._reverse_servers: list[Server] = []
+        self._lifecycle_lock = Lock()
+        self._started = False
         self._closing = False
 
     @property
@@ -358,32 +581,69 @@ class OneBot11Gateway(Gateway):
             return None
         return {"Authorization": f"Bearer {self.access_token}"}
 
+    @property
+    def reverse_websocket_ports(self) -> tuple[int, ...]:
+        return tuple(
+            cast(tuple[str, int], server.sockets[0].getsockname())[1]
+            for server in self._reverse_servers
+        )
+
     @override
     async def start(self) -> None:
-        await super().start()
-        self._closing = False
-        for ingress in self.ingress:
-            if isinstance(ingress, ForwardWebSocket) and (
-                ingress not in self._forward_tasks
-                or self._forward_tasks[ingress].done()
-            ):
-                task = create_task(self._run_forward_websocket(ingress))
-                self._forward_tasks[ingress] = task
+        async with self._lifecycle_lock:
+            if self._started:
+                return
+            await super().start()
+            self._closing = False
+            try:
+                for ingress in self.ingress:
+                    if isinstance(ingress, ReverseWebSocket):
+                        self._reverse_servers.append(
+                            await self._start_reverse_websocket(ingress)
+                        )
+                for ingress in self.ingress:
+                    if isinstance(ingress, ForwardWebSocket):
+                        self._forward_tasks[ingress] = create_task(
+                            self._run_forward_websocket(ingress)
+                        )
+            except BaseException:
+                await self._close_transports()
+                await self._close_http_pool()
+                raise
+            if self._owns_http_pool and self.http_pool is None:
+                self.http_pool = AsyncPoolManager()
+            self._started = True
 
     @override
     async def close(self) -> None:
+        async with self._lifecycle_lock:
+            await self._close_transports()
+            await self._close_http_pool()
+            await super().close()
+            self._started = False
+
+    async def _close_http_pool(self) -> None:
+        if self.http_pool is not None and self._owns_http_pool:
+            await self.http_pool.clear()
+            self.http_pool = None
+
+    async def _close_transports(self) -> None:
         self._closing = True
-        for task in self._forward_tasks.values():
+        forward_tasks = tuple(self._forward_tasks.values())
+        reverse_servers = tuple(self._reverse_servers)
+        for task in forward_tasks:
             task.cancel()
-        for task in self._forward_tasks.values():
-            with suppress(CancelledError):
-                await task
-        self._forward_tasks.clear()
+        for server in reverse_servers:
+            server.close()
         if self._ws_actions is not None:
             self._ws_actions.fail_all()
-        if self.http_pool is not None:
-            await self.http_pool.clear()
-        await super().close()
+        for task in forward_tasks:
+            with suppress(CancelledError):
+                await task
+        for server in reverse_servers:
+            await server.wait_closed()
+        self._forward_tasks.clear()
+        self._reverse_servers.clear()
 
     def mount(self, server: Robyn) -> Robyn:
         if not self._mount_server_once(server):
@@ -392,8 +652,6 @@ class OneBot11Gateway(Gateway):
         for ingress in self.ingress:
             if isinstance(ingress, HttpWebhook):
                 self._mount_http_webhook(server, ingress)
-            elif isinstance(ingress, ReverseWebSocket):
-                self._mount_reverse_websocket(server, ingress)
         return server
 
     async def handle_http(
@@ -408,10 +666,13 @@ class OneBot11Gateway(Gateway):
                 payload=payload,
                 quick=quick_response,
             )
-        token = _HTTP_QUICK_OPERATIONS.set([] if quick_response else None)
+        collector = _QuickOperations() if quick_response else None
+        token = _HTTP_QUICK_OPERATIONS.set(collector)
         try:
             try:
                 await self.handle_payload(payload)
+            except QueueFull:
+                return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
             except (TypeError, ValueError, ValidationError) as exc:
                 error = str(exc)
                 logger.warning(
@@ -422,8 +683,10 @@ class OneBot11Gateway(Gateway):
                     else type(exc).__name__,
                 )
                 return text_response(HTTPStatus.BAD_REQUEST, str(exc))
-            quick_operations = _HTTP_QUICK_OPERATIONS.get() or []
+            quick_operations = collector.values if collector is not None else []
         finally:
+            if collector is not None:
+                collector.active = False
             _HTTP_QUICK_OPERATIONS.reset(token)
 
         if quick_operations:
@@ -443,19 +706,44 @@ class OneBot11Gateway(Gateway):
         event: Event | None,
         action: ReturnAction,
     ) -> BaseModel:
+        if action.kind == "message":
+            if action.msg is None:
+                msg = "Message return action requires a message"
+                raise TypeError(msg)
+            if not isinstance(event, MessageEvent):
+                msg = "Message return values require a message event"
+                raise TypeError(msg)
+            quick_operations = _HTTP_QUICK_OPERATIONS.get()
+            if (
+                quick_operations is not None
+                and quick_operations.active
+                and not quick_operations.values
+            ):
+                operation = OneBot11QuickOperation(
+                    reply=_dump_ob11_message(action.msg),
+                    at_sender=False,
+                )
+                quick_operations.values.append(operation)
+                return operation
+            return await super().execute_return_action(connection, event, action)
+
         if action.kind != "request":
             return await super().execute_return_action(connection, event, action)
 
         operation = _request_quick_operation(event, action)
         quick_operations = _HTTP_QUICK_OPERATIONS.get()
-        if quick_operations is not None and not quick_operations:
+        if (
+            quick_operations is not None
+            and quick_operations.active
+            and not quick_operations.values
+        ):
             if __debug__:
                 logger.trace(
                     "queue OneBot 11 request quick operation : {operation} {event}",
                     operation=operation,
                     event=event,
                 )
-            quick_operations.append(operation)
+            quick_operations.values.append(operation)
             return operation
 
         action_name, params = _request_response_action(event, action)
@@ -473,7 +761,8 @@ class OneBot11Gateway(Gateway):
                 payload=payload,
             )
         try:
-            return await self.handle_payload(payload, session=session)
+            data = _model_dump_object(payload)
+            self._queue_ws_payload(data, "universal", session, None)
         except (TypeError, ValueError, ValidationError) as exc:
             error = str(exc)
             logger.warning(
@@ -487,6 +776,8 @@ class OneBot11Gateway(Gateway):
                 data=None,
                 message=str(exc),
             )
+        else:
+            return None
 
     async def handle_payload(
         self,
@@ -501,30 +792,30 @@ class OneBot11Gateway(Gateway):
                 data=data,
             )
         if "post_type" in data:
-            event = _event_from_payload(OneBot11EventPayload.model_validate(data).root)
+            event = decode_event(data)
             if __debug__:
                 logger.trace(
                     "dispatch OneBot 11 event : {event}",
                     event=event,
                 )
-            connection = (
-                self.connection_for(event.self_) if event.self_ is not None else None
-            )
             if (
                 session is not None
                 and self._ws_actions is not None
                 and event.self_ is not None
             ):
                 self._ws_actions.bind_self(session, event.self_)
-            await self.bot.dispatch(connection, event, gateway=self)
+            await self.dispatch_event(event)
             return None
         if "action" in data:
             msg = "Inbound OneBot 11 action requests are not accepted"
             raise ValueError(msg)
         if "status" in data and "retcode" in data:
-            response = _action_response_from_payload(data)
+            if session is None:
+                msg = "OneBot 11 action responses require a WebSocket session"
+                raise ValueError(msg)
+            response = decode_action_response(data)
             if self._ws_actions is not None:
-                matched = self._ws_actions.receive(response)
+                matched = self._ws_actions.receive(session, response)
                 if __debug__:
                     logger.trace(
                         "process OneBot 11 action response : {response} {matched}",
@@ -546,55 +837,33 @@ class OneBot11Gateway(Gateway):
         action: str,
         params: ActionParamModel,
     ) -> BaseModel:
+        if self._closing:
+            msg = "OneBot 11 gateway is closed"
+            raise RuntimeError(msg)
         action_name, payload = self._normalize_action(action, params)
-        quick_operations = _HTTP_QUICK_OPERATIONS.get()
-        if (
-            quick_operations is not None
-            and not quick_operations
-            and isinstance(
-                payload,
-                OneBot11SendPrivateMsgParams | OneBot11SendGroupMsgParams,
-            )
-        ):
-            operation = OneBot11QuickOperation(
-                reply=payload.message,
-                at_sender=False,
-            )
-            quick_operations.append(operation)
-            if __debug__:
-                logger.trace(
-                    "queue OneBot 11 quick reply : {operation} {action} {connection}",
-                    operation=operation,
-                    action=action_name,
-                    connection=connection,
-                )
-            return operation
-
         if isinstance(self.action_backend, HttpAction):
-            return await self._request_http_action(
+            response = await self._request_http_action(
                 self.action_backend,
                 action_name,
                 payload,
             )
-        if self._ws_actions is not None:
-            return await self._ws_actions.request(
+        elif self._ws_actions is not None:
+            response = await self._ws_actions.request(
                 connection.self_,
-                lambda echo: (
-                    OneBot11ActionRequest(
-                        action=action_name,
-                        params=payload,
-                        echo=echo,
-                    )
-                    .model_dump_json(
-                        by_alias=True,
-                        exclude_none=True,
-                    )
-                    .encode()
+                lambda echo: OneBot11ActionRequest(
+                    action=action_name,
+                    params=payload,
+                    echo=echo,
+                ).model_dump_json(
+                    by_alias=True,
+                    exclude_unset=True,
                 ),
             )
+        else:
+            msg = f"{action_name} is not supported without an action backend"
+            raise LookupError(msg)
 
-        msg = f"{action_name} is not supported without an action backend"
-        raise LookupError(msg)
+        return adapt_action_response(action, response, connection.self_)
 
     def _normalize_action(
         self,
@@ -632,30 +901,33 @@ class OneBot11Gateway(Gateway):
         action: str,
         params: BaseModel,
     ) -> ActionResponse:
-        if backend.base_url is None:
-            msg = "HTTP action backend requires a base URL"
-            raise LookupError(msg)
         if self.http_pool is None:
-            msg = "HTTP action pool is closed"
+            msg = "OneBot 11 HTTP action backend is closed"
             raise RuntimeError(msg)
 
-        parsed_url = parse_url(backend.base_url)
-        base_url = parsed_url._replace(
-            path=(parsed_url.path or "").rstrip("/") or None,
-        ).url
+        parsed_url = urlsplit(backend.base_url)
+        action_url = urlunsplit((
+            parsed_url.scheme,
+            parsed_url.netloc,
+            f"{parsed_url.path.rstrip('/')}/{quote(action, safe='')}",
+            parsed_url.query,
+            "",
+        ))
         response = await self.http_pool.request(
             HTTPMethod.POST,
-            f"{base_url}/{action}",
+            action_url,
             headers=self.authorization_headers,
             json=params.model_dump(
                 mode="json",
                 by_alias=True,
-                exclude_none=True,
+                exclude_unset=True,
             ),
         )
-        action_response = _action_response_from_payload(
-            orjson.loads(await response.data)
-        )
+        status = getattr(response, "status", HTTPStatus.OK)
+        if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
+            msg = f"OneBot 11 action request failed with HTTP {status}"
+            raise RuntimeError(msg)
+        action_response = decode_action_response(orjson.loads(await response.data))
         if __debug__:
             logger.debug(
                 "OneBot 11 HTTP action returned: {action} = {status}/{retcode}",
@@ -672,150 +944,170 @@ class OneBot11Gateway(Gateway):
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
-            if not self._authenticate(request):
+            content_type = header_value(request.headers, "Content-Type")
+            media_type = (
+                content_type.split(";", 1)[0].strip().lower() if content_type else ""
+            )
+            if media_type != "application/json":
+                return empty_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+            if not _signature_matches(
+                access_token_value(ingress.secret),
+                request.body,
+                header_value(request.headers, "X-Signature"),
+            ):
                 logger.warning(
-                    "reject OneBot 11 HTTP webhook token: {path}",
+                    "reject OneBot 11 HTTP webhook signature: {path}",
                     path=ingress.path,
                 )
                 return empty_response(HTTPStatus.UNAUTHORIZED)
-            payload = Model.model_validate_json(request.body)
-            return cast(
-                Response,
-                await self._run_on_server_task(
-                    payload,
-                    lambda item: self.handle_http(
-                        item,
-                        quick_response=ingress.quick_response,
-                    ),
-                ),
+            try:
+                payload = Model.model_validate_json(request.body)
+            except ValidationError as exc:
+                return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+            data = _model_dump_object(payload)
+            self_id = header_value(request.headers, "X-Self-ID")
+            try:
+                header_self = _qq_self(self_id) if self_id is not None else None
+                event_self = _event_self(data)
+            except (TypeError, ValueError) as exc:
+                return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+            if header_self != event_self:
+                return text_response(
+                    HTTPStatus.BAD_REQUEST,
+                    "OneBot 11 HTTP X-Self-ID must match the event",
+                )
+            await self.bot.wait_until_running()
+            return await self.handle_http(
+                payload,
+                quick_response=ingress.quick_response,
             )
 
         server.post(ingress.path)(handle)
 
-    def _mount_reverse_websocket(
-        self,
-        server: Robyn,
-        ingress: ReverseWebSocket,
-    ) -> None:
-        async def handle(websocket: WebSocketConnection) -> None:
-            try:
-                if not self._authenticate(websocket):
-                    logger.warning(
-                        "reject OneBot 11 reverse WebSocket token: {path}",
-                        path=ingress.path,
-                    )
-                    await websocket.close()
-                    return
-                await self._serve_websocket(websocket)
-            except CancelledError:
-                raise
-            except Exception as exc:
-                error = str(exc)
-                logger.exception(
-                    "OneBot 11 reverse WebSocket failed: {path} ({error})",
-                    path=ingress.path,
-                    error=f"{type(exc).__name__}: {error}"
-                    if error
-                    else type(exc).__name__,
+    async def _start_reverse_websocket(self, ingress: ReverseWebSocket) -> Server:
+        def authenticate(
+            websocket: ServerConnection,
+            request: WebSocketRequest,
+        ) -> WebSocketResponse | None:
+            path = request_target_path(request)
+            if path is None:
+                return websocket.respond(HTTPStatus.BAD_REQUEST, "Bad path\n")
+            if path != ingress.path:
+                return websocket.respond(HTTPStatus.NOT_FOUND, "Not found\n")
+            if not token_matches(
+                self.access_token,
+                bearer_or_query_token(request),
+            ):
+                return websocket.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
+            role = _websocket_role(header_value(request.headers, "X-Client-Role"))
+            self_id = header_value(request.headers, "X-Self-ID")
+            if role is None or not self_id:
+                return websocket.respond(
+                    HTTPStatus.BAD_REQUEST, "Missing OneBot headers\n"
                 )
+            try:
+                _qq_self(self_id)
+            except ValueError:
+                return websocket.respond(
+                    HTTPStatus.BAD_REQUEST, "Invalid OneBot self ID\n"
+                )
+            return None
 
-        server.websocket(ingress.path)(handle)
+        async def handle(websocket: ServerConnection) -> None:
+            request = websocket.request
+            if request is None:
+                msg = "OneBot 11 reverse WebSocket handshake is missing"
+                raise ConnectionError(msg)
+            role = _websocket_role(header_value(request.headers, "X-Client-Role"))
+            self_id = header_value(request.headers, "X-Self-ID")
+            if role is None or self_id is None:
+                msg = "OneBot 11 reverse WebSocket headers are missing"
+                raise ConnectionError(msg)
+            self_ = _qq_self(self_id)
+            await self._serve_websocket(WebsocketsConnection(websocket), role, self_)
 
-    async def _serve_websocket(self, websocket: WebSocketConnection) -> None:
+        return await serve(
+            handle,
+            ingress.host,
+            ingress.port,
+            process_request=authenticate,
+        )
+
+    async def _serve_websocket(
+        self,
+        websocket: WebSocketConnection,
+        role: WebSocketRole,
+        self_: BotSelf | None = None,
+    ) -> None:
+        await self.bot.wait_until_running()
+        expected_self = self_
         session = (
             self._ws_actions.register(websocket)
-            if self._ws_actions is not None
+            if self._ws_actions is not None and role in _ACTION_ROLES
             else None
         )
-        tasks: set[Task[None]] = set()
-        graceful_close = False
+        if session is not None and self_ is not None and self._ws_actions is not None:
+            self._ws_actions.bind_self(session, self_)
         try:
             while True:
                 try:
-                    payload = Model.model_validate_json(await websocket.receive_bytes())
-                except StopAsyncIteration:
-                    graceful_close = True
+                    payload = Model.model_validate_json(await websocket.receive_text())
+                except StopAsyncIteration, WebSocketDisconnect:
                     break
-                except WebSocketDisconnect:
-                    graceful_close = True
-                    break
-
-                data = _model_dump_object(payload)
-                if "status" in data and "retcode" in data:
-                    response = _action_response_from_payload(data)
-                    if self._ws_actions is not None:
-                        self._ws_actions.receive(response)
-                    continue
-
-                self._start_ws_payload_task(websocket, tasks, payload, session)
+                expected_self = self._queue_ws_payload(
+                    payload,
+                    role,
+                    session,
+                    expected_self,
+                )
         finally:
             if session is not None and self._ws_actions is not None:
                 self._ws_actions.unregister(session)
-            if not graceful_close:
-                for task in tuple(tasks):
-                    task.cancel()
-            for task in tuple(tasks):
-                with suppress(CancelledError, Exception):
-                    await task
             await self._close_websocket(websocket)
 
-    def _start_ws_payload_task(
+    def _queue_ws_payload(
         self,
-        websocket: WebSocketConnection,
-        tasks: set[Task[None]],
-        payload: BaseModel,
+        payload: BaseModel | Mapping[str, JsonValue],
+        role: WebSocketRole,
         session: WebSocketActionSession | None,
-    ) -> None:
-        if __debug__:
-            logger.trace(
-                "receive OneBot 11 WebSocket payload : {payload}",
-                payload=payload,
-            )
-        task = create_task(self._process_ws_payload(payload, session=session))
-        tasks.add(task)
-        task.add_done_callback(
-            lambda done: self._close_ws_on_payload_failure(
-                websocket,
-                tasks,
-                done,
-            )
-        )
-
-    async def _process_ws_payload(
-        self,
-        payload: BaseModel,
-        *,
-        session: WebSocketActionSession | None,
-    ) -> None:
+        expected_self: BotSelf | None,
+    ) -> BotSelf | None:
+        data = _json_object(payload)
+        if "status" in data and "retcode" in data:
+            self._receive_ws_action_response(session, data)
+            return expected_self
+        if role not in _EVENT_ROLES:
+            msg = "OneBot 11 API WebSocket received an event"
+            raise ValueError(msg)
+        event_self = _event_self(data)
+        if expected_self is not None and event_self != expected_self:
+            msg = "OneBot 11 WebSocket event self_id changed"
+            raise ValueError(msg)
+        event = decode_event(data)
+        if (
+            session is not None
+            and self._ws_actions is not None
+            and event.self_ is not None
+        ):
+            self._ws_actions.bind_self(session, event.self_)
         try:
-            await self._run_on_server_task(
-                payload,
-                lambda item: self.handle_payload(item, session=session),
-            )
-        except Exception as exc:
-            error = str(exc)
-            logger.exception(
-                "handle OneBot 11 WebSocket payload failed: {kind} ({error})",
-                kind=_payload_kind(_model_dump_object(payload)),
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
-            raise
+            self.enqueue_event(event)
+        except QueueFull:
+            msg = "OneBot 11 event queue is full"
+            raise ConnectionError(msg) from None
+        return expected_self or event_self
 
-    def _close_ws_on_payload_failure(
+    def _receive_ws_action_response(
         self,
-        websocket: WebSocketConnection,
-        tasks: set[Task[None]],
-        task: Task[None],
+        session: WebSocketActionSession | None,
+        data: Mapping[str, JsonValue],
     ) -> None:
-        tasks.discard(task)
-        if task.cancelled() or task.exception() is None:
-            return
-        close_task = create_task(self._close_websocket(websocket))
-        close_task.add_done_callback(self._consume_close_task_result)
-
-    def _consume_close_task_result(self, task: Task[None]) -> None:
-        with suppress(CancelledError, Exception):
-            task.result()
+        if session is None:
+            msg = "OneBot 11 event WebSocket returned an action response"
+            raise ValueError(msg)
+        response = decode_action_response(data)
+        if self._ws_actions is not None:
+            self._ws_actions.receive(session, response)
 
     async def _close_websocket(self, websocket: WebSocketConnection) -> None:
         with suppress(Exception):
@@ -825,7 +1117,7 @@ class OneBot11Gateway(Gateway):
         while not self._closing:
             try:
                 websocket = await self._connect_forward_websocket(ingress)
-                await self._serve_websocket(websocket)
+                await self._serve_websocket(websocket, ingress.role, ingress.self_)
                 if not self._closing:
                     await self._sleep_before_forward_reconnect(ingress)
             except CancelledError:
@@ -866,9 +1158,10 @@ def _normalize_ob11_params(
     *,
     strict_ids: bool,
 ) -> OneBot11GenericActionParams:
-    payload: dict[str, JsonValue | BaseModel] = dict(_model_dump_object(params))
-    if "message" in payload and not isinstance(payload["message"], str):
-        payload["message"] = _dump_ob11_message(cast(MsgInput, payload["message"]))
+    payload = cast(
+        dict[str, JsonValue | BaseModel],
+        params.model_dump(mode="json", by_alias=True, exclude_unset=True),
+    )
     for key in _OB11_NUMBER_PARAM_KEYS:
         if key in payload:
             payload[key] = _ob11_number(
@@ -878,7 +1171,8 @@ def _normalize_ob11_params(
 
 
 def _event_from_payload(event: OneBot11Event) -> Event:
-    self_ = BotSelf(platform="qq", user_id=_id_string(event.self_id))
+    self_ = _qq_self(_id_string(event.self_id))
+    detail_type = _event_detail_type(event)
     payload: dict[str, JsonValue] = _model_dump_object(event)
     payload.update({
         "id": str(ULID()),
@@ -888,20 +1182,28 @@ def _event_from_payload(event: OneBot11Event) -> Event:
         ),
         "time": event.time,
         "type": _event_type(event),
-        "detail_type": _event_detail_type(event),
+        "detail_type": detail_type,
+        "sub_type": event.sub_type,
     })
     for key in _EVENT_ID_FIELDS:
         if key in payload:
             payload[key] = _id_string(cast(JsonValue, payload[key]))
 
     if isinstance(event, OneBot11MessageEvent):
+        _normalize_nested_id(payload, "sender", "user_id")
+        _normalize_nested_id(payload, "anonymous", "id")
         message = _load_ob11_message(event.message)
         payload["message"] = cast(
             JsonValue,
             message.model_dump(mode="json", by_alias=True),
         )
         payload["alt_message"] = event.raw_message or str(message)
-    elif isinstance(event, OneBot11MetaEvent) and event.meta_event_type == "heartbeat":
+    elif isinstance(event, OneBot11NoticeEvent):
+        payload["sub_type"] = _NOTICE_SUB_TYPES.get(
+            (event.notice_type, event.sub_type),
+            event.sub_type,
+        )
+    elif isinstance(event, OneBot11HeartbeatEvent):
         payload["status"] = cast(
             JsonValue,
             _status_payload(event.status, self_).model_dump(
@@ -910,7 +1212,26 @@ def _event_from_payload(event: OneBot11Event) -> Event:
             ),
         )
 
+    if isinstance(event, OneBot11NoticeEvent) and detail_type.startswith("qq."):
+        return NoticeEvent.model_validate(payload)
     return EventPayload.model_validate(payload).root
+
+
+def _normalize_nested_id(
+    payload: dict[str, JsonValue],
+    field: str,
+    key: str,
+) -> None:
+    value = payload.get(field)
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        msg = f"OneBot 11 {field} must be an object or null"
+        raise TypeError(msg)
+    nested = _json_object(value)
+    if key in nested:
+        nested[key] = _id_string(nested[key])
+    payload[field] = nested
 
 
 def _event_type(event: OneBot11Event) -> str:
@@ -1138,7 +1459,7 @@ def _parse_cq_segment(body: str) -> OneBot11MessageSegment | None:
         if not part:
             continue
         key, separator, value = part.partition("=")
-        data[key] = _unescape_text(value).replace("&#44;", ",") if separator else ""
+        data[key] = _unescape_text(value.replace("&#44;", ",")) if separator else ""
     return _load_ob11_segment({"type": segment_type, "data": data})
 
 
@@ -1149,11 +1470,7 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
     value = _json_object(value)
 
     segment_type = _required_str(value.get("type"), "type")
-    raw_data = value.get("data") or {}
-    if not isinstance(raw_data, Mapping):
-        msg = "OneBot 11 segment data must be an object or null"
-        raise TypeError(msg)
-    data = _json_object(raw_data)
+    data = _ob11_segment_data(value.get("data"))
 
     if segment_type == "text":
         return _ob11_segment("text", {"text": str(data.get("text", ""))})
@@ -1191,6 +1508,15 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
     return _ob11_segment(segment_type, payload)
 
 
+def _ob11_segment_data(value: JsonValue | None) -> dict[str, JsonValue]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        msg = "OneBot 11 segment data must be an object or null"
+        raise TypeError(msg)
+    return _json_object(value)
+
+
 def _unescape_text(value: str) -> str:
     return value.replace("&#91;", "[").replace("&#93;", "]").replace("&amp;", "&")
 
@@ -1210,18 +1536,11 @@ def _finite_float(value: JsonValue | None) -> float:
     return number
 
 
-def _status_payload(value: JsonValue | None, self_: BotSelf) -> Status:
-    data = _json_object(value) if isinstance(value, Mapping) else {}
-    good = data.get("good")
-    if not isinstance(good, bool):
-        online = data.get("online")
-        good = online if isinstance(online, bool) else True
-
-    bots: list[BotStatus] = []
-    online = data.get("online")
-    if isinstance(online, bool):
-        bots.append(BotStatus(self=self_, online=online))
-    return Status(good=good, bots=bots)
+def _status_payload(value: OneBot11Status, self_: BotSelf) -> Status:
+    bots = (
+        [BotStatus(self=self_, online=value.online)] if value.online is not None else []
+    )
+    return Status(good=value.good, bots=bots)
 
 
 def _required_str(value: JsonValue | None, field: str) -> str:
@@ -1259,26 +1578,175 @@ def _ob11_number(value: JsonValue, *, strict: bool) -> JsonValue:
     return value
 
 
-def _action_response_from_payload(
+def adapt_action_response(
+    action: str,
+    response: ActionResponse,
+    self_: BotSelf,
+) -> ActionResponse:
+    if response.status != ApiStatus.OK:
+        return response
+    try:
+        internal_action = Action(action)
+    except ValueError:
+        return response
+    data = _adapt_action_data(internal_action, response.data, self_)
+    return response.model_copy(update={"data": data})
+
+
+def _adapt_action_data(
+    action: Action,
+    value: JsonValue,
+    self_: BotSelf,
+) -> JsonValue:
+    if action == Action.SEND_MESSAGE:
+        data = _action_data_object(value, action)
+        result: dict[str, JsonValue] = {
+            "message_id": _id_string(data.get("message_id")),
+        }
+        if "time" in data:
+            result["time"] = _action_time(data["time"])
+        return result
+    if action in {Action.DELETE_MESSAGE, Action.SET_GROUP_NAME, Action.LEAVE_GROUP}:
+        if value is not None:
+            msg = f"OneBot 11 {action} response data must be null"
+            raise TypeError(msg)
+        return None
+    return _adapt_query_action_data(action, value, self_)
+
+
+def _adapt_query_action_data(
+    action: Action,
+    value: JsonValue,
+    self_: BotSelf,
+) -> JsonValue:
+    if action == Action.GET_SELF_INFO:
+        data = _action_data_object(value, action)
+        return {
+            "user_id": _id_string(data.get("user_id")),
+            "user_name": _required_str(data.get("nickname"), "nickname"),
+            "user_displayname": "",
+        }
+    if action == Action.GET_USER_INFO:
+        return _adapt_user_data(value, action)
+    if action == Action.GET_FRIEND_LIST:
+        return [
+            _adapt_user_data(item, action, remark_field="remark")
+            for item in _action_data_list(value, action)
+        ]
+    if action == Action.GET_GROUP_INFO:
+        return _adapt_group_data(value, action)
+    if action == Action.GET_GROUP_LIST:
+        return [
+            _adapt_group_data(item, action) for item in _action_data_list(value, action)
+        ]
+    if action == Action.GET_GROUP_MEMBER_INFO:
+        return _adapt_group_member_data(value, action)
+    if action == Action.GET_GROUP_MEMBER_LIST:
+        return [
+            _adapt_group_member_data(item, action)
+            for item in _action_data_list(value, action)
+        ]
+    if action == Action.GET_STATUS:
+        status = OneBot11Status.model_validate(_action_data_object(value, action))
+        return cast(
+            JsonValue,
+            _status_payload(status, self_).model_dump(mode="json", by_alias=True),
+        )
+    if action == Action.GET_VERSION:
+        data = _action_data_object(value, action)
+        _required_str(data.get("protocol_version"), "protocol_version")
+        return {
+            "impl": _required_str(data.get("app_name"), "app_name"),
+            "version": _required_str(data.get("app_version"), "app_version"),
+            "onebot_version": "12",
+        }
+    return value
+
+
+def _adapt_user_data(
+    value: JsonValue,
+    action: Action,
+    *,
+    remark_field: str | None = None,
+) -> dict[str, JsonValue]:
+    data = _action_data_object(value, action)
+    user_remark = (
+        _required_str(data.get(remark_field), remark_field)
+        if remark_field is not None
+        else ""
+    )
+    return {
+        "user_id": _id_string(data.get("user_id")),
+        "user_name": _required_str(data.get("nickname"), "nickname"),
+        "user_displayname": "",
+        "user_remark": user_remark,
+    }
+
+
+def _adapt_group_data(
+    value: JsonValue,
+    action: Action,
+) -> dict[str, JsonValue]:
+    data = _action_data_object(value, action)
+    return {
+        "group_id": _id_string(data.get("group_id")),
+        "group_name": _required_str(data.get("group_name"), "group_name"),
+    }
+
+
+def _adapt_group_member_data(
+    value: JsonValue,
+    action: Action,
+) -> dict[str, JsonValue]:
+    data = _action_data_object(value, action)
+    return {
+        "user_id": _id_string(data.get("user_id")),
+        "user_name": _required_str(data.get("nickname"), "nickname"),
+        "user_displayname": _required_str(data.get("card"), "card"),
+    }
+
+
+def _action_data_object(value: JsonValue, action: Action) -> dict[str, JsonValue]:
+    if not isinstance(value, Mapping):
+        msg = f"OneBot 11 {action} response data must be an object"
+        raise TypeError(msg)
+    return _json_object(value)
+
+
+def _action_data_list(value: JsonValue, action: Action) -> list[JsonValue]:
+    if not isinstance(value, list):
+        msg = f"OneBot 11 {action} response data must be an array"
+        raise TypeError(msg)
+    return value
+
+
+def _action_time(value: JsonValue) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        msg = "OneBot 11 send_message response time must be a number"
+        raise TypeError(msg)
+    if not isfinite(value):
+        msg = "OneBot 11 send_message response time must be finite"
+        raise ValueError(msg)
+    return float(value)
+
+
+def decode_action_response(
     payload: BaseModel | Mapping[str, JsonValue],
 ) -> ActionResponse:
     response = OneBot11ActionResponse.model_validate(_json_object(payload))
-    echo = response.echo if isinstance(response.echo, str) else None
-    if response.status in {"ok", "async"}:
+    if response.echo is not None and not isinstance(response.echo, str):
+        msg = "OneBot 11 action response echo must be a string or null"
+        raise TypeError(msg)
+    echo = response.echo
+    if response.status == "ok":
         return ActionResponse.ok(response.data, echo=echo)
-
-    retcode_value = response.retcode
-    retcode = (
-        retcode_value
-        if isinstance(retcode_value, int)
-        and not isinstance(retcode_value, bool)
-        and retcode_value != 0
-        else Retcode.INTERNAL_HANDLER_ERROR
-    )
+    if response.status == "async":
+        msg = "OneBot 11 async action responses cannot be represented"
+        raise ValueError(msg)
     message = response.message or response.msg or ""
     return ActionResponse(
         status=ApiStatus.FAILED,
-        retcode=retcode,
+        retcode=response.retcode,
         data=response.data,
         message=message,
         echo=echo,
@@ -1291,7 +1759,7 @@ def _model_dump_object(value: BaseModel) -> dict[str, JsonValue]:
         value.model_dump(
             mode="json",
             by_alias=True,
-            exclude_none=True,
+            exclude_unset=True,
         ),
     )
 
@@ -1310,7 +1778,7 @@ def _json_value(value: object) -> JsonValue:
         return value.model_dump(
             mode="json",
             by_alias=True,
-            exclude_none=True,
+            exclude_unset=True,
         )
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
@@ -1334,4 +1802,7 @@ __all__ = [
     "ReverseWebSocket",
     "WebSocketAction",
     "WebSocketConnection",
+    "adapt_action_response",
+    "decode_action_response",
+    "decode_event",
 ]
