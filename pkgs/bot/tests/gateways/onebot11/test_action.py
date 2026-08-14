@@ -287,20 +287,6 @@ def test_onebot11_action_response_rejects_invalid_status_retcode_pairs(
         decode_action_response(payload)
 
 
-def test_quick_reply_message_uses_onebot11_segments() -> None:
-    gateway = OneBot11Gateway(Bot())
-    message = Msg.reply("msg-1", Msg.mention("42", " hello"), user_id="42")
-
-    assert gateway.quick_reply_message(message).model_dump(
-        mode="json",
-        by_alias=True,
-    ) == [
-        {"type": "reply", "data": {"id": "msg-1"}},
-        {"type": "at", "data": {"qq": "42"}},
-        {"type": "text", "data": {"text": " hello"}},
-    ]
-
-
 async def test_message_return_uses_group_action() -> None:
     event = EventPayload.model_validate({
         "id": "evt-group",
@@ -324,13 +310,23 @@ async def test_message_return_uses_group_action() -> None:
         async with gateway:
             await connection.execute_return_action(
                 event,
-                ReturnAction.message("reply"),
+                ReturnAction.message(
+                    Msg.reply(
+                        "msg-1",
+                        Msg.mention("42", " hello"),
+                        user_id="42",
+                    )
+                ),
             )
 
     assert server.requests[0].path == "/send_group_msg"
     assert server.requests[0].json == {
         "group_id": 20000,
-        "message": [{"type": "text", "data": {"text": "reply"}}],
+        "message": [
+            {"type": "reply", "data": {"id": "msg-1"}},
+            {"type": "at", "data": {"qq": "42"}},
+            {"type": "text", "data": {"text": " hello"}},
+        ],
     }
 
 

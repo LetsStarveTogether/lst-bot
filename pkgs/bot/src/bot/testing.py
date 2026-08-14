@@ -13,8 +13,28 @@ from bot import (
     BotSelf,
     Connection,
     Gateway,
+    PrivateMessageEvent,
 )
 from bot.protocol.actions import ActionParamModel
+
+
+def private_message_event(
+    text: str,
+    *,
+    user_id: str = "42",
+    event_id: str = "evt-1",
+    self_id: str = "bot",
+) -> PrivateMessageEvent:
+    return PrivateMessageEvent.model_validate({
+        "id": event_id,
+        "self": {"platform": "test", "user_id": self_id},
+        "time": 1.0,
+        "sub_type": "",
+        "message_id": f"{event_id}-message",
+        "message": [{"type": "text", "data": {"text": text}}],
+        "alt_message": text,
+        "user_id": user_id,
+    })
 
 
 class RecordingGateway(Gateway):
@@ -44,6 +64,12 @@ class RecordingGateway(Gateway):
             ActionCall.model_validate({"action": action, "params": params})
         )
         return self.responses.get(action, ActionResponse.ok({"status": "ok"}))
+
+
+def recording_gateway(bot: Bot) -> RecordingGateway:
+    gateway = RecordingGateway(bot)
+    bot.add_gateway(gateway)
+    return gateway
 
 
 class ScriptedWebSocket:
@@ -80,4 +106,9 @@ class ScriptedWebSocket:
         self.closed.set()
 
 
-__all__ = ["RecordingGateway", "ScriptedWebSocket"]
+__all__ = [
+    "RecordingGateway",
+    "ScriptedWebSocket",
+    "private_message_event",
+    "recording_gateway",
+]

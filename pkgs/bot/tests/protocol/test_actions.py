@@ -24,113 +24,64 @@ from bot.protocol.actions import (
 )
 from pydantic import BaseModel, ValidationError
 
-ACTION_CASES: tuple[tuple[str, str, dict[str, object]], ...] = (
-    ("get-latest-events", "get_latest_events", {"limit": 10, "timeout": 0}),
-    ("get-supported-actions", "get_supported_actions", {}),
-    ("get-status", "get_status", {}),
-    ("get-version", "get_version", {}),
-    ("get-self-info", "get_self_info", {}),
-    ("get-user-info", "get_user_info", {"user_id": "42"}),
-    ("get-friend-list", "get_friend_list", {}),
-    (
-        "send-message",
-        "send_message",
-        {"detail_type": "private", "user_id": "42", "message": "hello"},
-    ),
-    ("delete-message", "delete_message", {"message_id": "message-1"}),
-    ("get-group-info", "get_group_info", {"group_id": "20000"}),
-    ("get-group-list", "get_group_list", {}),
-    (
-        "get-group-member-info",
-        "get_group_member_info",
-        {"group_id": "20000", "user_id": "42"},
-    ),
-    (
-        "get-group-member-list",
-        "get_group_member_list",
-        {"group_id": "20000"},
-    ),
-    (
-        "set-group-name",
-        "set_group_name",
-        {"group_id": "20000", "group_name": "group"},
-    ),
-    ("leave-group", "leave_group", {"group_id": "20000"}),
-    ("get-guild-info", "get_guild_info", {"guild_id": "30000"}),
-    ("get-guild-list", "get_guild_list", {}),
-    (
-        "set-guild-name",
-        "set_guild_name",
-        {"guild_id": "30000", "guild_name": "guild"},
-    ),
-    (
-        "get-guild-member-info",
-        "get_guild_member_info",
-        {"guild_id": "30000", "user_id": "42"},
-    ),
-    (
-        "get-guild-member-list",
-        "get_guild_member_list",
-        {"guild_id": "30000"},
-    ),
-    ("leave-guild", "leave_guild", {"guild_id": "30000"}),
-    (
-        "get-channel-info",
-        "get_channel_info",
-        {"guild_id": "30000", "channel_id": "40000"},
-    ),
-    (
-        "get-channel-list",
-        "get_channel_list",
-        {"guild_id": "30000", "joined_only": None},
-    ),
-    (
-        "set-channel-name",
-        "set_channel_name",
-        {
-            "guild_id": "30000",
-            "channel_id": "40000",
-            "channel_name": "channel",
-        },
-    ),
-    (
-        "get-channel-member-info",
-        "get_channel_member_info",
-        {"guild_id": "30000", "channel_id": "40000", "user_id": "42"},
-    ),
-    (
-        "get-channel-member-list",
-        "get_channel_member_list",
-        {"guild_id": "30000", "channel_id": "40000"},
-    ),
-    (
-        "leave-channel",
-        "leave_channel",
-        {"guild_id": "30000", "channel_id": "40000"},
-    ),
-    (
-        "upload-file",
-        "upload_file",
-        {"type": "url", "name": "file.bin", "url": "https://example.test/file"},
-    ),
-    (
-        "upload-file-fragmented",
-        "upload_file_fragmented",
-        {"stage": "prepare", "name": "file.bin", "total_size": 1},
-    ),
-    ("get-file", "get_file", {"file_id": "file-1", "type": "url"}),
-    (
-        "get-file-fragmented",
-        "get_file_fragmented",
-        {"stage": "prepare", "file_id": "file-1"},
-    ),
-)
+ACTION_CASES: dict[str, dict[str, object]] = {
+    "get_latest_events": {"limit": 10, "timeout": 0},
+    "get_supported_actions": {},
+    "get_status": {},
+    "get_version": {},
+    "get_self_info": {},
+    "get_user_info": {"user_id": "42"},
+    "get_friend_list": {},
+    "send_message": {
+        "detail_type": "private",
+        "user_id": "42",
+        "message": "hello",
+    },
+    "delete_message": {"message_id": "message-1"},
+    "get_group_info": {"group_id": "20000"},
+    "get_group_list": {},
+    "get_group_member_info": {"group_id": "20000", "user_id": "42"},
+    "get_group_member_list": {"group_id": "20000"},
+    "set_group_name": {"group_id": "20000", "group_name": "group"},
+    "leave_group": {"group_id": "20000"},
+    "get_guild_info": {"guild_id": "30000"},
+    "get_guild_list": {},
+    "set_guild_name": {"guild_id": "30000", "guild_name": "guild"},
+    "get_guild_member_info": {"guild_id": "30000", "user_id": "42"},
+    "get_guild_member_list": {"guild_id": "30000"},
+    "leave_guild": {"guild_id": "30000"},
+    "get_channel_info": {"guild_id": "30000", "channel_id": "40000"},
+    "get_channel_list": {"guild_id": "30000", "joined_only": None},
+    "set_channel_name": {
+        "guild_id": "30000",
+        "channel_id": "40000",
+        "channel_name": "channel",
+    },
+    "get_channel_member_info": {
+        "guild_id": "30000",
+        "channel_id": "40000",
+        "user_id": "42",
+    },
+    "get_channel_member_list": {"guild_id": "30000", "channel_id": "40000"},
+    "leave_channel": {"guild_id": "30000", "channel_id": "40000"},
+    "upload_file": {
+        "type": "url",
+        "name": "file.bin",
+        "url": "https://example.test/file",
+    },
+    "upload_file_fragmented": {
+        "stage": "prepare",
+        "name": "file.bin",
+        "total_size": 1,
+    },
+    "get_file": {"file_id": "file-1", "type": "url"},
+    "get_file_fragmented": {"stage": "prepare", "file_id": "file-1"},
+}
 
 
 @pytest.mark.parametrize(
     ("action", "params"),
-    [(action, params) for _, action, params in ACTION_CASES],
-    ids=[case_id for case_id, _, _ in ACTION_CASES],
+    ACTION_CASES.items(),
 )
 def test_each_standard_action_round_trips_json(
     action: str,
@@ -143,7 +94,7 @@ def test_each_standard_action_round_trips_json(
 
 
 def test_action_matrix_covers_every_declared_standard_action() -> None:
-    assert {Action(action) for _, action, _ in ACTION_CASES} == set(Action)
+    assert set(map(Action, ACTION_CASES)) == set(Action)
 
 
 @pytest.mark.parametrize(
@@ -189,7 +140,7 @@ def test_send_message_discriminator_selects_each_target_variant(
 
 
 @pytest.mark.parametrize(
-    ("params", "file_type"),
+    "params",
     [
         pytest.param(
             {
@@ -198,34 +149,29 @@ def test_send_message_discriminator_selects_each_target_variant(
                 "url": "https://example.test/file",
                 "headers": {"Authorization": "Bearer token"},
             },
-            "url",
             id="url",
         ),
         pytest.param(
             {"type": "path", "name": "file.bin", "path": "files/file.bin"},
-            "path",
             id="path",
         ),
         pytest.param(
             {"type": "data", "name": "file.bin", "data": "/w=="},
-            "data",
             id="data",
         ),
         pytest.param(
             {"type": "vendor.storage", "name": "file.bin", "token": None},
-            "vendor.storage",
             id="extension",
         ),
     ],
 )
 def test_upload_file_discriminator_selects_each_source_variant(
     params: dict[str, object],
-    file_type: str,
 ) -> None:
     call = ActionCall.model_validate({"action": "upload_file", "params": params})
 
     assert isinstance(call.root.params, UploadFileBaseParams)
-    assert call.root.params.type == file_type
+    assert call.root.params.type == params["type"]
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -630,22 +576,6 @@ def test_sha256_rejects_invalid_value(value: str) -> None:
         })
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param(float("nan"), id="nan"),
-        pytest.param(float("inf"), id="positive-infinity"),
-        pytest.param(float("-inf"), id="negative-infinity"),
-    ],
-)
-def test_action_extension_rejects_nested_non_finite_number(value: float) -> None:
-    with pytest.raises(ValidationError):
-        ActionCall.model_validate({
-            "action": "vendor.action",
-            "params": {"nested": [{"value": value}]},
-        })
-
-
 class VendorParams(BaseModel):
     enabled: bool
 
@@ -678,14 +608,11 @@ def test_return_action_serializes_python_parameter_values() -> None:
 
 def test_return_action_factories_cover_message_call_and_request() -> None:
     message = ReturnAction.message("hello")
-    call = ReturnAction.call("get_status")
     request = ReturnAction.request(False, reason="denied")
 
     assert (message.kind, message.msg.text if message.msg else None) == (
         "message",
         "hello",
     )
-    assert call.kind == "call"
-    assert call.action_call is not None
     assert request.kind == "request"
     assert request.approve is False

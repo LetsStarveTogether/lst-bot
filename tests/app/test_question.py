@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
-from app_event import message_event
 from bot import ActionResponse, Bot, Msg, ReturnAction
-from bot.testing import RecordingGateway
+from bot.testing import RecordingGateway, private_message_event, recording_gateway
 
 from lst_bot.agent import DstQuestionAgent
 from lst_bot.question import (
@@ -49,7 +48,7 @@ async def test_build_question_combines_reply_and_command_text() -> None:
             }),
         },
     )
-    event = message_event("问 new question").model_copy(
+    event = private_message_event("问 new question").model_copy(
         update={"message": Msg.reply("source-message", "问 new question")},
     )
 
@@ -65,16 +64,15 @@ async def test_build_question_combines_reply_and_command_text() -> None:
 async def test_question_command_dispatches_with_injected_agent_and_reply() -> None:
     bot = Bot()
     agent = Mock(spec_set=DstQuestionAgent)
-    agent.answer = AsyncMock(return_value="答案")
+    agent.answer.return_value = "答案"
     bot.container.add_instance(agent, provides=DstQuestionAgent)
     bot.add_router(router)
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event("/问 巨鹿什么时候来？"),
+            private_message_event("/问 巨鹿什么时候来？"),
         )
 
     agent.answer.assert_awaited_once_with("用户问题：\n巨鹿什么时候来？")

@@ -8,7 +8,7 @@ from asyncio import (
     create_task,
     sleep,
 )
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -83,9 +83,12 @@ from .base import (
     AccessToken,
     Connection,
     Gateway,
+    HttpAction,
+    WebSocketAction,
     WebSocketActionManager,
     WebSocketActionSession,
     WebSocketConnection,
+    WebSocketConnector,
     WebsocketsConnection,
     access_token_value,
     bearer_or_query_token,
@@ -97,11 +100,6 @@ from .base import (
     text_response,
     token_matches,
 )
-
-type WebSocketConnector = Callable[
-    [str, dict[str, str] | None],
-    Awaitable[WebSocketConnection],
-]
 
 logger = Logger(__name__)
 
@@ -492,17 +490,6 @@ class ForwardWebSocket:
             raise ValueError(msg)
 
 
-@dataclass(slots=True)
-class HttpAction:
-    base_url: str
-    http_pool: AsyncPoolManager | None = field(default=None, repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class WebSocketAction:
-    timeout: float = 30.0
-
-
 type Ingress = HttpWebhook | ReverseWebSocket | ForwardWebSocket
 type ActionBackend = HttpAction | WebSocketAction
 
@@ -525,16 +512,6 @@ _HTTP_QUICK_OPERATIONS: ContextVar[_QuickOperations | None] = ContextVar(
     "bot_onebot11_http_quick_operations",
     default=None,
 )
-
-
-def _payload_kind(data: Mapping[str, JsonValue]) -> str:
-    if "post_type" in data:
-        return f"event:{data.get('post_type')}"
-    if "action" in data:
-        return "action"
-    if "status" in data and "retcode" in data:
-        return "action_response"
-    return "unknown"
 
 
 class OneBot11Gateway(Gateway):
@@ -670,14 +647,14 @@ class OneBot11Gateway(Gateway):
         token = _HTTP_QUICK_OPERATIONS.set(collector)
         try:
             try:
-                await self.handle_payload(payload)
+                data = _model_dump_object(payload)
+                await self.dispatch_event(decode_event(data))
             except QueueFull:
                 return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
             except (TypeError, ValueError, ValidationError) as exc:
                 error = str(exc)
                 logger.warning(
-                    "reject OneBot 11 HTTP payload: {kind} ({error})",
-                    kind=_payload_kind(_model_dump_object(payload)),
+                    "reject OneBot 11 HTTP payload ({error})",
                     error=f"{type(exc).__name__}: {error}"
                     if error
                     else type(exc).__name__,
@@ -748,87 +725,6 @@ class OneBot11Gateway(Gateway):
 
         action_name, params = _request_response_action(event, action)
         return await self.request_action(connection, action_name, params)
-
-    async def handle_ws(
-        self,
-        payload: BaseModel,
-        *,
-        session: WebSocketActionSession | None = None,
-    ) -> ActionResponse | None:
-        if __debug__:
-            logger.trace(
-                "handle OneBot 11 WebSocket payload : {payload}",
-                payload=payload,
-            )
-        try:
-            data = _model_dump_object(payload)
-            self._queue_ws_payload(data, "universal", session, None)
-        except (TypeError, ValueError, ValidationError) as exc:
-            error = str(exc)
-            logger.warning(
-                "reject OneBot 11 WebSocket payload: {kind} ({error})",
-                kind=_payload_kind(_model_dump_object(payload)),
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
-            return ActionResponse(
-                status=ApiStatus.FAILED,
-                retcode=1400,
-                data=None,
-                message=str(exc),
-            )
-        else:
-            return None
-
-    async def handle_payload(
-        self,
-        payload: BaseModel,
-        *,
-        session: WebSocketActionSession | None = None,
-    ) -> ActionResponse | None:
-        data = _model_dump_object(payload)
-        if __debug__:
-            logger.trace(
-                "handle OneBot 11 payload data : {data}",
-                data=data,
-            )
-        if "post_type" in data:
-            event = decode_event(data)
-            if __debug__:
-                logger.trace(
-                    "dispatch OneBot 11 event : {event}",
-                    event=event,
-                )
-            if (
-                session is not None
-                and self._ws_actions is not None
-                and event.self_ is not None
-            ):
-                self._ws_actions.bind_self(session, event.self_)
-            await self.dispatch_event(event)
-            return None
-        if "action" in data:
-            msg = "Inbound OneBot 11 action requests are not accepted"
-            raise ValueError(msg)
-        if "status" in data and "retcode" in data:
-            if session is None:
-                msg = "OneBot 11 action responses require a WebSocket session"
-                raise ValueError(msg)
-            response = decode_action_response(data)
-            if self._ws_actions is not None:
-                matched = self._ws_actions.receive(session, response)
-                if __debug__:
-                    logger.trace(
-                        "process OneBot 11 action response : {response} {matched}",
-                        response=response,
-                        matched=matched,
-                    )
-            return None
-
-        msg = "OneBot 11 payload must be an event or action response"
-        raise ValueError(msg)
-
-    def quick_reply_message(self, msg: MsgInput) -> OneBot11Message:
-        return _dump_ob11_message(msg)
 
     @override
     async def request_action(
@@ -1063,7 +959,8 @@ class OneBot11Gateway(Gateway):
         finally:
             if session is not None and self._ws_actions is not None:
                 self._ws_actions.unregister(session)
-            await self._close_websocket(websocket)
+            with suppress(Exception):
+                await websocket.close()
 
     def _queue_ws_payload(
         self,
@@ -1109,17 +1006,16 @@ class OneBot11Gateway(Gateway):
         if self._ws_actions is not None:
             self._ws_actions.receive(session, response)
 
-    async def _close_websocket(self, websocket: WebSocketConnection) -> None:
-        with suppress(Exception):
-            await websocket.close()
-
     async def _run_forward_websocket(self, ingress: ForwardWebSocket) -> None:
         while not self._closing:
             try:
-                websocket = await self._connect_forward_websocket(ingress)
+                websocket = await self._websocket_connector(
+                    ingress.url,
+                    self.authorization_headers,
+                )
                 await self._serve_websocket(websocket, ingress.role, ingress.self_)
                 if not self._closing:
-                    await self._sleep_before_forward_reconnect(ingress)
+                    await sleep(ingress.reconnect_interval)
             except CancelledError:
                 raise
             except Exception as exc:
@@ -1136,21 +1032,6 @@ class OneBot11Gateway(Gateway):
                     else type(exc).__name__,
                 )
                 await sleep(ingress.reconnect_interval)
-
-    async def _connect_forward_websocket(
-        self,
-        ingress: ForwardWebSocket,
-    ) -> WebSocketConnection:
-        return await self._websocket_connector(
-            ingress.url,
-            self.authorization_headers,
-        )
-
-    async def _sleep_before_forward_reconnect(self, ingress: ForwardWebSocket) -> None:
-        await sleep(ingress.reconnect_interval)
-
-    def _authenticate(self, source: object) -> bool:
-        return token_matches(self.access_token, bearer_or_query_token(source))
 
 
 def _normalize_ob11_params(

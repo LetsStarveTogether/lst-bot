@@ -2,47 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import Mock, call
 
 import pytest
 from lst import ClusterConfig, LstClient, ServerConfig
-
-type ConsoleOperation = Callable[[LstClient, list[int]], None]
-type SystemdOperation = Callable[[LstClient, list[int]], None]
-
-
-class RecordingSystemd:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, bytes, bytes]] = []
-
-    def StartUnit(  # ruff:ignore[invalid-function-name]
-        self,
-        unit_name: bytes,
-        mode: bytes,
-    ) -> bytes:
-        self.calls.append(("StartUnit", unit_name, mode))
-        return b"/job/start"
-
-    def StopUnit(  # ruff:ignore[invalid-function-name]
-        self,
-        unit_name: bytes,
-        mode: bytes,
-    ) -> bytes:
-        self.calls.append(("StopUnit", unit_name, mode))
-        return b"/job/stop"
-
-    def RestartUnit(  # ruff:ignore[invalid-function-name]
-        self,
-        unit_name: bytes,
-        mode: bytes,
-    ) -> bytes:
-        self.calls.append(("RestartUnit", unit_name, mode))
-        return b"/job/restart"
-
-
-class RejectSystemdAccess:
-    def __getattr__(self, name: str) -> object:
-        msg = f"console command unexpectedly accessed systemd: {name}"
-        raise AssertionError(msg)
 
 
 @pytest.mark.parametrize(
@@ -59,14 +22,14 @@ class RejectSystemdAccess:
 )
 def test_console_operations_write_each_room(
     tmp_path: Path,
-    operation: ConsoleOperation,
+    operation: Callable[[LstClient, list[int]], None],
     expected: str,
 ) -> None:
     for room_id in (1, 2):
         (tmp_path / str(room_id)).mkdir()
     client = LstClient(
         data_path=tmp_path,
-        systemd_manager=RejectSystemdAccess(),
+        systemd_manager=object(),
     )
 
     operation(client, [1, 2])
@@ -104,10 +67,10 @@ def test_send_console_command_writes_exactly_one_trailing_newline(
 )
 def test_systemd_operations_pass_exact_unit_and_mode(
     tmp_path: Path,
-    operation: SystemdOperation,
+    operation: Callable[[LstClient, list[int]], None],
     method: str,
 ) -> None:
-    manager = RecordingSystemd()
+    manager = Mock()
     client = LstClient(
         data_path=tmp_path,
         service_template_name=b"custom-dst",
@@ -117,9 +80,9 @@ def test_systemd_operations_pass_exact_unit_and_mode(
 
     operation(client, [1, 12])
 
-    assert manager.calls == [
-        (method, b"custom-dst@1.service", b"fail"),
-        (method, b"custom-dst@12.service", b"fail"),
+    assert manager.method_calls == [
+        getattr(call, method)(b"custom-dst@1.service", b"fail"),
+        getattr(call, method)(b"custom-dst@12.service", b"fail"),
     ]
 
 

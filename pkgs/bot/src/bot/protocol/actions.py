@@ -30,9 +30,7 @@ from .common import BotSelf
 from .constants import (
     ACTION_CALL_TAGS,
     MAX_RETCODE,
-    SEND_MSG_DETAIL_TYPES,
     SHA256_STRING_PATTERN,
-    UPLOAD_FILE_TYPES,
 )
 from .enums import (
     Action,
@@ -75,6 +73,7 @@ type WireBytes = Annotated[
     BeforeValidator(_load_base64_bytes),
     PlainSerializer(_dump_base64_bytes, return_type=str, when_used="json"),
 ]
+
 type _ActionParamValue = JsonValue | WireBytes | SerializeAsAny[BaseModel]
 
 
@@ -221,12 +220,6 @@ def _field_value(value: object, key: str) -> object:
 
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
     detail_type = _field_value(value, "detail_type")
-    try:
-        tag = MsgTargetTag(detail_type)
-    except ValueError:
-        tag = MsgTargetTag.EXTENSION
-    if tag in SEND_MSG_DETAIL_TYPES:
-        return tag
     if detail_type is None:
         if _field_value(value, "guild_id") and _field_value(value, "channel_id"):
             return MsgTargetTag.CHANNEL
@@ -234,18 +227,18 @@ def _send_msg_params_tag(value: object) -> MsgTargetTag:
             return MsgTargetTag.GROUP
         if _field_value(value, "user_id"):
             return MsgTargetTag.PRIVATE
-    return MsgTargetTag.EXTENSION
+    try:
+        return MsgTargetTag(detail_type)
+    except ValueError:
+        return MsgTargetTag.EXTENSION
 
 
 def _upload_file_params_tag(value: object) -> UploadFileTag:
     file_type = _field_value(value, "type")
     try:
-        tag = UploadFileTag(file_type)
+        return UploadFileTag(file_type)
     except ValueError:
-        tag = UploadFileTag.EXTENSION
-    if tag in UPLOAD_FILE_TYPES:
-        return tag
-    return UploadFileTag.EXTENSION
+        return UploadFileTag.EXTENSION
 
 
 def _action_call_tag(value: object) -> ActionCallTag:

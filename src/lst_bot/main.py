@@ -15,7 +15,7 @@ from lst import LstClient
 from urllib3_future import AsyncProxyManager
 
 from .agent import DstQuestionAgent
-from .general import register_crons
+from .general import report
 from .general import router as general_router
 from .question import router as question_router
 from .rooms import router as rooms_router
@@ -109,7 +109,7 @@ def build_application(settings: Settings) -> Application:
 
     for router in (general_router, question_router, rooms_router):
         bot.add_router(router)
-    register_crons(bot)
+    bot.on_cron("0 0,8-23 * * *")(report)
 
     @bot.on_event()
     def log_event(event: Injected[Event]) -> None:

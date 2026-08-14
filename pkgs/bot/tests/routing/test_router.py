@@ -5,18 +5,16 @@ from dataclasses import dataclass
 from bot import (
     Bot,
     Cmd,
-    EventPayload,
     EventRoute,
     EventRouter,
     Injected,
     InjectionContext,
     Lifetime,
-    PrivateMessageEvent,
     Scope,
     State,
     UserEvent,
 )
-from bot.testing import RecordingGateway
+from bot.testing import private_message_event, recording_gateway
 
 
 @dataclass(frozen=True)
@@ -41,34 +39,6 @@ def get_tenant(event: UserEvent) -> Tenant:
     return Tenant(event.user_id)
 
 
-def message_event(
-    text: str,
-    *,
-    user_id: str = "42",
-    event_id: str = "evt-1",
-) -> PrivateMessageEvent:
-    event = EventPayload.model_validate({
-        "id": event_id,
-        "self": {"platform": "test", "user_id": "bot"},
-        "time": 1.0,
-        "type": "message",
-        "detail_type": "private",
-        "sub_type": "",
-        "message_id": f"{event_id}-message",
-        "message": [{"type": "text", "data": {"text": text}}],
-        "alt_message": text,
-        "user_id": user_id,
-    }).root
-    assert isinstance(event, PrivateMessageEvent)
-    return event
-
-
-def add_recording_gateway(bot: Bot) -> RecordingGateway:
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
-    return gateway
-
-
 async def test_router_cmd_uses_diwire_injected_service() -> None:
     bot = Bot()
     bot.container.add_instance(Repository("repo"), provides=Repository)
@@ -80,12 +50,12 @@ async def test_router_cmd_uses_diwire_injected_service() -> None:
         return service.render(cmd.arg)
 
     bot.add_router(router)
-    gateway = add_recording_gateway(bot)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event("/ping ok", user_id="42"),
+            private_message_event("/ping ok", user_id="42"),
         )
 
     assert results[0].route.name == "admin.ping"
@@ -101,16 +71,16 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
         return f"{cmd.name}:{cmd.raw}:{cmd.arg}"
 
     bot.add_router(router)
-    gateway = add_recording_gateway(bot)
+    gateway = recording_gateway(bot)
 
     async with bot:
         partial_results = await bot.dispatch(
             gateway.connection,
-            message_event("/pingpong now", event_id="partial"),
+            private_message_event("/pingpong now", event_id="partial"),
         )
         alias_results = await bot.dispatch(
             gateway.connection,
-            message_event("!p now", event_id="alias"),
+            private_message_event("!p now", event_id="alias"),
         )
 
     assert partial_results == []
@@ -131,10 +101,10 @@ async def test_router_cmd_blocks_by_default() -> None:
         seen.append("message")
 
     bot.add_router(router)
-    gateway = add_recording_gateway(bot)
+    gateway = recording_gateway(bot)
 
     async with bot:
-        await bot.dispatch(gateway.connection, message_event("/ping"))
+        await bot.dispatch(gateway.connection, private_message_event("/ping"))
 
     assert seen == ["command"]
 
@@ -158,10 +128,10 @@ async def test_context_route_and_cmd_are_resolved_from_current_route() -> None:
         return f"{route.name}:{cmd.name}"
 
     bot.add_router(router)
-    gateway = add_recording_gateway(bot)
+    gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(gateway.connection, message_event("hello"))
+        results = await bot.dispatch(gateway.connection, private_message_event("hello"))
 
     assert [result.values[0] for result in results] == [
         "first:first",
@@ -184,12 +154,12 @@ async def test_container_factory_dependency() -> None:
         return tenant.user_id
 
     bot.add_router(router)
-    gateway = add_recording_gateway(bot)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event("hello", user_id="7"),
+            private_message_event("hello", user_id="7"),
         )
 
     assert results[0].values == ["7"]
@@ -207,12 +177,12 @@ async def test_route_dependencies_run_before_handler() -> None:
         return "ready" if state["ready"] else "missing"
 
     bot.add_router(router)
-    gateway = add_recording_gateway(bot)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event("hello"),
+            private_message_event("hello"),
         )
 
     assert results[0].values == ["ready"]

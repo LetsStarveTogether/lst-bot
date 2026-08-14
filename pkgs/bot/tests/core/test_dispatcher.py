@@ -6,27 +6,14 @@ from datetime import timedelta
 from typing import override
 
 import pytest
-from bot import Bot, EventPayload, Injected, PrivateMessageEvent
-from bot.testing import RecordingGateway
+from bot import Bot, Injected, PrivateMessageEvent
+from bot.testing import RecordingGateway, private_message_event
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
 
 
 def event(event_id: str) -> PrivateMessageEvent:
-    value = EventPayload.model_validate({
-        "id": event_id,
-        "self": {"platform": "test", "user_id": "bot"},
-        "time": 1.0,
-        "type": "message",
-        "detail_type": "private",
-        "sub_type": "",
-        "message_id": f"{event_id}-message",
-        "message": [{"type": "text", "data": {"text": event_id}}],
-        "alt_message": event_id,
-        "user_id": "42",
-    }).root
-    assert isinstance(value, PrivateMessageEvent)
-    return value
+    return private_message_event(event_id, event_id=event_id)
 
 
 @pytest.mark.parametrize(

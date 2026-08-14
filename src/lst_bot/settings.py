@@ -7,7 +7,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from logbook import DEBUG, NOTSET, TRACE, lookup_level
-from logbook.compat import redirect_logging
+from logbook.compat import redirected_logging
 from logbook.more import ColorizedStderrHandler
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,27 +53,22 @@ class Settings(BaseSettings):
 
 @contextmanager
 def configure_logging(settings: Settings) -> Iterator[None]:
-    root = logging.getLogger()
-    handlers = root.handlers[:]
-    root_level = root.level
     library_loggers = tuple(
         logging.getLogger(name) for name in ("httpcore", "websockets", "mcp")
     )
     library_levels = tuple(logger.level for logger in library_loggers)
-    handler = ColorizedStderrHandler(level=settings.log_level)
 
-    redirect_logging()
-    for logger in library_loggers:
-        logger.setLevel(logging.INFO)
-    handler.push_application()
-    try:
-        yield
-    finally:
-        handler.pop_application()
-        root.handlers[:] = handlers
-        root.setLevel(root_level)
-        for logger, level in zip(library_loggers, library_levels, strict=True):
-            logger.setLevel(level)
+    with (
+        redirected_logging(),
+        ColorizedStderrHandler(level=settings.log_level).applicationbound(),
+    ):
+        for logger in library_loggers:
+            logger.setLevel(logging.INFO)
+        try:
+            yield
+        finally:
+            for logger, level in zip(library_loggers, library_levels, strict=True):
+                logger.setLevel(level)
 
 
 __all__ = ["Settings", "configure_logging"]

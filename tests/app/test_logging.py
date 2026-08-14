@@ -9,18 +9,6 @@ from logbook import TestHandler as LogbookTestHandler
 from lst_bot.settings import Settings, configure_logging
 
 
-def exercise_logging_context(
-    settings: Settings,
-    library_loggers: tuple[logging.Logger, ...],
-) -> None:
-    with configure_logging(settings), LogbookTestHandler() as handler:
-        logging.getLogger("tests.legacy").warning("legacy warning")
-        assert handler.has_warning("legacy warning", channel="tests.legacy")
-        assert all(logger.level == logging.INFO for logger in library_loggers)
-        msg = "stop"
-        raise RuntimeError(msg)
-
-
 def test_configure_logging_redirects_and_restores_global_state() -> None:
     root = logging.getLogger()
     handlers = root.handlers[:]
@@ -35,8 +23,16 @@ def test_configure_logging_redirects_and_restores_global_state() -> None:
         log_level=INFO,
     )
 
-    with pytest.raises(RuntimeError, match="stop"):
-        exercise_logging_context(settings, library_loggers)
+    with (  # ruff: ignore[pytest-raises-with-multiple-statements]
+        pytest.raises(RuntimeError, match="stop"),
+        configure_logging(settings),
+        LogbookTestHandler() as handler,
+    ):
+        logging.getLogger("tests.legacy").warning("legacy warning")
+        assert handler.has_warning("legacy warning", channel="tests.legacy")
+        assert all(logger.level == logging.INFO for logger in library_loggers)
+        msg = "stop"
+        raise RuntimeError(msg)
 
     assert root.handlers == handlers
     assert root.level == root_level

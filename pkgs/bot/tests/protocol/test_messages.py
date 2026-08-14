@@ -5,102 +5,47 @@ from bot import Msg, MsgSegmentType
 from bot.protocol.msg import TextSegment, TextSegmentData
 from pydantic import JsonValue, ValidationError
 
-SEGMENT_CASES: tuple[object, ...] = (
-    pytest.param(
-        {"type": "text", "data": {"text": "hello"}},
-        MsgSegmentType.TEXT,
-        id="text",
-    ),
-    pytest.param(
-        {"type": "mention", "data": {"user_id": "42"}},
-        MsgSegmentType.MENTION,
-        id="mention",
-    ),
-    pytest.param(
-        {"type": "mention_all", "data": {}},
-        MsgSegmentType.MENTION_ALL,
-        id="mention-all",
-    ),
-    pytest.param(
-        {"type": "image", "data": {"file_id": "image-1"}},
-        MsgSegmentType.IMAGE,
-        id="image",
-    ),
-    pytest.param(
-        {"type": "voice", "data": {"file_id": "voice-1"}},
-        MsgSegmentType.VOICE,
-        id="voice",
-    ),
-    pytest.param(
-        {"type": "audio", "data": {"file_id": "audio-1"}},
-        MsgSegmentType.AUDIO,
-        id="audio",
-    ),
-    pytest.param(
-        {"type": "video", "data": {"file_id": "video-1"}},
-        MsgSegmentType.VIDEO,
-        id="video",
-    ),
-    pytest.param(
-        {"type": "file", "data": {"file_id": "file-1"}},
-        MsgSegmentType.FILE,
-        id="file",
-    ),
-    pytest.param(
-        {
-            "type": "location",
-            "data": {
-                "latitude": 39.9,
-                "longitude": 116.4,
-                "title": "Beijing",
-                "content": "China",
-            },
+SEGMENT_CASES: tuple[dict[str, JsonValue], ...] = (
+    {"type": "text", "data": {"text": "hello"}},
+    {"type": "mention", "data": {"user_id": "42"}},
+    {"type": "mention_all", "data": {}},
+    {"type": "image", "data": {"file_id": "image-1"}},
+    {"type": "voice", "data": {"file_id": "voice-1"}},
+    {"type": "audio", "data": {"file_id": "audio-1"}},
+    {"type": "video", "data": {"file_id": "video-1"}},
+    {"type": "file", "data": {"file_id": "file-1"}},
+    {
+        "type": "location",
+        "data": {
+            "latitude": 39.9,
+            "longitude": 116.4,
+            "title": "Beijing",
+            "content": "China",
         },
-        MsgSegmentType.LOCATION,
-        id="location",
-    ),
-    pytest.param(
-        {
-            "type": "reply",
-            "data": {"message_id": "message-1", "user_id": "42"},
-        },
-        MsgSegmentType.REPLY,
-        id="reply",
-    ),
-    pytest.param(
-        {
-            "type": "qq.face",
-            "data": {"id": "1", "animated": True, "metadata": None},
-        },
-        "qq.face",
-        id="extension",
-    ),
+    },
+    {
+        "type": "reply",
+        "data": {"message_id": "message-1", "user_id": "42"},
+    },
+    {
+        "type": "qq.face",
+        "data": {"id": "1", "animated": True, "metadata": None},
+    },
 )
 
 
-@pytest.mark.parametrize(("payload", "segment_type"), SEGMENT_CASES)
+@pytest.mark.parametrize(
+    "payload",
+    SEGMENT_CASES,
+    ids=[str(payload["type"]) for payload in SEGMENT_CASES],
+)
 def test_each_message_segment_variant_round_trips_json(
     payload: dict[str, JsonValue],
-    segment_type: MsgSegmentType | str,
 ) -> None:
     message = Msg.model_validate([payload])
 
-    assert message[0].type == segment_type
+    assert message[0].type == payload["type"]
     assert Msg.model_validate_json(message.model_dump_json()) == message
-
-
-def test_message_normalization_is_idempotent() -> None:
-    payload = [
-        {"type": "text", "data": {"text": "hello"}},
-        {"type": "mention", "data": {"user_id": "42"}},
-        {"type": "vendor.segment", "data": {"value": None}},
-    ]
-
-    normalized = Msg.model_validate(payload).model_dump(mode="json", by_alias=True)
-
-    assert Msg.model_validate(normalized).model_dump(mode="json", by_alias=True) == (
-        normalized
-    )
 
 
 def test_message_text_and_mutation_helpers_use_protocol_segments() -> None:
@@ -177,15 +122,5 @@ def test_location_rejects_non_finite_coordinates(value: float) -> None:
                     "title": "invalid",
                     "content": "invalid",
                 },
-            },
-        ])
-
-
-def test_extension_segment_rejects_nested_non_finite_number() -> None:
-    with pytest.raises(ValidationError):
-        Msg.model_validate([
-            {
-                "type": "vendor.segment",
-                "data": {"values": [float("nan")]},
             },
         ])

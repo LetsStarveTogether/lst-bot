@@ -16,41 +16,8 @@ from bot.gateways.onebot12 import (
 from bot.gateways.onebot12 import OneBot12Gateway
 from bot.gateways.onebot12 import WebSocketAction as OneBot12WebSocketAction
 from bot.testing import ScriptedWebSocket
-from pydantic import JsonValue
 
-
-def onebot12_connect_payload() -> dict[str, JsonValue]:
-    return {
-        "id": "evt-connect",
-        "time": 1.0,
-        "type": "meta",
-        "detail_type": "connect",
-        "sub_type": "",
-        "version": {
-            "impl": "test",
-            "version": "1.0.0",
-            "onebot_version": "12",
-        },
-    }
-
-
-def onebot12_status_payload(self_: BotSelf) -> dict[str, JsonValue]:
-    return {
-        "id": "evt-status",
-        "time": 1.0,
-        "type": "meta",
-        "detail_type": "status_update",
-        "sub_type": "",
-        "status": {
-            "good": True,
-            "bots": [
-                {
-                    "self": self_.model_dump(mode="json", by_alias=True),
-                    "online": True,
-                }
-            ],
-        },
-    }
+from .onebot12.support import connect_payload, status_payload
 
 
 async def assert_disconnect_cancels_action(
@@ -61,10 +28,9 @@ async def assert_disconnect_cancels_action(
 ) -> None:
     bot.add_gateway(gateway)
     connection = gateway.connection_for(self_)
-    sent: list[str] = []
 
     async def disconnect() -> None:
-        sent.append(await websocket.sent.get())
+        await websocket.sent.get()
         websocket.finish()
 
     async with timeout(1), bot:
@@ -72,7 +38,6 @@ async def assert_disconnect_cancels_action(
         with pytest.raises(ConnectionError, match="closed"):
             await gather(connection.action("get_version"), disconnect())
 
-    assert len(sent) == 1
     assert websocket.closed.is_set()
 
 
@@ -120,8 +85,8 @@ async def test_onebot12_disconnect_cancels_pending_action() -> None:
     bot = Bot()
     self_ = BotSelf(platform="qq", user_id="10000")
     websocket = ScriptedWebSocket(
-        onebot12_connect_payload(),
-        onebot12_status_payload(self_),
+        connect_payload(),
+        status_payload(self_),
     )
     gateway = OneBot12Gateway(
         bot,

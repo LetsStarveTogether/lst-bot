@@ -18,12 +18,10 @@ from .common import BotSelf, Status, Version
 from .enums import EventDetailType, EventKind, EventTag
 from .msg import Msg
 
-type UnixSeconds = Annotated[StrictFloat, Field(allow_inf_nan=False)]
-
 
 class Event(Model):
     id: StrictStr
-    time: UnixSeconds
+    time: StrictFloat
     type: EventKind
     detail_type: StrictStr
     sub_type: StrictStr

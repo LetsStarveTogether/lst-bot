@@ -8,7 +8,7 @@ from asyncio import (
     create_task,
     sleep,
 )
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -42,9 +42,12 @@ from .base import (
     AccessToken,
     Connection,
     Gateway,
+    HttpAction,
+    WebSocketAction,
     WebSocketActionManager,
     WebSocketActionSession,
     WebSocketConnection,
+    WebSocketConnector,
     WebsocketsConnection,
     access_token_value,
     bearer_or_query_token,
@@ -55,11 +58,6 @@ from .base import (
     request_target_path,
     token_matches,
 )
-
-type WebSocketConnector = Callable[
-    [str, dict[str, str] | None],
-    Awaitable[WebSocketConnection],
-]
 
 logger = Logger(__name__)
 
@@ -97,17 +95,6 @@ class ForwardWebSocket:
         if not isfinite(self.reconnect_interval) or self.reconnect_interval <= 0:
             msg = "OneBot 12 reconnect interval must be positive"
             raise ValueError(msg)
-
-
-@dataclass(slots=True)
-class HttpAction:
-    base_url: str
-    http_pool: AsyncPoolManager | None = field(default=None, repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class WebSocketAction:
-    timeout: float = 30.0
 
 
 type Ingress = HttpWebhook | ReverseWebSocket | ForwardWebSocket
@@ -510,7 +497,8 @@ class OneBot12Gateway(Gateway):
         finally:
             if session is not None and self._ws_actions is not None:
                 self._ws_actions.unregister(session)
-            await self._close_websocket(websocket)
+            with suppress(Exception):
+                await websocket.close()
 
     async def _read_ws_payloads(
         self,
@@ -577,17 +565,16 @@ class OneBot12Gateway(Gateway):
         elif not isinstance(event, MetaEvent):
             self._ws_actions.bind_self(session, event.self_)
 
-    async def _close_websocket(self, websocket: WebSocketConnection) -> None:
-        with suppress(Exception):
-            await websocket.close()
-
     async def _run_forward_websocket(self, ingress: ForwardWebSocket) -> None:
         while not self._closing:
             try:
-                websocket = await self._connect_forward_websocket(ingress)
+                websocket = await self._websocket_connector(
+                    ingress.url,
+                    self._authorization_headers,
+                )
                 await self._serve_websocket(websocket)
                 if not self._closing:
-                    await self._sleep_before_forward_reconnect(ingress)
+                    await sleep(ingress.reconnect_interval)
             except CancelledError:
                 raise
             except Exception as exc:
@@ -604,18 +591,6 @@ class OneBot12Gateway(Gateway):
                     else type(exc).__name__,
                 )
                 await sleep(ingress.reconnect_interval)
-
-    async def _connect_forward_websocket(
-        self,
-        ingress: ForwardWebSocket,
-    ) -> WebSocketConnection:
-        return await self._websocket_connector(
-            ingress.url,
-            self._authorization_headers,
-        )
-
-    async def _sleep_before_forward_reconnect(self, ingress: ForwardWebSocket) -> None:
-        await sleep(ingress.reconnect_interval)
 
     def _authenticate(self, source: object) -> bool:
         return token_matches(self.access_token, bearer_or_query_token(source))

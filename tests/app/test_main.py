@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
-from contextlib import AbstractAsyncContextManager, contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
-from types import TracebackType
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -16,40 +15,21 @@ from lst_bot.main import Application, build_application
 from lst_bot.settings import Settings
 
 
-class RecordingResource(AbstractAsyncContextManager[None]):
-    def __init__(self, name: str, events: list[str]) -> None:
-        self.name = name
-        self.events = events
-
-    async def __aenter__(self) -> None:
-        self.events.append(f"{self.name}:start")
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        _ = exc_type, exc, traceback
-        self.events.append(f"{self.name}:close")
-
-
-class FailingResource(AbstractAsyncContextManager[None]):
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-
-    async def __aenter__(self) -> None:
-        self.events.append("failing:start")
+@asynccontextmanager
+async def resource(
+    name: str,
+    events: list[str],
+    *,
+    fail: bool = False,
+) -> AsyncIterator[None]:
+    events.append(f"{name}:start")
+    if fail:
         msg = "startup failed"
         raise RuntimeError(msg)
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        _ = exc_type, exc, traceback
+    try:
+        yield
+    finally:
+        events.append(f"{name}:close")
 
 
 async def test_application_starts_services_before_bot_and_closes_bot_first() -> None:
@@ -57,8 +37,8 @@ async def test_application_starts_services_before_bot_and_closes_bot_first() -> 
     bot = Bot()
     bot.on_start(lambda: events.append("bot:start"))
     bot.on_close(lambda: events.append("bot:close"))
-    first = RecordingResource("first", events)
-    second = RecordingResource("second", events)
+    first = resource("first", events)
+    second = resource("second", events)
 
     async with Application(bot, (first, second)):
         assert events == ["first:start", "second:start", "bot:start"]
@@ -75,8 +55,8 @@ async def test_application_starts_services_before_bot_and_closes_bot_first() -> 
 
 async def test_application_rolls_back_started_services() -> None:
     events: list[str] = []
-    first = RecordingResource("first", events)
-    application = Application(Bot(), (first, FailingResource(events)))
+    first = resource("first", events)
+    application = Application(Bot(), (first, resource("failing", events, fail=True)))
 
     with pytest.raises(RuntimeError, match="startup failed"):
         async with application:

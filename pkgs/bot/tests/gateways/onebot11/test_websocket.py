@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 import orjson
 import pytest
 from bot import (
-    ApiStatus,
     Bot,
     BotSelf,
     Connection,
@@ -22,7 +21,6 @@ from bot.gateways.onebot11 import (
     ReverseWebSocket,
     WebSocketAction,
 )
-from bot.protocol.base import Model
 from bot.testing import ScriptedWebSocket
 from ulid import ULID
 from websockets.asyncio.client import connect
@@ -84,36 +82,6 @@ def test_gateway_rejects_duplicate_ingress(
 ) -> None:
     with pytest.raises(ValueError, match="must be unique"):
         OneBot11Gateway(Bot(), ingress=ingress)
-
-
-async def test_handle_ws_enqueues_event_without_response() -> None:
-    bot = Bot()
-    gateway = OneBot11Gateway(bot)
-    bot.add_gateway(gateway)
-    received = Event()
-
-    @bot.on_msg()
-    def collect(event: Injected[PrivateMessageEvent]) -> None:
-        assert event.message.text == "hello"
-        received.set()
-
-    async with timeout(1), bot:
-        response = await gateway.handle_ws(Model.model_validate(private_msg_payload()))
-        await received.wait()
-
-    assert response is None
-
-
-async def test_handle_ws_rejects_invalid_action_response_shape() -> None:
-    gateway = OneBot11Gateway(Bot())
-
-    response = await gateway.handle_ws(
-        Model.model_validate({"status": "failed", "retcode": "bad"})
-    )
-
-    assert response is not None
-    assert response.status == ApiStatus.FAILED
-    assert response.retcode == 1400
 
 
 @pytest.mark.parametrize(

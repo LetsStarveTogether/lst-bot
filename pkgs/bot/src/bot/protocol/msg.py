@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from math import isfinite
 from typing import Annotated, Literal, Self, cast, override
 
 from pydantic import (
-    AfterValidator,
     BeforeValidator,
     Discriminator,
     Field,
@@ -22,12 +20,6 @@ from pydantic import (
 from .base import Model
 from .enums import MsgSegmentType
 
-_STANDARD_SEGMENT_TYPES = frozenset(
-    segment_type
-    for segment_type in MsgSegmentType
-    if segment_type != MsgSegmentType.EXTENSION
-)
-
 
 def _tag_value(value: object, key: str) -> object:
     if isinstance(value, Mapping):
@@ -38,25 +30,9 @@ def _tag_value(value: object, key: str) -> object:
 def _segment_tag(value: object) -> MsgSegmentType:
     segment_type = _tag_value(value, "type")
     try:
-        tag = MsgSegmentType(segment_type)
+        return MsgSegmentType(segment_type)
     except ValueError:
         return MsgSegmentType.EXTENSION
-    if tag in _STANDARD_SEGMENT_TYPES:
-        return tag
-    return MsgSegmentType.EXTENSION
-
-
-def _finite_number(value: float) -> int | float:
-    if not isfinite(float(value)):
-        msg = "message segment number must be finite"
-        raise ValueError(msg)
-    return value
-
-
-type FiniteNumber = Annotated[
-    StrictInt | StrictFloat,
-    AfterValidator(_finite_number),
-]
 
 
 class TextSegmentData(Model):
@@ -76,8 +52,8 @@ class FileSegmentData(Model):
 
 
 class LocationSegmentData(Model):
-    latitude: FiniteNumber
-    longitude: FiniteNumber
+    latitude: StrictInt | StrictFloat
+    longitude: StrictInt | StrictFloat
     title: StrictStr
     content: StrictStr
 
@@ -252,20 +228,7 @@ type MsgInput = Msg | MsgSegmentInput | Iterable[MsgSegmentInput] | str | None
 def _msg_input_value(value: object) -> object:
     if isinstance(value, Msg):
         return value.root
-    if isinstance(
-        value,
-        TextSegment
-        | MentionSegment
-        | MentionAllSegment
-        | ImageSegment
-        | VoiceSegment
-        | AudioSegment
-        | VideoSegment
-        | FileSegment
-        | LocationSegment
-        | ReplySegment
-        | ExtensionSegment,
-    ):
+    if isinstance(value, Model):
         return [value]
     if value is None:
         return []
@@ -291,7 +254,6 @@ __all__ = [
     "ExtensionSegmentData",
     "FileSegment",
     "FileSegmentData",
-    "FiniteNumber",
     "ImageSegment",
     "LocationSegment",
     "LocationSegmentData",

@@ -5,8 +5,6 @@ import re
 from .enums import (
     Action,
     ActionCallTag,
-    MsgTargetTag,
-    UploadFileTag,
 )
 
 MAX_RETCODE = 99999
@@ -51,23 +49,10 @@ ACTION_CALL_TAGS = {
     **dict.fromkeys(NO_PARAM_ACTIONS, ActionCallTag.EMPTY),
 }
 
-SEND_MSG_DETAIL_TYPES = frozenset({
-    MsgTargetTag.PRIVATE,
-    MsgTargetTag.GROUP,
-    MsgTargetTag.CHANNEL,
-})
-UPLOAD_FILE_TYPES = frozenset({
-    UploadFileTag.URL,
-    UploadFileTag.PATH,
-    UploadFileTag.DATA,
-})
-
 __all__ = [
     "ACTION_CALL_TAGS",
     "MAX_RETCODE",
     "NAME_PATTERN",
     "NO_PARAM_ACTIONS",
-    "SEND_MSG_DETAIL_TYPES",
     "SHA256_STRING_PATTERN",
-    "UPLOAD_FILE_TYPES",
 ]

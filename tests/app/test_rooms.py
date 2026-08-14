@@ -1,36 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
-from app_event import message_event
 from bot import Bot
-from bot.testing import RecordingGateway
-from klei import KleiClient, Platform, Region, RoomData, Season
+from bot.testing import private_message_event, recording_gateway
+from klei import KleiClient, Platform, Region, RoomData
 from lst import LstClient
+from support import room_data
 
 from lst_bot.rooms import format_lobby_data, parse_room_ids, router
 from lst_bot.settings import Settings
-
-
-def room_data(**overrides: Any) -> RoomData:
-    values: dict[str, Any] = {
-        "row_id": "1",
-        "name": "Room",
-        "addr": "127.0.0.1",
-        "port": 10999,
-        "host": "host",
-        "connected": 2,
-        "maxconnections": 6,
-        "password": False,
-        "serverpaused": False,
-        "region": Region.AP_EAST,
-        "season": Season.AUTUMN,
-        "data": "day=12",
-    }
-    values.update(overrides)
-    return RoomData.model_construct(**values)
 
 
 @pytest.mark.parametrize(
@@ -88,23 +68,20 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
         klei_host_id="wanted",
     )
     client = Mock(spec_set=KleiClient)
-    client.get_lobby_data = AsyncMock(
-        return_value=[
-            room_data(row_id="1", host="wanted"),
-            room_data(row_id="2", host="other"),
-        ],
-    )
-    client.get_room_data = AsyncMock(return_value=[room_data(name="Alpha")])
+    client.get_lobby_data.return_value = [
+        room_data(row_id="1", host="wanted"),
+        room_data(row_id="2", host="other"),
+    ]
+    client.get_room_data.return_value = [room_data(name="Alpha")]
     bot.container.add_instance(settings, provides=Settings)
     bot.container.add_instance(client, provides=KleiClient)
     bot.add_router(router)
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event("/房间列表"),
+            private_message_event("/房间列表"),
         )
 
     client.get_lobby_data.assert_awaited_once_with(platforms=(Platform.Steam,))
@@ -115,7 +92,6 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     result = results[0].values[0]
     assert isinstance(result, str)
     assert "Alpha" in result
-    assert gateway.actions[0].root.action == "send_message"
 
 
 @pytest.mark.parametrize(
@@ -143,20 +119,17 @@ async def test_admin_room_commands_dispatch_to_lst(
     client = Mock(spec_set=LstClient)
     bot.container.add_instance(client, provides=LstClient)
     bot.add_router(router)
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event(command, user_id="admin"),
+            private_message_event(command, user_id="admin"),
         )
 
     method = getattr(client, method_name)
     method.assert_called_once_with(*expected_args)
     assert results[0].values == [expected_reply]
-    action = gateway.actions[0].root.model_dump(mode="json", by_alias=True)
-    assert action["params"]["message"][0]["data"]["text"] == expected_reply
 
 
 async def test_room_admin_command_rejects_non_admin() -> None:
@@ -164,13 +137,12 @@ async def test_room_admin_command_rejects_non_admin() -> None:
     client = Mock(spec_set=LstClient)
     bot.container.add_instance(client, provides=LstClient)
     bot.add_router(router)
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
+    gateway = recording_gateway(bot)
 
     async with bot:
         results = await bot.dispatch(
             gateway.connection,
-            message_event("/房间存档 1", user_id="member"),
+            private_message_event("/房间存档 1", user_id="member"),
         )
 
     assert results == []

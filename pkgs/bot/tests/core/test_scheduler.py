@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from asyncio import Event, Queue, wait_for
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
-from typing import override
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -11,12 +10,10 @@ from bot import (
     Bot,
     BotSelf,
     Connection,
-    EventPayload,
     Injected,
-    PrivateMessageEvent,
     State,
 )
-from bot.testing import RecordingGateway
+from bot.testing import RecordingGateway, private_message_event, recording_gateway
 from logbook import TestHandler as LogbookTestHandler
 
 
@@ -44,39 +41,13 @@ class ScriptedSleep:
 
 
 class AlternateGateway(RecordingGateway):
-    @override
-    def __init__(self, bot: Bot) -> None:
-        super().__init__(bot)
-
-
-def make_private_event(
-    *,
-    self_id: str,
-    event_id: str = "evt-1",
-) -> PrivateMessageEvent:
-    event = EventPayload.model_validate({
-        "id": event_id,
-        "self": {"platform": "test", "user_id": self_id},
-        "time": 1.0,
-        "type": "message",
-        "detail_type": "private",
-        "sub_type": "",
-        "message_id": f"{event_id}-message",
-        "message": [{"type": "text", "data": {"text": "hello"}}],
-        "alt_message": "hello",
-        "user_id": "42",
-    }).root
-    assert isinstance(event, PrivateMessageEvent)
-    return event
-
-
-def utc_clock(timezone: tzinfo) -> datetime:
-    return datetime(2026, 1, 1, tzinfo=UTC).astimezone(timezone)
+    pass
 
 
 def use_scripted_time(bot: Bot) -> ScriptedSleep:
     sleep = ScriptedSleep()
-    bot.scheduler.clock = utc_clock
+    fixed_time = datetime(2026, 1, 1, tzinfo=UTC)
+    bot.scheduler.clock = fixed_time.astimezone
     bot.scheduler.sleep = sleep
     return sleep
 
@@ -132,8 +103,7 @@ async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> N
 async def test_recent_account_job_uses_the_latest_dispatched_event() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
+    gateway = recording_gateway(bot)
     seen: Queue[str] = Queue()
 
     @bot.on_cron("* * * * *")
@@ -144,7 +114,7 @@ async def test_recent_account_job_uses_the_latest_dispatched_event() -> None:
         self_a = BotSelf(platform="test", user_id="bot-a")
         await bot.dispatch(
             gateway.connection_for(self_a),
-            make_private_event(self_id="bot-a", event_id="evt-a"),
+            private_message_event("hello", self_id="bot-a", event_id="evt-a"),
         )
         await sleep.advance()
         assert await wait_for(seen.get(), timeout=1) == "bot-a"
@@ -152,7 +122,7 @@ async def test_recent_account_job_uses_the_latest_dispatched_event() -> None:
         self_b = BotSelf(platform="test", user_id="bot-b")
         await bot.dispatch(
             gateway.connection_for(self_b),
-            make_private_event(self_id="bot-b", event_id="evt-b"),
+            private_message_event("hello", self_id="bot-b", event_id="evt-b"),
         )
         await sleep.advance()
         assert await wait_for(seen.get(), timeout=1) == "bot-b"
@@ -219,8 +189,7 @@ async def test_none_target_connection_injection_failure_is_logged() -> None:
 async def test_fixed_account_uses_the_registered_gateway() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
+    recording_gateway(bot)
     seen: Queue[str] = Queue()
     self_ = BotSelf(platform="test", user_id="fixed")
 
@@ -236,7 +205,7 @@ async def test_fixed_account_uses_the_registered_gateway() -> None:
 async def test_fixed_account_logs_gateway_ambiguity() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
-    bot.add_gateway(RecordingGateway(bot))
+    recording_gateway(bot)
     bot.add_gateway(AlternateGateway(bot))
 
     @bot.on_cron(

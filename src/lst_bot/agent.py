@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from functools import partial
 from types import TracebackType
 from typing import Any, Final, Protocol, Self
 
 from fastmcp.client.transports import StreamableHttpTransport
-from httpx import AsyncClient, Auth, Timeout
+from httpx import AsyncClient
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import NativeTool
@@ -146,47 +147,17 @@ class DstQuestionAgent:
         api_key: SecretStr,
         proxy: str | None,
     ) -> AbstractToolset[Any]:
-        headers = {
-            DOSU_API_KEY_HEADER: api_key.get_secret_value(),
-        }
-
-        if proxy is None:
-            toolset = MCPToolset(
+        return MCPToolset(
+            StreamableHttpTransport(
                 endpoint,
-                headers=headers,
-                init_timeout=REQUEST_TIMEOUT,
-                read_timeout=REQUEST_TIMEOUT,
-            )
-        else:
-
-            def http_client_factory(
-                headers: dict[str, str] | None = None,
-                timeout: Timeout | None = None,
-                auth: Auth | None = None,
-                **kwargs: Any,
-            ) -> AsyncClient:
-                if timeout is not None:
-                    kwargs["timeout"] = timeout
-                if auth is not None:
-                    kwargs["auth"] = auth
-
-                return AsyncClient(
-                    **kwargs,
-                    proxy=proxy,
-                    headers=headers or {},
-                )
-
-            toolset = MCPToolset(
-                StreamableHttpTransport(
-                    endpoint,
-                    headers=headers,
-                    httpx_client_factory=http_client_factory,
+                headers={DOSU_API_KEY_HEADER: api_key.get_secret_value()},
+                httpx_client_factory=(
+                    partial(AsyncClient, proxy=proxy) if proxy is not None else None
                 ),
-                init_timeout=REQUEST_TIMEOUT,
-                read_timeout=REQUEST_TIMEOUT,
-            )
-
-        return toolset.filtered(
+            ),
+            init_timeout=REQUEST_TIMEOUT,
+            read_timeout=REQUEST_TIMEOUT,
+        ).filtered(
             lambda _, tool_def: tool_def.name in DOSU_MCP_TOOL_NAMES,
         )
 

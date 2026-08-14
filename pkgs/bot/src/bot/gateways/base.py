@@ -5,7 +5,7 @@ from asyncio import (
     get_running_loop,
     timeout,
 )
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from hmac import compare_digest
 from math import isfinite
@@ -18,6 +18,7 @@ from logbook import Logger
 from pydantic import BaseModel, JsonValue, SecretStr
 from robyn import Headers, Response
 from ulid import ULID
+from urllib3_future import AsyncPoolManager
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
@@ -60,6 +61,23 @@ class WebSocketConnection(Protocol):
     async def send_text(self, payload: str) -> None: ...
 
     async def close(self) -> None: ...
+
+
+type WebSocketConnector = Callable[
+    [str, dict[str, str] | None],
+    Awaitable[WebSocketConnection],
+]
+
+
+@dataclass(slots=True)
+class HttpAction:
+    base_url: str
+    http_pool: AsyncPoolManager | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class WebSocketAction:
+    timeout: float = 30.0
 
 
 class _NativeWebSocketConnection(Protocol):
@@ -623,9 +641,12 @@ __all__ = [
     "AccessToken",
     "Connection",
     "Gateway",
+    "HttpAction",
+    "WebSocketAction",
     "WebSocketActionManager",
     "WebSocketActionSession",
     "WebSocketConnection",
+    "WebSocketConnector",
     "WebsocketsConnection",
     "access_token_value",
     "bearer_or_query_token",

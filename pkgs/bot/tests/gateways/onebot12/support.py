@@ -51,6 +51,3 @@ def status_payload(*selfs: BotSelf) -> dict[str, JsonValue]:
             ],
         },
     }
-
-
-__all__ = ["SELF", "connect_payload", "private_message_payload", "status_payload"]

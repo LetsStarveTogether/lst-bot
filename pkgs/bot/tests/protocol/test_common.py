@@ -129,6 +129,17 @@ def test_model_rejects_nested_non_finite_python_numbers(value: float) -> None:
         Model.model_validate({"extension": {"values": [value]}})
 
 
+def test_model_revalidates_nested_instances() -> None:
+    self_ = BotSelf.model_construct(
+        platform="qq",
+        user_id="10000",
+        extension=float("nan"),
+    )
+
+    with pytest.raises(ValidationError):
+        BotStatus.model_validate({"self": self_, "online": True})
+
+
 @pytest.mark.parametrize(
     "token",
     [

@@ -4,30 +4,13 @@ from asyncio import Event, create_task, gather, timeout
 from typing import override
 
 import pytest
-from bot import Bot, EventPayload, Gateway, Injected, PrivateMessageEvent
-from bot.testing import RecordingGateway
+from bot import Bot, Gateway, Injected
+from bot.testing import RecordingGateway, private_message_event
 from diwire import Container
 
 
 class LifecycleService:
     value = "ready"
-
-
-def message_event(text: str) -> PrivateMessageEvent:
-    value = EventPayload.model_validate({
-        "id": "event",
-        "self": {"platform": "test", "user_id": "bot"},
-        "time": 1.0,
-        "type": "message",
-        "detail_type": "private",
-        "sub_type": "",
-        "message_id": "message",
-        "message": [{"type": "text", "data": {"text": text}}],
-        "alt_message": text,
-        "user_id": "user",
-    }).root
-    assert isinstance(value, PrivateMessageEvent)
-    return value
 
 
 async def test_lifecycle_hooks_use_dependency_injection() -> None:
@@ -187,7 +170,7 @@ async def test_bot_rejects_submissions_until_start_is_complete() -> None:
         start_task = create_task(bot.start())
         await entered.wait()
 
-        startup_event = message_event("during startup")
+        startup_event = private_message_event("during startup")
         with pytest.raises(RuntimeError, match="Bot is not running"):
             bot.enqueue_event(
                 gateway.connection_for(startup_event.self_),
@@ -271,7 +254,7 @@ async def test_bot_start_hook_failure_runs_full_rollback() -> None:
     with pytest.raises(RuntimeError, match="hook failed"):
         await bot.start()
 
-    assert calls == [
+    expected = [
         "start:first",
         "start:second",
         "start hook",
@@ -279,16 +262,10 @@ async def test_bot_start_hook_failure_runs_full_rollback() -> None:
         "close:second",
         "close:first",
     ]
+    assert calls == expected
 
     calls.clear()
     await bot.start()
     await bot.close()
 
-    assert calls == [
-        "start:first",
-        "start:second",
-        "start hook",
-        "close hook",
-        "close:second",
-        "close:first",
-    ]
+    assert calls == expected

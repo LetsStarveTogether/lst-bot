@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from asyncio import CancelledError, create_task
 from asyncio import Event as AsyncEvent
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import override
 
 import pytest
 from bot import (
@@ -14,8 +12,8 @@ from bot import (
     Bot,
     Cmd,
     Connection,
-    EventPayload,
     EventRouter,
+    GroupMessageEvent,
     Injected,
     Mention,
     Msg,
@@ -26,8 +24,8 @@ from bot import (
     ReturnAction,
     ReturnEffect,
 )
-from bot.protocol.actions import ActionParamModel
-from bot.testing import RecordingGateway
+from bot.testing import private_message_event as make_event
+from bot.testing import recording_gateway
 from diwire import Lifetime, Scope
 from logbook import TestHandler as LogbookTestHandler
 
@@ -47,70 +45,22 @@ class Greeter:
         return f"pong {value}".strip()
 
 
-def recording_gateway(bot: Bot) -> RecordingGateway:
-    gateway = RecordingGateway(bot)
-    bot.add_gateway(gateway)
-    return gateway
-
-
-class FailingActionGateway(RecordingGateway):
-    @override
-    async def request_action(
-        self,
-        connection: Connection,
-        action: str,
-        params: ActionParamModel,
-    ) -> ActionResponse:
-        _ = connection
-        self.actions.append(
-            ActionCall.model_validate({"action": action, "params": params})
-        )
-        return ActionResponse.failed(Retcode.BAD_REQUEST, "bad target")
-
-
-def return_value_handler(value: object) -> Callable[[], object]:
-    def handle() -> object:
-        return value
-
-    return handle
-
-
-def message_event_payload(
+def group_message_event(
     text: str,
     *,
     user_id: str,
     event_id: str,
-    sender_role: str | None = None,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "id": event_id,
-        "self": {"platform": "test", "user_id": "bot"},
-        "time": 1.0,
-        "type": "message",
-        "detail_type": "group" if sender_role is not None else "private",
-        "sub_type": "",
-        "message_id": f"{event_id}-message",
-        "message": [{"type": "text", "data": {"text": text}}],
-        "alt_message": text,
-        "user_id": user_id,
-    }
-    if sender_role is not None:
-        payload["group_id"] = "group-1"
-        payload["sender"] = {"user_id": user_id, "role": sender_role}
-    return payload
-
-
-def make_event(
-    text: str,
-    *,
-    user_id: str = "42",
-    event_id: str = "evt-1",
-) -> PrivateMessageEvent:
-    event = EventPayload.model_validate(
-        message_event_payload(text, user_id=user_id, event_id=event_id)
-    ).root
-    assert isinstance(event, PrivateMessageEvent)
-    return event
+    sender_role: str,
+) -> GroupMessageEvent:
+    return GroupMessageEvent.model_validate({
+        **make_event(text, user_id=user_id, event_id=event_id).model_dump(
+            mode="json",
+            by_alias=True,
+        ),
+        "detail_type": "group",
+        "group_id": "group-1",
+        "sender": {"user_id": user_id, "role": sender_role},
+    })
 
 
 async def test_dispatch_runs_matching_cmd_with_injection() -> None:
@@ -151,8 +101,11 @@ async def test_connection_send_msg_builds_standard_action() -> None:
 
 async def test_connection_action_failed_response_raises() -> None:
     bot = Bot()
-    gateway = FailingActionGateway(bot)
-    bot.add_gateway(gateway)
+    gateway = recording_gateway(bot)
+    gateway.responses["send_message"] = ActionResponse.failed(
+        Retcode.BAD_REQUEST,
+        "bad target",
+    )
 
     @bot.on_msg(block=True)
     async def handle(connection: Injected[Connection]) -> None:
@@ -216,31 +169,28 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
         seen.append(cmd.arg)
 
     async with bot:
-        for payload in [
-            message_event_payload("/secure bot", user_id="root", event_id="bot-admin"),
-            message_event_payload(
+        for event in [
+            make_event("/secure bot", user_id="root", event_id="bot-admin"),
+            group_message_event(
                 "/secure group",
                 user_id="group-admin",
                 event_id="group-admin",
                 sender_role="admin",
             ),
-            message_event_payload(
+            group_message_event(
                 "/secure owner",
                 user_id="group-owner",
                 event_id="group-owner",
                 sender_role="owner",
             ),
-            message_event_payload(
+            group_message_event(
                 "/secure member",
                 user_id="member",
                 event_id="member",
                 sender_role="member",
             ),
         ]:
-            await bot.dispatch(
-                gateway.connection,
-                EventPayload.model_validate(payload).root,
-            )
+            await bot.dispatch(gateway.connection, event)
 
     assert seen == ["bot", "group", "owner"]
 
@@ -382,7 +332,7 @@ async def test_dispatch_rejects_unsupported_return_values() -> None:
         bot = Bot()
         gateway = recording_gateway(bot)
 
-        bot.on_msg(block=True)(return_value_handler(value))
+        bot.on_msg(block=True)(lambda value=value: value)
 
         async with bot:
             results = await bot.dispatch(
