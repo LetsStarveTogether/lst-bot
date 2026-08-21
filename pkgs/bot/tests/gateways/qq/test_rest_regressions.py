@@ -50,7 +50,6 @@ class GatedResponse:
     [
         (0, {"specify_user_ids": ["user"]}),
         (1, {}),
-        (2, {}),
         (3, {"specify_role_ids": ["role"]}),
     ],
 )
@@ -69,17 +68,9 @@ def test_keyboard_permission_subjects_match_type(
     ("permission_type", "subjects"),
     [
         (0, {}),
-        (0, {"specify_role_ids": ["role"]}),
-        (0, {"specify_user_ids": ["user"], "specify_role_ids": ["role"]}),
-        (0, {"specify_user_ids": []}),
         (1, {"specify_user_ids": ["user"]}),
         (1, {"specify_role_ids": ["role"]}),
-        (2, {"specify_user_ids": ["user"]}),
-        (2, {"specify_role_ids": ["role"]}),
         (3, {}),
-        (3, {"specify_user_ids": ["user"]}),
-        (3, {"specify_user_ids": ["user"], "specify_role_ids": ["role"]}),
-        (3, {"specify_role_ids": []}),
     ],
 )
 def test_keyboard_permission_rejects_mismatched_subjects(

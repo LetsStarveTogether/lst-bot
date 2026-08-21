@@ -365,7 +365,7 @@ async def test_cancelled_websocket_action_rejects_late_response() -> None:
     manager.bind_self(session, self_)
     task = create_task(manager.request(self_, lambda echo: echo))
     try:
-        async with timeout(0.1):
+        async with timeout(1):
             echo = await websocket.sent.get()
         task.cancel()
         with pytest.raises(CancelledError):

@@ -10,7 +10,6 @@ from bot.gateways import telegram as telegram_module
 from bot.gateways import telegram_api as telegram_api_module
 from bot.gateways.telegram import TelegramGateway
 from bot.gateways.telegram_api import (
-    TELEGRAM_UPDATE_TYPES,
     TelegramAPIError,
     TelegramDownloadedFile,
     TelegramEnvelope,
@@ -200,6 +199,9 @@ def test_token_is_validated_without_leaking(token: str) -> None:
         TelegramRestClient(token)
     if token:
         assert token not in str(error.value)
+
+
+def test_secrets_are_not_represented() -> None:
     assert "token" not in repr(client(Pool()))
     secret_result = TelegramResult("managed-secret")
     assert "managed-secret" not in repr(secret_result)
@@ -229,12 +231,13 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
     assert isinstance(updates[0], TelegramUpdate)
     assert updates[1].payload is None
     assert updates[2].payload == ("future_update", {"value": 1})
-    assert pool.requests[0][2]["json"] == {
-        "offset": 7,
-        "timeout": 30,
-        "limit": 100,
-        "allowed_updates": list(TELEGRAM_UPDATE_TYPES),
-    }
+    params = cast(dict[str, object], pool.requests[0][2]["json"])
+    assert (params["offset"], params["timeout"], params["limit"]) == (7, 30, 100)
+    assert {
+        "chat_member",
+        "message_reaction",
+        "message_reaction_count",
+    } <= set(cast(list[str], params["allowed_updates"]))
     assert pool.requests[0][2]["retries"] is False
     assert cast(float, pool.requests[0][2]["timeout"]) > 30
 

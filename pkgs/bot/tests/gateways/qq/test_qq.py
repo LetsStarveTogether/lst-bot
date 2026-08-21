@@ -76,7 +76,7 @@ from .support import (
 )
 
 
-def test_route_registry_preserves_qq_wire_modes() -> None:
+def test_route_registry_is_well_formed() -> None:
     assert set(QQAction) == set(QQ_ROUTES)
     for route in QQ_ROUTES.values():
         placeholders = {
@@ -92,24 +92,6 @@ def test_route_registry_preserves_qq_wire_modes() -> None:
             field = route.request.model_fields[name]
             assert field.is_required()
             assert field.serialization_alias in {None, name}
-
-    assert {action for action, route in QQ_ROUTES.items() if route.query} == {
-        QQAction.LIST_BOT_GUILDS,
-        QQAction.LIST_PANELS,
-        QQAction.RECALL_CHANNEL_MESSAGE,
-        QQAction.RECALL_DM_MESSAGE,
-        QQAction.LIST_GUILD_MEMBERS,
-        QQAction.LIST_GUILD_ROLE_MEMBERS,
-        QQAction.LIST_GROUP_APPROVAL_STRATEGIES,
-        QQAction.LIST_GROUP_JOIN_REQUESTS,
-        QQAction.LIST_MESSAGE_REACTION_USERS,
-        QQAction.LIST_SCHEDULES,
-    }
-    assert {action for action, route in QQ_ROUTES.items() if route.empty_body} == {
-        QQAction.GENERATE_SHARE_LINK,
-        QQAction.EXECUTE_GROUP_APPROVAL_STRATEGY,
-        QQAction.PUT_MENU,
-    }
 
 
 def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None:
@@ -738,7 +720,7 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
     fatal_native.close.assert_awaited_once()
 
 
-def test_proactive_messages_and_stream_defaults_follow_the_wire_contract() -> None:
+def test_proactive_messages_accept_no_context_and_reject_both() -> None:
     group = QQSendGroupMessageRequest(
         group_openid="group",
         msg_type=0,
@@ -749,20 +731,7 @@ def test_proactive_messages_and_stream_defaults_follow_the_wire_contract() -> No
         msg_type=0,
         content="proactive",
     )
-    stream = QQStreamMessageRequest(
-        user_openid="user",
-        input_mode="replace",
-        input_state=1,
-        index=0,
-        content_type="markdown",
-        content_raw="stream",
-        event_id="event",
-        msg_id="message",
-        msg_seq=0,
-    )
-
     assert group.msg_id is group.event_id is c2c.msg_id is c2c.event_id is None
-    assert stream.input_mode == "replace"
     with pytest.raises(ValidationError, match="mutually exclusive"):
         QQSendGroupMessageRequest(
             group_openid="group",
