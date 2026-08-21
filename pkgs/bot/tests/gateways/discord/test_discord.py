@@ -187,6 +187,17 @@ async def test_default_connector_accepts_unbounded_official_gateway_frames(
         max_size=None,
     )
 
+    provided = AsyncMock(return_value=ScriptedWebSocket())
+    provided.__bool__.return_value = False
+    custom = DiscordGateway(
+        Bot(),
+        token=CREDENTIAL,
+        base_url="https://discord.example/api/v10",
+        http_pool=cast(AsyncPoolManager, Pool()),
+        websocket_connector=provided,
+    )
+    assert custom._websocket_connector is provided
+
 
 async def test_rest_json_rate_limit_errors_and_multipart() -> None:
     pool = Pool(
@@ -197,7 +208,7 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
         response(200, body=b"raw"),
         response(400, {"code": 50035, "message": "Invalid Form Body"}),
     )
-    rest = client(pool)
+    rest = gateway(pool)
 
     payload = await rest.request_discord(
         "POST",
@@ -207,10 +218,11 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
         reason="test reason",
     )
     no_content = await rest.request_discord("DELETE", "/channels/1/messages/2")
-    upload = await rest.request_discord(
-        "POST",
-        "/channels/1/messages",
-        files=[{"filename": "a.txt", "data": b"hello"}],
+    upload = await rest.connection_for(rest._self).action(
+        "discord.request",
+        method="POST",
+        path="/channels/1/messages",
+        files=[{"filename": "a.txt", "data": "aGVsbG8="}],
     )
     raw = await rest.request_discord(
         "GET",
@@ -240,6 +252,7 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
     multipart = cast(bytes, pool.requests[3][2]["body"])
     assert b'name="files[0]"' in multipart
     assert b"payload_json" not in multipart
+    assert b"\r\n\r\nhello\r\n" in multipart
     assert all(kwargs["retries"] is False for _, _, kwargs in pool.requests)
 
 
@@ -1010,6 +1023,10 @@ async def test_sequence_commit_and_public_message_actions() -> None:
         "DELETE",
         "https://discord.example/api/v10/channels/4/messages/99",
     )
+
+    with pytest.raises(ValueError, match=r"unsupported.*tts"):
+        await connection.send_msg("ignored", user_id="2", tts=True)
+    assert len(pool.requests) == 2
 
     wrong = instance.connection_for(BotSelf(platform="discord", user_id="wrong"))
     with pytest.raises(ValueError, match="wrong BotSelf"):

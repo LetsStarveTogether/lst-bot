@@ -1488,9 +1488,10 @@ class DiscordGateway(Gateway, DiscordRestClient):
             raise ValueError(msg) from None
         # One gateway owns one shard; 2,500+ guild bots need a shard coordinator.
         self.shard = TypeAdapter(DiscordShard).validate_python(shard)
-        self._websocket_connector = websocket_connector or partial(
-            connect_websocket,
-            max_size=None,
+        self._websocket_connector = (
+            websocket_connector
+            if websocket_connector is not None
+            else partial(connect_websocket, max_size=None)
         )
         self._task: Task[None] | None = None
         self._lifecycle_lock = Lock()
@@ -1937,7 +1938,6 @@ class DiscordGateway(Gateway, DiscordRestClient):
                         "browser": "lst-bot",
                         "device": "lst-bot",
                     },
-                    "compress": False,
                     "large_threshold": 250,
                     "shard": [self.shard[0], self.shard[1]],
                     "intents": int(self.intents),
@@ -2329,27 +2329,39 @@ class DiscordGateway(Gateway, DiscordRestClient):
             params.pop("detail_type")
         )
         body = _discord_send_body(message)
-        source_message_id = params.get("message_id")
-        if source_message_id is not None and "message_reference" not in body:
-            body["message_reference"] = {
-                "message_id": _SNOWFLAKE_ADAPTER.validate_python(source_message_id),
-                "fail_if_not_exists": False,
-            }
+        source_message_id = params.pop("message_id", None)
+        if source_message_id is not None:
+            source_message_id = _SNOWFLAKE_ADAPTER.validate_python(source_message_id)
+            if "message_reference" not in body:
+                body["message_reference"] = {
+                    "message_id": source_message_id,
+                    "fail_if_not_exists": False,
+                }
         if detail_type == "channel":
-            channel_id = self._id(params, "channel_id")
+            channel_id = _SNOWFLAKE_ADAPTER.validate_python(
+                params.pop("channel_id", None)
+            )
+            _SNOWFLAKE_ADAPTER.validate_python(params.pop("guild_id", None))
         else:
-            channel = params.get("channel_id")
+            user_id = _SNOWFLAKE_ADAPTER.validate_python(params.pop("user_id", None))
+            channel = params.pop("channel_id", None)
             if channel is None:
-                user_id = self._id(params, "user_id")
-                dm = await self._request_model(
-                    "POST",
-                    "/users/@me/channels",
-                    DiscordChannel,
-                    json={"recipient_id": user_id},
-                )
-                channel_id = dm.id
+                channel_id = None
             else:
                 channel_id = _SNOWFLAKE_ADAPTER.validate_python(channel)
+        if params:
+            msg = (
+                f"unsupported Discord send-message options: {', '.join(sorted(params))}"
+            )
+            raise ValueError(msg)
+        if detail_type == "private" and channel_id is None:
+            dm = await self._request_model(
+                "POST",
+                "/users/@me/channels",
+                DiscordChannel,
+                json={"recipient_id": user_id},
+            )
+            channel_id = dm.id
         return await self._request_model(
             "POST",
             f"/channels/{channel_id}/messages",
