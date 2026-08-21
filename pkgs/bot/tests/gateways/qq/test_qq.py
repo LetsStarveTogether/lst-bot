@@ -333,6 +333,37 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     assert gateway._closed  # ruff: ignore[private-member-access]
 
 
+async def test_repeated_v2_messages_are_dispatched_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instance = _gateway(FakePool())
+    events: list[Event] = []
+    monkeypatch.setattr(instance, "enqueue_event", events.append)
+
+    for sequence, message_index in enumerate(("part-1", "part-1", "part-2"), 1):
+        await instance._receive_dispatch(  # ruff: ignore[private-member-access]
+            qq_gateway_module.QQGatewayPayload.model_validate({
+                "id": f"event-{sequence}",
+                "op": 0,
+                "s": sequence,
+                "t": "C2C_MESSAGE_CREATE",
+                "d": {
+                    "id": "message",
+                    "author": {"user_openid": "user"},
+                    "content": "hello",
+                    "timestamp": "2026-08-17T00:00:00Z",
+                    "message_scene": {
+                        "source": "c2c",
+                        "ext": [f"msg_idx={message_index}"],
+                    },
+                },
+            })
+        )
+
+    assert len(events) == 2
+    assert instance._seq == 3  # ruff: ignore[private-member-access]
+
+
 async def test_gateway_lifecycle_actually_restarts() -> None:
     websockets = [
         ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
@@ -1347,8 +1378,12 @@ def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
             "method": "admin_review_qa",
             "review_qa_list": None,
         })
-    with pytest.raises(ValidationError, match="srv_send_msg"):
-        QQFileUploadFields.model_validate({"file_type": 1, "file_data": "YQ=="})
+    with pytest.raises(ValidationError, match="file_data"):
+        QQFileUploadFields.model_validate({
+            "file_type": 1,
+            "file_data": "YQ==",
+            "srv_send_msg": False,
+        })
 
     for model, payload in (
         (QQGatewayInfo, {"url": "https://qq.example"}),

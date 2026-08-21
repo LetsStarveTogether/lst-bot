@@ -18,6 +18,7 @@ from bot.gateways.qq_api import (
     QQRestClient,
     QQRoleMemberList,
     QQSendC2CMessageRequest,
+    QQSendGroupMessageRequest,
     QQStreamMessageRequest,
 )
 from bot.json import dumpb
@@ -200,13 +201,8 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
     assert pool.requests[2][2]["json"] == {}
 
 
-async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
+async def test_file_upload_supports_chunk_completion() -> None:
     uploaded = {"file_uuid": "file", "file_info": "info", "ttl": 60}
-    inline_body: dict[str, object] = {
-        "file_type": 1,
-        "file_data": "YQ==",
-        "srv_send_msg": False,
-    }
     prepare_body: dict[str, object] = {
         "file_type": 2,
         "file_size": "31457280",
@@ -251,18 +247,12 @@ async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
             QQFilePrepareResult.model_validate(invalid)
     pool = Pool(
         response(200, {"access_token": "token", "expires_in": 7200}),
-        response(200, uploaded),
         response(200, prepared_payload),
         response(200, {}),
         response(200, uploaded),
     )
     rest = client(pool)
 
-    await rest.request_qq(
-        QQAction.UPLOAD_C2C_FILE,
-        user_openid="user",
-        **inline_body,
-    )
     prepared = await rest.request_qq(
         QQAction.PREPARE_GROUP_FILE_UPLOAD,
         group_id="group",
@@ -282,39 +272,25 @@ async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
     assert isinstance(prepared, QQFilePrepareResult)
     assert prepared.model_dump(mode="json", exclude_none=True) == prepared_payload
     assert [request[2]["json"] for request in pool.requests[1:]] == [
-        inline_body,
         prepare_body,
         finish_body,
         merge_body,
     ]
 
 
-async def test_c2c_and_group_messages_support_embed_and_ark() -> None:
-    sent = {"id": "message", "timestamp": "2026-08-20T00:00:00Z"}
-    pool = Pool(
-        response(200, {"access_token": "token", "expires_in": 7200}),
-        response(200, sent),
-        response(200, sent),
-    )
-    rest = client(pool)
-
-    await rest.request_qq(
-        QQAction.SEND_GROUP_MESSAGE,
-        group_openid="group",
-        msg_type=3,
-        ark={"template_id": 23, "kv": []},
-    )
-    await rest.request_qq(
-        QQAction.SEND_C2C_MESSAGE,
-        user_openid="user",
-        msg_type=4,
-        embed={"title": "title"},
-    )
-
-    assert [request[2]["json"] for request in pool.requests[1:]] == [
-        {"msg_type": 3, "ark": {"template_id": 23, "kv": []}},
-        {"msg_type": 4, "embed": {"title": "title"}},
-    ]
+def test_v2_messages_reject_legacy_payload_types() -> None:
+    for model, payload in (
+        (
+            QQSendGroupMessageRequest,
+            {"group_openid": "group", "msg_type": 3, "ark": {}},
+        ),
+        (
+            QQSendC2CMessageRequest,
+            {"user_openid": "user", "msg_type": 4, "embed": {}},
+        ),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
 
 
 @pytest.mark.parametrize("code", [11242, 11252, 11263, 11281])

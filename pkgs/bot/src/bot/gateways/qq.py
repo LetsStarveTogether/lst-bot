@@ -8,6 +8,7 @@ from asyncio import (
     sleep,
     timeout,
 )
+from collections import deque
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime
@@ -560,6 +561,8 @@ class QQGateway(Gateway, QQRestClient):
         self._self = BotSelf(platform="qq", user_id=app_id)
         self._retry_count = 0
         self._message_sequence = 0
+        # ponytail: bounded O(n) scan; add a set only if duplicate throughput matters.
+        self._recent_messages: deque[tuple[str, ...]] = deque(maxlen=1024)
 
     @override
     async def start(self) -> None:
@@ -829,7 +832,10 @@ class QQGateway(Gateway, QQRestClient):
     async def _send_heartbeat(self, websocket: WebSocketConnection) -> None:
         await websocket.send_text(QQHeartbeat(d=self._seq).model_dump_json())
 
-    async def _receive_dispatch(self, payload: QQGatewayPayload) -> None:
+    async def _receive_dispatch(  # ruff: ignore[complex-structure, too-many-branches] - one pass preserves sequence and queue ordering
+        self, payload: QQGatewayPayload
+    ) -> None:
+        message_key: tuple[str, ...] | None = None
         try:
             dispatch = QQDispatch.model_validate(payload.model_dump(mode="python"))
         except ValidationError as exc:
@@ -844,6 +850,23 @@ class QQGateway(Gateway, QQRestClient):
             )
         else:
             sequence = dispatch.s
+            if isinstance(dispatch.d, QQC2CMessage):
+                message_key = (
+                    dispatch.t,
+                    dispatch.d.id,
+                    *(
+                        item
+                        for item in (
+                            dispatch.d.message_scene.ext
+                            if dispatch.d.message_scene is not None
+                            else ()
+                        )
+                        if item.startswith("msg_idx=")
+                    ),
+                )
+                if message_key in self._recent_messages:
+                    self._seq = sequence
+                    return
             if dispatch.t == "READY":
                 ready = QQReadyData.model_validate(dispatch.d)
                 if ready.user.id is None:
@@ -883,6 +906,8 @@ class QQGateway(Gateway, QQRestClient):
         except QueueFull:
             msg = "QQ Gateway event queue is full"
             raise ConnectionError(msg) from None
+        if message_key is not None:
+            self._recent_messages.append(message_key)
         self._seq = sequence
 
     def _raw_event(

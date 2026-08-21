@@ -339,8 +339,6 @@ class QQReplySourceFields(QQRequest):
 class QQMessageRequestBase(QQReplySourceFields):
     content: StrictStr | None = None
     markdown: QQMarkdown | None = None
-    ark: QQArk | None = None
-    embed: QQEmbed | None = None
     keyboard: QQKeyboard | None = None
     media: QQMediaInfo | None = None
     message_reference: QQMessageReference | None = None
@@ -374,7 +372,7 @@ def _validate_message_payload(
 
 
 class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
-    msg_type: Literal[0, 2, 3, 4, 7]
+    msg_type: Literal[0, 2, 7]
 
     @model_validator(mode="after")
     def payload_matches_type(self) -> Self:
@@ -383,8 +381,6 @@ class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
             {
                 _TEXT_MESSAGE_TYPE: self.content,
                 2: self.markdown,
-                3: self.ark,
-                4: self.embed,
                 _MEDIA_MESSAGE_TYPE: self.media,
             },
         )
@@ -392,7 +388,7 @@ class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
 
 
 class QQSendC2CMessageRequest(QQUserParams, QQMessageRequestBase):
-    msg_type: Literal[0, 2, 3, 4, 6, 7]
+    msg_type: Literal[0, 2, 6, 7]
     input_notify: QQInputNotify | None = None
 
     @model_validator(mode="after")
@@ -402,8 +398,6 @@ class QQSendC2CMessageRequest(QQUserParams, QQMessageRequestBase):
             {
                 _TEXT_MESSAGE_TYPE: self.content,
                 2: self.markdown,
-                3: self.ark,
-                4: self.embed,
                 6: self.input_notify,
                 _MEDIA_MESSAGE_TYPE: self.media,
             },
@@ -538,20 +532,13 @@ class QQFileUploadFields(QQRequest):
     file_type: Literal[1, 2, 3, 4]
     srv_send_msg: StrictBool
     url: AnyHttpUrl | None = None
-    file_data: StrictStr | None = Field(default=None, repr=False)
     file_name: StrictStr | None = None
     upload_id: QQID | None = None
 
     @model_validator(mode="after")
     def upload_source(self) -> Self:
-        if (
-            sum(
-                value is not None
-                for value in (self.url, self.file_data, self.upload_id)
-            )
-            != 1
-        ):
-            msg = "exactly one of url, file_data and upload_id is required"
+        if (self.url is None) == (self.upload_id is None):
+            msg = "exactly one of url and upload_id is required"
             raise ValueError(msg)
         return self
 
