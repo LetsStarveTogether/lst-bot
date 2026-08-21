@@ -165,6 +165,22 @@ type DiscordGuildName = Annotated[
     AfterValidator(_untrimmed_guild_name),
 ]
 type DiscordChannelName = Annotated[StrictStr, Field(min_length=1, max_length=100)]
+type _DiscordTimestampString = Annotated[
+    StrictStr,
+    Field(
+        pattern=(
+            r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}"
+            r"(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$"
+        )
+    ),
+]
+type DiscordTimestamp = Annotated[
+    AwareDatetime,
+    BeforeValidator(
+        TypeAdapter(_DiscordTimestampString).validate_python,
+        json_schema_input_type=_DiscordTimestampString,
+    ),
+]
 
 _GUILD_NAME_ADAPTER = TypeAdapter(DiscordGuildName)
 _CHANNEL_NAME_ADAPTER = TypeAdapter(DiscordChannelName)
@@ -178,8 +194,8 @@ class DiscordUser(Model):
     id: Snowflake
     username: StrictStr
     discriminator: Annotated[StrictStr, Field(pattern=r"^(?:0|[0-9]{4})$")]
-    global_name: StrictStr | None = None
-    avatar: StrictStr | None = None
+    global_name: StrictStr | None
+    avatar: StrictStr | None
     bot: StrictBool | None = None
     system: StrictBool | None = None
     mfa_enabled: StrictBool | None = None
@@ -193,15 +209,30 @@ class DiscordUser(Model):
     public_flags: NonNegativeInt | None = None
 
 
+class DiscordRoleColors(Model):
+    primary_color: NonNegativeInt
+    secondary_color: NonNegativeInt | None
+    tertiary_color: NonNegativeInt | None
+
+
 class DiscordRole(Model):
     id: Snowflake
     name: StrictStr
-    color: NonNegativeInt = 0
-    hoist: StrictBool = False
-    position: StrictInt = 0
-    permissions: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")] = "0"
-    managed: StrictBool = False
-    mentionable: StrictBool = False
+    color: NonNegativeInt
+    colors: DiscordRoleColors
+    hoist: StrictBool
+    position: StrictInt
+    permissions: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
+    managed: StrictBool
+    mentionable: StrictBool
+    flags: NonNegativeInt
+
+    @model_validator(mode="after")
+    def matching_legacy_color(self) -> Self:
+        if self.color != self.colors.primary_color:
+            msg = "Discord role color must match colors.primary_color"
+            raise ValueError(msg)
+        return self
 
 
 class DiscordMember(Model):
@@ -210,21 +241,21 @@ class DiscordMember(Model):
     avatar: StrictStr | None = None
     banner: StrictStr | None = None
     roles: list[Snowflake]
-    joined_at: AwareDatetime | None = None
-    premium_since: AwareDatetime | None = None
+    joined_at: DiscordTimestamp | None = None
+    premium_since: DiscordTimestamp | None = None
     deaf: StrictBool = False
     mute: StrictBool = False
     flags: NonNegativeInt = 0
     pending: StrictBool | None = None
     permissions: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")] | None = None
-    communication_disabled_until: AwareDatetime | None = None
+    communication_disabled_until: DiscordTimestamp | None = None
 
 
 class DiscordAttachment(Model):
     id: Snowflake
     filename: StrictStr
     title: StrictStr | None = None
-    description: StrictStr | None = None
+    description: Annotated[StrictStr, Field(max_length=1024)] | None = None
     content_type: StrictStr | None = None
     size: NonNegativeInt
     url: StrictStr
@@ -250,8 +281,8 @@ class DiscordMessage(Model):
     channel_id: Snowflake
     author: DiscordUser
     content: StrictStr
-    timestamp: AwareDatetime
-    edited_timestamp: AwareDatetime | None
+    timestamp: DiscordTimestamp
+    edited_timestamp: DiscordTimestamp | None
     tts: StrictBool
     mention_everyone: StrictBool
     mentions: list[DiscordUser]
@@ -284,8 +315,8 @@ class DiscordPartialMessage(Model):
     guild_id: Snowflake | None = None
     author: DiscordUser | None = None
     content: StrictStr | None = None
-    timestamp: AwareDatetime | None = None
-    edited_timestamp: AwareDatetime | None = None
+    timestamp: DiscordTimestamp | None = None
+    edited_timestamp: DiscordTimestamp | None = None
     mentions: list[DiscordUser] | None = None
     mention_roles: list[Snowflake] | None = None
     attachments: list[DiscordAttachment] | None = None
@@ -304,20 +335,20 @@ class DiscordChannel(Model):
     guild_id: Snowflake | None = None
     position: StrictInt | None = None
     permission_overwrites: list[DiscordPermissionOverwrite] | None = None
-    name: StrictStr | None = None
+    name: DiscordChannelName | None = None
     topic: StrictStr | None = None
     nsfw: StrictBool | None = None
     last_message_id: Snowflake | None = None
     bitrate: NonNegativeInt | None = None
     user_limit: NonNegativeInt | None = None
-    rate_limit_per_user: NonNegativeInt | None = None
+    rate_limit_per_user: Annotated[StrictInt, Field(ge=0, le=21600)] | None = None
     recipients: list[DiscordUser] | None = None
     icon: StrictStr | None = None
     owner_id: Snowflake | None = None
     application_id: Snowflake | None = None
     managed: StrictBool | None = None
     parent_id: Snowflake | None = None
-    last_pin_timestamp: AwareDatetime | None = None
+    last_pin_timestamp: DiscordTimestamp | None = None
     rtc_region: StrictStr | None = None
     video_quality_mode: NonNegativeInt | None = None
     message_count: NonNegativeInt | None = None
@@ -331,7 +362,7 @@ class DiscordChannel(Model):
 
 class DiscordGuild(Model):
     id: Snowflake
-    name: StrictStr
+    name: DiscordGuildName
     icon: StrictStr | None
     owner_id: Snowflake
     afk_channel_id: Snowflake | None
@@ -1418,7 +1449,7 @@ class _ReconnectError(ConnectionError):
 
 class DiscordGuildSummary(Model):
     id: Snowflake
-    name: StrictStr
+    name: DiscordGuildName
     icon: StrictStr | None
     banner: StrictStr | None = None
     owner: StrictBool | None = None

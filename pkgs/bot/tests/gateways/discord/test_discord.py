@@ -130,6 +130,80 @@ def test_strict_boundaries_and_secret_repr() -> None:
         DiscordGuildMemberEvent.model_validate({"guild_id": "1", "roles": []})
 
 
+def test_resource_models_follow_official_wire_contract() -> None:
+    for field in ("global_name", "avatar"):
+        payload = user()
+        payload.pop(field)
+        with pytest.raises(ValidationError):
+            DiscordUser.model_validate(payload)
+
+    role = {
+        "id": "1",
+        "name": "role",
+        "color": 0,
+        "colors": {
+            "primary_color": 0,
+            "secondary_color": None,
+            "tertiary_color": None,
+        },
+        "hoist": False,
+        "position": 0,
+        "permissions": "0",
+        "managed": False,
+        "mentionable": False,
+        "flags": 0,
+    }
+    assert discord_module.DiscordRole.model_validate(role).colors.primary_color == 0
+    with pytest.raises(ValidationError, match="primary_color"):
+        discord_module.DiscordRole.model_validate(role | {"color": 1})
+    for field in role:
+        payload = role.copy()
+        payload.pop(field)
+        with pytest.raises(ValidationError):
+            discord_module.DiscordRole.model_validate(payload)
+    for field in ("primary_color", "secondary_color", "tertiary_color"):
+        colors = role["colors"].copy()
+        colors.pop(field)
+        with pytest.raises(ValidationError):
+            discord_module.DiscordRole.model_validate(role | {"colors": colors})
+
+
+def test_resource_models_enforce_official_constraints() -> None:
+    for name in ("x", " guild", "guild "):
+        with pytest.raises(ValidationError):
+            DiscordGuildList.model_validate([
+                {"id": "1", "name": name, "icon": None, "features": []}
+            ])
+    for name in ("", "x" * 101):
+        with pytest.raises(ValidationError):
+            DiscordChannel.model_validate({"id": "1", "type": 0, "name": name})
+    with pytest.raises(ValidationError):
+        DiscordChannel.model_validate({
+            "id": "1",
+            "type": 0,
+            "rate_limit_per_user": 21601,
+        })
+    with pytest.raises(ValidationError):
+        discord_module.DiscordAttachment.model_validate({
+            "id": "1",
+            "filename": "file",
+            "description": "x" * 1025,
+            "size": 0,
+            "url": "https://cdn.example/file",
+            "proxy_url": "https://proxy.example/file",
+        })
+
+
+def test_wire_timestamps_require_rfc3339_strings() -> None:
+    member = {"roles": [], "joined_at": "2026-08-19T00:00:00.123456+00:00"}
+    assert discord_module.DiscordMember.model_validate(member).joined_at is not None
+    for timestamp in (0, "0", "2026-08-19 00:00:00Z"):
+        with pytest.raises(ValidationError):
+            discord_module.DiscordMember.model_validate(
+                member | {"joined_at": timestamp}
+            )
+
+
 def test_interaction_rate_routes_use_canonical_webhook_majors() -> None:
     rate_route = discord_module.DiscordRestClient._rate_route
     plain = DiscordRequest(method="POST", path="/interactions/1/token/callback")
