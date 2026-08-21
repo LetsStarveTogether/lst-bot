@@ -14,6 +14,3 @@ class HitokotoType(StrEnum):
     NETEASE_MUSIC = "j"
     PHILOSOPHY = "k"
     JOKE = "l"
-
-
-__all__ = ["HitokotoType"]

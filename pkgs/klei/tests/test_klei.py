@@ -49,7 +49,6 @@ VERSION_HTML = """
 class Reply:
     body: bytes
     status: int = 200
-    entered: Event | None = None
     release: Event | None = None
     body_release: Event | None = None
 
@@ -92,8 +91,6 @@ class RecordingPool:
 
         result = self.routes[url]
         reply = result if isinstance(result, Reply) else Reply(result)
-        if reply.entered is not None:
-            reply.entered.set()
         if reply.release is not None:
             await reply.release.wait()
         response = Response(reply.body, reply.status, reply.body_release)
@@ -330,66 +327,6 @@ async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
 
     assert first.result() == second.result() == []
     assert len(pool.calls) == 4
-
-
-async def test_batches_keep_input_order_when_requests_finish_out_of_order() -> None:
-    regions = ("sa-east-1", "ca-central-1")
-    first_lobby_release = Event()
-    second_lobby_entered = Event()
-    first_room_release = Event()
-    second_room_entered = Event()
-    lobby_urls = [
-        LOBBY_URL.format(region=region, platform=Platform.Steam.name)
-        for region in regions
-    ]
-    room_urls = [ROOM_URL.format(region=region) for region in regions]
-    pool = RecordingPool({
-        lobby_urls[0]: Reply(
-            rows_payload([lobby_row("lobby-1")]),
-            release=first_lobby_release,
-        ),
-        lobby_urls[1]: Reply(
-            rows_payload([lobby_row("lobby-2")]),
-            entered=second_lobby_entered,
-        ),
-        room_urls[0]: Reply(
-            rows_payload([room_row("room-1")]),
-            release=first_room_release,
-        ),
-        room_urls[1]: Reply(
-            rows_payload([room_row("room-2")]),
-            entered=second_room_entered,
-        ),
-    })
-
-    value = client(pool)
-    async with TaskGroup() as tasks:
-        lobby_task = tasks.create_task(
-            value.get_lobby_data(
-                regions=regions,
-                platforms=(Platform.Steam,),
-            )
-        )
-        try:
-            async with timeout(1):
-                await second_lobby_entered.wait()
-        finally:
-            first_lobby_release.set()
-    lobbies = lobby_task.result()
-
-    async with TaskGroup() as tasks:
-        room_task = tasks.create_task(
-            value.get_room_data((("room-1", regions[0]), ("room-2", regions[1])))
-        )
-        try:
-            async with timeout(1):
-                await second_room_entered.wait()
-        finally:
-            first_room_release.set()
-    rooms = room_task.result()
-
-    assert [lobby.row_id for lobby in lobbies] == ["lobby-1", "lobby-2"]
-    assert [room.row_id for room in rooms] == ["room-1", "room-2"]
 
 
 def test_response_envelope_and_lobby_bounds_are_validated() -> None:

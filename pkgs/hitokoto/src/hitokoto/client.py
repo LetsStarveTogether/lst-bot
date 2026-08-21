@@ -25,7 +25,6 @@ _HITOKOTO_TYPES = TypeAdapter(
     config=ConfigDict(strict=True),
 )
 _CACHE_LOCKS: WeakValueDictionary[Path, Lock] = WeakValueDictionary()
-
 logger = Logger(__name__)
 
 
@@ -137,6 +136,3 @@ def _bundle_base_url(url: str) -> str:
         query="",
         fragment="",
     ).geturl()
-
-
-__all__ = ["HitokotoClient"]

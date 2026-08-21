@@ -139,12 +139,3 @@ class RoomData(LobbyData):
     mods_info: list[str | bool | None] | None = None
     players: str | None = None
     desc: str | None = None
-
-
-__all__ = [
-    "KleiDataResponse",
-    "LobbyData",
-    "RoomData",
-    "Secondary",
-    "Version",
-]

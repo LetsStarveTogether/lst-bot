@@ -2,7 +2,6 @@ from asyncio import Semaphore, TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
 from itertools import product
-from types import TracebackType
 from typing import Annotated, Self
 
 from logbook import Logger
@@ -63,12 +62,7 @@ class KleiClient:
     async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(
-        self,
-        _exc_type: type[BaseException] | None,
-        _exc: BaseException | None,
-        _exc_tb: TracebackType | None,
-    ) -> None:
+    async def __aexit__(self, *_: object) -> None:
         await self.close()
 
     async def close(self) -> None:
@@ -164,6 +158,3 @@ class KleiClient:
                 msg = f"Klei request failed: HTTP {response.status} {method} {url}"
                 raise HTTPError(msg)
             return await response.data
-
-
-__all__ = ["KleiClient"]

@@ -31,11 +31,3 @@ class Season(StrEnum):
 class VersionType(StrEnum):
     RELEASE = "Release"
     TEST = "Test"
-
-
-__all__ = [
-    "Platform",
-    "Region",
-    "Season",
-    "VersionType",
-]

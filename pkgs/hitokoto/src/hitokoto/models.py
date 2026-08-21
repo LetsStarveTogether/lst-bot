@@ -41,6 +41,3 @@ class Hitokoto(BaseModel):
         signature_line = f"—— {author}{source}"
         signature_indent = QUOTE_SPACE * max(QUOTE_WIDTH + 4 - len(signature_line), 0)
         return f"{quote}\n{signature_indent}{signature_line}"
-
-
-__all__ = ["Hitokoto"]
