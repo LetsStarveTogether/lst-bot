@@ -4,9 +4,11 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from pydantic import (
+    AfterValidator,
     AnyHttpUrl,
     BeforeValidator,
     Field,
+    Secret,
     SecretStr,
     StrictInt,
     UrlConstraints,
@@ -16,15 +18,31 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOG_LEVELS = getLevelNamesMapping()
-type _OptionalHttpUrl = Annotated[
-    AnyHttpUrl | None,
+type _OptionalSecretHttpUrl = Annotated[
+    Secret[AnyHttpUrl] | None,
     BeforeValidator(lambda value: None if value == "" else value),
 ]
-type _HttpsUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
+
+
+def _endpoint_url(value: AnyHttpUrl) -> AnyHttpUrl:
+    if any(
+        part is not None
+        for part in (value.username, value.password, value.query, value.fragment)
+    ):
+        msg = "URL credentials, query, and fragment are not allowed"
+        raise ValueError(msg)
+    return value
+
+
+type _HttpsUrl = Annotated[
+    AnyHttpUrl,
+    UrlConstraints(allowed_schemes=["https"]),
+    AfterValidator(_endpoint_url),
+]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", hide_input_in_errors=True)
 
     bot_cmd_prefixes: tuple[str, ...] = ("/",)
     bot_admin: dict[str, frozenset[str]] = Field(default_factory=dict)
@@ -32,7 +50,9 @@ class Settings(BaseSettings):
     bot_timezone: ZoneInfo | None = None
 
     log_level: StrictInt = DEBUG
-    http_proxy: _OptionalHttpUrl = AnyHttpUrl("http://127.0.0.1:1080")
+    http_proxy: _OptionalSecretHttpUrl = Secret[AnyHttpUrl](
+        AnyHttpUrl("http://127.0.0.1:1080")
+    )
 
     onebot_self_id: str = ""
     onebot_ws_url: str = ""
@@ -49,6 +69,12 @@ class Settings(BaseSettings):
     dosu_api_key: SecretStr = Field(min_length=1)
 
     report_group_id: str = ""
+
+    @property
+    def proxy_url(self) -> str | None:
+        return (
+            None if self.http_proxy is None else str(self.http_proxy.get_secret_value())
+        )
 
     @model_validator(mode="after")
     def validate_onebot_pair(self) -> Settings:

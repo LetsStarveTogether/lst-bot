@@ -28,7 +28,7 @@ def build_bot(
     http_pool: AsyncPoolManager,
     question_agent: Agent,
 ) -> Bot:
-    proxy = str(settings.http_proxy) if settings.http_proxy else None
+    proxy = settings.proxy_url
     bot = Bot(
         admin_ids=settings.bot_admin,
         cmd_prefixes=settings.bot_cmd_prefixes,
@@ -99,7 +99,7 @@ def build_bot(
 
 
 async def run(settings: Settings) -> None:
-    proxy = str(settings.http_proxy) if settings.http_proxy else None
+    proxy = settings.proxy_url
     async with (
         AsyncProxyManager(proxy) if proxy else AsyncPoolManager() as http_pool,
         AsyncClient(

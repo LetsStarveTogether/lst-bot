@@ -61,7 +61,7 @@ def build_question_agent(
     *,
     http_client: AsyncClient,
 ) -> Agent:
-    proxy = str(settings.http_proxy) if settings.http_proxy else None
+    proxy = settings.proxy_url
     return Agent(
         OpenRouterModel(
             "deepseek/deepseek-v4-pro-0813",

@@ -48,7 +48,68 @@ def test_ai_service_settings_are_required_and_validated(
 
 
 def test_empty_http_proxy_means_direct_connection() -> None:
-    assert Settings(_env_file=None, http_proxy="").http_proxy is None
+    settings = Settings(_env_file=None, http_proxy="")
+    assert settings.http_proxy is None
+    assert settings.proxy_url is None
+
+
+def test_http_proxy_credentials_stay_secret() -> None:
+    settings = Settings(
+        _env_file=None,
+        http_proxy="http://alice:password@example.com",
+    )
+
+    assert settings.http_proxy is not None
+    assert settings.proxy_url == "http://alice:password@example.com/"
+    for output in (
+        repr(settings),
+        repr(settings.model_dump()),
+        repr(settings.model_dump(mode="json")),
+        settings.model_dump_json(),
+    ):
+        assert "alice" not in output
+        assert "password" not in output
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://user@example.com/mcp",
+        "https://:password@example.com/mcp",
+        "https://example.com/mcp?query=value",
+        "https://example.com/mcp#fragment",
+    ],
+    ids=("username", "password", "query", "fragment"),
+)
+def test_dosu_endpoint_rejects_non_route_url_parts(endpoint: str) -> None:
+    with pytest.raises(ValidationError, match="not allowed"):
+        Settings(_env_file=None, dosu_mcp_endpoint=endpoint)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "password"),
+    [
+        ("http_proxy", "http://alice:proxy-secret@", "proxy-secret"),
+        (
+            "dosu_mcp_endpoint",
+            "https://alice:endpoint-secret@example.com/mcp",
+            "endpoint-secret",
+        ),
+    ],
+    ids=("proxy", "endpoint"),
+)
+def test_invalid_url_errors_hide_credentials(
+    field: str,
+    value: str,
+    password: str,
+) -> None:
+    overrides: dict[str, Any] = {field: value}
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, **overrides)
+
+    error = str(exc_info.value)
+    assert "alice" not in error
+    assert password not in error
 
 
 def test_log_level_accepts_names_and_numbers() -> None:
