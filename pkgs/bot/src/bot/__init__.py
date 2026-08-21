@@ -10,16 +10,27 @@ from .core import (
     State,
 )
 from .gateways import Connection, Gateway
-from .protocol import (
-    Action,
+from .protocol.actions import (
     ActionCall,
-    ActionCallTag,
     ActionParamInput,
     ActionRequest,
     ActionResponse,
+)
+from .protocol.common import BotSelf, BotStatus, Status, Version
+from .protocol.enums import (
+    Action,
+    ActionCallTag,
     ApiStatus,
-    BotSelf,
-    BotStatus,
+    EventDetailType,
+    EventKind,
+    EventTag,
+    FileStage,
+    MsgSegmentType,
+    MsgTargetTag,
+    Retcode,
+    UploadFileTag,
+)
+from .protocol.events import (
     ChannelCreateNoticeEvent,
     ChannelDeleteNoticeEvent,
     ChannelMemberDecreaseNoticeEvent,
@@ -28,11 +39,7 @@ from .protocol import (
     ChannelMessageEvent,
     ConnectMetaEvent,
     Event,
-    EventDetailType,
-    EventKind,
     EventPayload,
-    EventTag,
-    FileStage,
     FriendDecreaseNoticeEvent,
     FriendIncreaseNoticeEvent,
     FriendRequestEvent,
@@ -46,24 +53,15 @@ from .protocol import (
     HeartbeatMetaEvent,
     MessageEvent,
     MetaEvent,
-    Msg,
-    MsgInput,
-    MsgSegment,
-    MsgSegmentInput,
-    MsgSegmentType,
-    MsgTargetTag,
     NoticeEvent,
     PrivateMessageDeleteNoticeEvent,
     PrivateMessageEvent,
     RequestEvent,
-    Retcode,
-    ReturnAction,
-    Status,
     StatusUpdateMetaEvent,
-    UploadFileTag,
     UserEvent,
-    Version,
 )
+from .protocol.msg import Msg, MsgInput, MsgSegment, MsgSegmentInput
+from .protocol.returns import ReturnAction
 from .routing import (
     Cmd,
     DispatchEffect,
