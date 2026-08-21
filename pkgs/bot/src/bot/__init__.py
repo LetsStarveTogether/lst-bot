@@ -1,13 +1,10 @@
 from diwire import Injected, Lifetime, Scope
 
 from .core import (
-    RECENT_SELF,
     Bot,
     CronJob,
     CronScheduler,
     InjectionContext,
-    RecentSelf,
-    State,
 )
 from .gateways import Connection, Gateway
 from .protocol.actions import (
@@ -69,7 +66,6 @@ from .routing import (
 )
 
 __all__ = [
-    "RECENT_SELF",
     "Action",
     "ActionCall",
     "ActionParamInput",
@@ -124,13 +120,11 @@ __all__ = [
     "Permission",
     "PrivateMessageDeleteNoticeEvent",
     "PrivateMessageEvent",
-    "RecentSelf",
     "RequestEvent",
     "Retcode",
     "ReturnAction",
     "Rule",
     "Scope",
-    "State",
     "Status",
     "StatusUpdateMetaEvent",
     "UploadFileTag",

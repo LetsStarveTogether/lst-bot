@@ -4,25 +4,14 @@ import pytest
 from bot import (
     Bot,
     Cmd,
-    EventRoute,
     EventRouter,
     Injected,
-    InjectionContext,
     Lifetime,
     Permission,
-    Rule,
     Scope,
-    State,
     UserEvent,
 )
 from bot.testing import private_message_event, recording_gateway
-
-
-def test_permission_composition_preserves_permission_type() -> None:
-    permission = Permission(lambda: True)
-
-    assert isinstance(permission & Rule(lambda: True), Permission)
-    assert isinstance(permission | (lambda: False), Permission)
 
 
 @pytest.mark.parametrize("role", [[], {}], ids=["list", "mapping"])
@@ -122,34 +111,6 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
     assert seen == ["p:!p:now"]
 
 
-async def test_context_route_and_cmd_are_resolved_from_current_route() -> None:
-    bot = Bot()
-    router = EventRouter()
-    seen: list[str] = []
-
-    def first_cmd(context: Injected[InjectionContext]) -> None:
-        context.cmd = Cmd(name="first", raw="/first", arg="")
-
-    def second_cmd(context: Injected[InjectionContext]) -> None:
-        context.cmd = Cmd(name="second", raw="/second", arg="")
-
-    @router.on_msg(name="first", dependencies=[first_cmd])
-    def first(route: Injected[EventRoute], cmd: Injected[Cmd]) -> None:
-        seen.append(f"{route.name}:{cmd.name}")
-
-    @router.on_msg(name="second", dependencies=[second_cmd])
-    def second(route: Injected[EventRoute], cmd: Injected[Cmd]) -> None:
-        seen.append(f"{route.name}:{cmd.name}")
-
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(gateway.connection, private_message_event("hello"))
-
-    assert seen == ["first:first", "second:second"]
-
-
 async def test_container_factory_dependency() -> None:
     bot = Bot()
     bot.container.add_factory(
@@ -175,27 +136,3 @@ async def test_container_factory_dependency() -> None:
         )
 
     assert seen == ["7"]
-
-
-async def test_route_dependencies_run_before_handler() -> None:
-    bot = Bot()
-    router = EventRouter()
-    seen: list[str] = []
-
-    def mark(state: Injected[State]) -> None:
-        state["ready"] = True
-
-    @router.on_msg(block=True, dependencies=[mark])
-    def collect(state: Injected[State]) -> None:
-        seen.append("ready" if state["ready"] else "missing")
-
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("hello"),
-        )
-
-    assert seen == ["ready"]

@@ -40,16 +40,13 @@ from bot.routing import EventRoute, EventRouter
 
 from .di import (
     InjectionContext,
-    State,
     call_with_injection,
     register_context_providers,
     request_scope,
 )
 from .scheduler import (
     CURRENT_SCHEDULER_BOT,
-    RECENT_SELF,
     CronScheduler,
-    SelfTarget,
     _raise_errors,
 )
 
@@ -93,7 +90,6 @@ class Bot(EventRouter):
         dispatch_timeout: timedelta | None = timedelta(seconds=900),
         max_dispatches: int = 8,
         scheduler_timezone: tzinfo | None = None,
-        container: Container | None = None,
     ) -> None:
         super().__init__()
         if isinstance(max_dispatches, bool) or not isinstance(max_dispatches, int):
@@ -109,18 +105,13 @@ class Bot(EventRouter):
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
         self.max_dispatches = max_dispatches
-        self.container = (
-            container
-            if container is not None
-            else Container(
-                missing_policy=MissingPolicy.ERROR,
-                dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
-            )
+        self.container = Container(
+            missing_policy=MissingPolicy.ERROR,
+            dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
         )
         self.container.add_instance(self, provides=Bot)
         self._gateways: list[Gateway] = []
         register_context_providers(self.container)
-        self._recent_connection: tuple[Gateway, BotSelf] | None = None
         self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
         self._lifecycle_started = False
@@ -163,10 +154,6 @@ class Bot(EventRouter):
         self._mounted_server = server
 
     @property
-    def recent_connection(self) -> tuple[Gateway, BotSelf] | None:
-        return self._recent_connection
-
-    @property
     def scheduler(self) -> CronScheduler:
         return self._scheduler
 
@@ -197,7 +184,7 @@ class Bot(EventRouter):
         *,
         name: str | None = None,
         timezone: str | None = None,
-        self_: SelfTarget = RECENT_SELF,
+        self_: BotSelf | None = None,
         gateway: type[Gateway] | None = None,
     ) -> Callable:
         return self._scheduler.on_cron(
@@ -446,7 +433,6 @@ class Bot(EventRouter):
         deadline: float | None,
     ) -> None:
         active_gateway = connection.gateway if connection is not None else gateway
-        self._remember_recent_connection(active_gateway, event)
 
         logger.info(
             "dispatch event: {event} via {gateway}",
@@ -461,8 +447,6 @@ class Bot(EventRouter):
             )
 
         async with request_scope(self.container) as resolver:
-            state: State = {}
-
             for route in self.routes:
                 if route.event_type is not None and route.event_type != event.type:
                     continue
@@ -471,8 +455,6 @@ class Bot(EventRouter):
                     gateway=active_gateway,
                     connection=connection,
                     event=event,
-                    state=state,
-                    route=route,
                 )
                 try:
                     if not await self._before_deadline(
@@ -492,21 +474,6 @@ class Bot(EventRouter):
                 else:
                     if route.block:
                         break
-
-    def _remember_recent_connection(
-        self,
-        gateway: Gateway | None,
-        event: Event,
-    ) -> None:
-        self_ = event.self_
-        if gateway is not None and self_ is not None:
-            if __debug__ and self._recent_connection != (gateway, self_):
-                logger.trace(
-                    "remember recent connection : {gateway} {self_}",
-                    gateway=gateway,
-                    self_=self_,
-                )
-            self._recent_connection = (gateway, self_)
 
     async def _before_deadline[T](
         self,

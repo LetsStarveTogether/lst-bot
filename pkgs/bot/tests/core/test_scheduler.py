@@ -9,9 +9,8 @@ from bot import (
     BotSelf,
     Connection,
     Injected,
-    State,
 )
-from bot.testing import RecordingGateway, private_message_event, recording_gateway
+from bot.testing import RecordingGateway, recording_gateway
 from logbook import TestHandler as LogbookTestHandler
 
 
@@ -150,65 +149,15 @@ async def test_cron_delay_uses_absolute_time_across_dst(
     assert delay == expected_delay
 
 
-async def test_recent_account_job_uses_the_latest_dispatched_event() -> None:
-    bot = Bot()
-    sleep = use_scripted_time(bot)
-    gateway = recording_gateway(bot)
-    seen: Queue[str] = Queue()
-
-    @bot.on_cron("* * * * *")
-    async def collect(connection: Injected[Connection]) -> None:
-        await seen.put(connection.self_.user_id)
-
-    async with bot:
-        self_a = BotSelf(platform="test", user_id="bot-a")
-        await bot.dispatch(
-            gateway.connection_for(self_a),
-            private_message_event("hello", self_id="bot-a", event_id="evt-a"),
-        )
-        await sleep.advance()
-        assert await wait_for(seen.get(), timeout=1) == "bot-a"
-
-        self_b = BotSelf(platform="test", user_id="bot-b")
-        await bot.dispatch(
-            gateway.connection_for(self_b),
-            private_message_event("hello", self_id="bot-b", event_id="evt-b"),
-        )
-        await sleep.advance()
-        assert await wait_for(seen.get(), timeout=1) == "bot-b"
-
-
-async def test_recent_account_job_skips_without_a_recent_event() -> None:
-    bot = Bot()
-    sleep = use_scripted_time(bot)
-    called = Event()
-
-    @bot.on_cron("* * * * *", name="recent")
-    def collect() -> None:
-        called.set()
-
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await sleep.advance()
-            await sleep.next_call()
-
-    assert not called.is_set()
-    assert any(
-        "no recent bot account exists" in record.message for record in handler.records
-    )
-
-
-async def test_none_target_job_has_fresh_state_and_dependencies() -> None:
+async def test_none_target_job_injects_service_without_rewrapping() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     bot.container.add_instance(Service("ready"), provides=Service)
-    seen: Queue[tuple[str, bool]] = Queue()
+    seen: Queue[str] = Queue()
 
-    @bot.on_cron("* * * * *", self_=None)
-    async def collect(state: Injected[State], service: Injected[Service]) -> None:
-        fresh = "value" not in state
-        state["value"] = service.value
-        await seen.put((str(state["value"]), fresh))
+    @bot.on_cron("* * * * *")
+    async def collect(service: Injected[Service]) -> None:
+        await seen.put(service.value)
 
     contract_count = len(
         bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
@@ -216,8 +165,8 @@ async def test_none_target_job_has_fresh_state_and_dependencies() -> None:
     async with bot:
         await sleep.advance()
         await sleep.advance()
-        assert await wait_for(seen.get(), timeout=1) == ("ready", True)
-        assert await wait_for(seen.get(), timeout=1) == ("ready", True)
+        assert await wait_for(seen.get(), timeout=1) == "ready"
+        assert await wait_for(seen.get(), timeout=1) == "ready"
 
     assert (
         len(
@@ -253,7 +202,7 @@ async def test_fixed_account_uses_the_registered_gateway() -> None:
     seen: Queue[str] = Queue()
     self_ = BotSelf(platform="test", user_id="fixed")
 
-    @bot.on_cron("* * * * *", self_=self_)
+    @bot.on_cron("* * * * *", self_=self_, gateway=RecordingGateway)
     async def collect(connection: Injected[Connection]) -> None:
         await seen.put(connection.self_.user_id)
 

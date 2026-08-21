@@ -10,7 +10,6 @@ from bot import (
     Bot,
     Cmd,
     Connection,
-    EventRouter,
     GroupMessageEvent,
     Injected,
     Msg,
@@ -99,7 +98,7 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
     bot.container.add_instance(Greeter(), provides=Greeter)
     gateway = recording_gateway(bot)
 
-    @bot.on_cmd("ping", permission=Permission.bot_admin(), block=True)
+    @bot.on_cmd("ping", permission=Permission.admin(), block=True)
     async def handle(
         connection: Injected[Connection],
         cmd: Injected[Cmd],
@@ -161,12 +160,12 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
     assert seen == ["bot", "group", "owner"]
 
 
-async def test_bot_admin_permission_namespaces_user_ids_by_platform() -> None:
+async def test_admin_permission_namespaces_user_ids_by_platform() -> None:
     bot = Bot(admin_ids={"qq": {"42"}})
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    @bot.on_cmd("secure", permission=Permission.bot_admin(), block=True)
+    @bot.on_cmd("secure", permission=Permission.admin(), block=True)
     def secure() -> None:
         seen.append("matched")
 
@@ -331,9 +330,8 @@ async def test_dispatch_continues_after_failed_blocking_route(
     )
 
 
-async def test_dispatch_records_check_and_dependency_exceptions() -> None:
+async def test_dispatch_records_rule_and_permission_exceptions() -> None:
     bot = Bot()
-    router = EventRouter()
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
@@ -345,27 +343,17 @@ async def test_dispatch_records_check_and_dependency_exceptions() -> None:
         msg = "permission failed"
         raise PermissionError(msg)
 
-    def fail_dependency() -> None:
-        msg = "dependency failed"
-        raise LookupError(msg)
-
-    @router.on_msg(rule=fail_rule)
+    @bot.on_msg(rule=fail_rule)
     def unreachable_rule() -> None:
         seen.append("rule")
 
-    @router.on_msg(permission=fail_permission)
+    @bot.on_msg(permission=fail_permission)
     def unreachable_permission() -> None:
         seen.append("permission")
 
-    @router.on_msg(dependencies=[fail_dependency])
-    def unreachable_dependency() -> None:
-        seen.append("dependency")
-
-    @router.on_msg(block=True)
+    @bot.on_msg(block=True)
     def recover() -> None:
         seen.append("recovered")
-
-    bot.add_router(router)
 
     with LogbookTestHandler() as handler:
         async with bot:
@@ -379,7 +367,6 @@ async def test_dispatch_records_check_and_dependency_exceptions() -> None:
     ] == [
         "ValueError: rule failed",
         "PermissionError: permission failed",
-        "LookupError: dependency failed",
     ]
 
 

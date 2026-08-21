@@ -15,7 +15,7 @@ from logbook import Logger
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
 
-from .di import InjectionContext, State, call_with_injection, inject, request_scope
+from .di import InjectionContext, call_with_injection, inject, request_scope
 
 if TYPE_CHECKING:
     from .bot import Bot
@@ -39,17 +39,6 @@ def _raise_errors(message: str, errors: list[BaseException]) -> None:
         raise BaseExceptionGroup(message, errors)
 
 
-@dataclass(frozen=True, slots=True)
-class RecentSelf:
-    def __str__(self) -> str:
-        return "recent"
-
-
-type SelfTarget = BotSelf | RecentSelf | None
-
-RECENT_SELF = RecentSelf()
-
-
 @dataclass(slots=True)
 class CronJob:
     bot: Bot
@@ -57,7 +46,7 @@ class CronJob:
     handler: Callable
     name: str
     timezone: tzinfo
-    self_: SelfTarget
+    self_: BotSelf | None
     gateway_type: type[Gateway] | None
     clock: Clock
     sleep: Sleep
@@ -132,9 +121,6 @@ class CronJob:
             )
             return
 
-        if target is None:
-            return
-
         gateway, connection = target
         if __debug__:
             logger.debug(
@@ -170,45 +156,20 @@ class CronJob:
         connection: Connection | None,
     ) -> None:
         async with request_scope(self.bot.container) as resolver:
-            state: State = {}
             context = InjectionContext(
                 bot=self.bot,
                 gateway=gateway,
                 connection=connection,
-                state=state,
             )
             value = await call_with_injection(self.handler, context, resolver)
         if value is not None:
             msg = "Scheduled task handlers must not return values"
             raise TypeError(msg)
 
-    def _resolve_target(self) -> _Target | None:
+    def _resolve_target(self) -> _Target:
         self_ = self.self_
         if self_ is None:
             return None, None
-
-        if isinstance(self_, RecentSelf):
-            recent = self.bot.recent_connection
-            if recent is None:
-                logger.warning(
-                    "scheduled job skipped: {job} ({reason})",
-                    job=self,
-                    reason="no recent bot account exists",
-                )
-                return None
-            gateway, self_ = recent
-            if self.gateway_type is not None and not isinstance(
-                gateway,
-                self.gateway_type,
-            ):
-                logger.warning(
-                    "scheduled job skipped: {job} {actual}!={expected}",
-                    job=self,
-                    actual=type(gateway).__name__,
-                    expected=self.gateway_type.__name__,
-                )
-                return None
-            return gateway, gateway.connection_for(self_)
 
         gateway = self.bot.resolve_gateway(self.gateway_type)
         return gateway, gateway.connection_for(self_)
@@ -240,7 +201,7 @@ class CronScheduler:
         *,
         name: str | None = None,
         timezone: str | None = None,
-        self_: SelfTarget = RECENT_SELF,
+        self_: BotSelf | None = None,
         gateway: type[Gateway] | None = None,
     ) -> Callable:
         def decorator(handler: Callable) -> Callable:

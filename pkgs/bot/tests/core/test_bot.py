@@ -4,7 +4,6 @@ from typing import override
 import pytest
 from bot import Bot, Gateway
 from bot.testing import RecordingGateway, private_message_event
-from diwire import Container
 
 
 class CountingGateway(Gateway):
@@ -18,13 +17,6 @@ class CountingGateway(Gateway):
     @override
     async def close(self) -> None:
         self.closes += 1
-
-
-def test_bot_accepts_supplied_container() -> None:
-    container = Container()
-    bot = Bot(container=container)
-
-    assert bot.container is container
 
 
 def test_bot_copies_admin_identity_mapping_as_immutable_sets() -> None:

@@ -1,9 +1,9 @@
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from diwire import ResolverProtocol
 
-from bot.core.di import InjectionContext, call_with_injection, inject
+from bot.core.di import InjectionContext, inject
 from bot.protocol.enums import EventKind
 
 from .rule import Permission, Rule
@@ -18,11 +18,9 @@ class EventRoute:
     block: bool
     handler: Callable
     name: str
-    dependencies: list[Callable] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.handler = inject(self.handler)
-        self.dependencies = [inject(dependency) for dependency in self.dependencies]
 
     def __str__(self) -> str:
         event_type = self.event_type or "*"
@@ -33,10 +31,7 @@ class EventRoute:
         context: InjectionContext,
         resolver: ResolverProtocol,
     ) -> bool:
-        if not await self.rule(context, resolver):
-            return False
-        if not await self.permission(context, resolver):
-            return False
-        for dependency in self.dependencies:
-            await call_with_injection(dependency, context, resolver)
-        return True
+        return await self.rule(context, resolver) and await self.permission(
+            context,
+            resolver,
+        )

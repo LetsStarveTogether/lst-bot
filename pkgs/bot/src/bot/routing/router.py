@@ -19,10 +19,8 @@ class EventRouter:
         self,
         *,
         name: str | None = None,
-        dependencies: Iterable[Callable] = (),
     ) -> None:
         self.name = name
-        self.dependencies = list(dependencies)
         self.routes: list[EventRoute] = []
 
     def on_event(
@@ -34,7 +32,6 @@ class EventRouter:
         priority: int = 1,
         block: bool = False,
         name: str | None = None,
-        dependencies: Iterable[Callable] = (),
     ) -> Callable:
         route_rule = rule if isinstance(rule, Rule) else Rule(rule or (lambda: True))
         route_permission = (
@@ -42,7 +39,6 @@ class EventRouter:
             if isinstance(permission, Permission)
             else Permission(permission or (lambda: True))
         )
-        route_dependencies = list(dependencies)
 
         def decorator(handler: Callable) -> Callable:
             route_name = name or getattr(handler, "__name__", "handler")
@@ -57,7 +53,6 @@ class EventRouter:
                     block=block,
                     handler=handler,
                     name=route_name,
-                    dependencies=[*self.dependencies, *route_dependencies],
                 ),
             )
             self.routes.sort(key=ROUTE_PRIORITY_KEY)
@@ -73,7 +68,6 @@ class EventRouter:
         priority: int = 1,
         block: bool = False,
         name: str | None = None,
-        dependencies: Iterable[Callable] = (),
     ) -> Callable:
         return self.on_event(
             EventKind.MESSAGE,
@@ -82,7 +76,6 @@ class EventRouter:
             priority=priority,
             block=block,
             name=name,
-            dependencies=dependencies,
         )
 
     def on_cmd(
@@ -95,7 +88,6 @@ class EventRouter:
         priority: int = 1,
         block: bool = True,
         name: str | None = None,
-        dependencies: Iterable[Callable] = (),
     ) -> Callable:
         cmds = (cmd, *aliases)
 
@@ -119,7 +111,6 @@ class EventRouter:
             priority=priority,
             block=block,
             name=name or cmd,
-            dependencies=dependencies,
         )
 
     def add_router(self, router: EventRouter) -> None:

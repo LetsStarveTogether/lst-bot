@@ -21,11 +21,8 @@ from bot.protocol.events import Event
 
 if TYPE_CHECKING:
     from bot.routing.cmd import Cmd
-    from bot.routing.route import EventRoute
 
     from .bot import Bot
-
-type State = dict[str, object]
 
 inject = resolver_context.inject(
     dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
@@ -45,8 +42,6 @@ class InjectionContext:
     gateway: Gateway | None = None
     connection: Connection | None = None
     event: Event | None = None
-    state: State | None = None
-    route: EventRoute | None = None
     cmd: Cmd | None = None
 
 
@@ -90,7 +85,6 @@ def register_context_providers(
         return provide_event
 
     from bot.routing.cmd import Cmd
-    from bot.routing.route import EventRoute
 
     container.add_factory(
         current_injection_context,
@@ -99,20 +93,8 @@ def register_context_providers(
         lifetime=Lifetime.TRANSIENT,
     )
     container.add_factory(
-        _state_from_context,
-        provides=State,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
-    )
-    container.add_factory(
         _cmd_from_context,
         provides=Cmd,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.TRANSIENT,
-    )
-    container.add_factory(
-        _route_from_context,
-        provides=EventRoute,
         scope=Scope.REQUEST,
         lifetime=Lifetime.TRANSIENT,
     )
@@ -131,14 +113,6 @@ def register_context_providers(
         )
 
 
-def _state_from_context() -> State:
-    state = current_injection_context().state
-    if state is None:
-        msg = "Injection context must carry event state"
-        raise TypeError(msg)
-    return state
-
-
 def _cmd_from_context() -> Cmd:
     from bot.routing.cmd import Cmd
 
@@ -147,16 +121,6 @@ def _cmd_from_context() -> Cmd:
         msg = "Injection context has no command"
         raise TypeError(msg)
     return cmd
-
-
-def _route_from_context() -> EventRoute:
-    from bot.routing.route import EventRoute
-
-    route = current_injection_context().route
-    if not isinstance(route, EventRoute):
-        msg = "Injection context has no route"
-        raise TypeError(msg)
-    return route
 
 
 def _connection_from_context() -> Connection:
