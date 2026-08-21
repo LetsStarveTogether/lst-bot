@@ -181,7 +181,6 @@ class OneBot12Gateway(Gateway):
         async with self._lifecycle_lock:
             if self._started:
                 return
-            await super().start()
             self._closing = False
             try:
                 for ingress in self.ingress:
@@ -224,7 +223,6 @@ class OneBot12Gateway(Gateway):
                 await self._close_http_pool()
         finally:
             self._started = False
-            await super().close()
 
     async def _close_http_pool(self) -> None:
         if self._owns_http_pool and self.http_pool is not None:
@@ -264,31 +262,19 @@ class OneBot12Gateway(Gateway):
         quick_response: bool = True,
     ) -> Response:
         await self.bot.wait_until_running()
-        if __debug__:
-            logger.trace(
-                "handle OneBot 12 HTTP payload : {payload} {quick}",
-                payload=event,
-                quick=quick_response,
-            )
         collector = _HttpQuickActions() if quick_response else None
-        token = _HTTP_QUICK_ACTIONS.set(collector)
-        try:
+        with _HTTP_QUICK_ACTIONS.set(collector):
             try:
-                await self.dispatch_event(event.root)
-            except QueueFull:
-                return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
-            actions = collector.actions if collector is not None else []
-        finally:
-            if collector is not None:
-                collector.active = False
-            _HTTP_QUICK_ACTIONS.reset(token)
+                try:
+                    await self.dispatch_event(event.root)
+                except QueueFull:
+                    return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
+                actions = collector.actions if collector is not None else []
+            finally:
+                if collector is not None:
+                    collector.active = False
 
         if actions:
-            if __debug__:
-                logger.trace(
-                    "return OneBot 12 quick actions : {actions}",
-                    actions=actions,
-                )
             return json_response(
                 HTTPStatus.OK,
                 [
@@ -320,12 +306,6 @@ class OneBot12Gateway(Gateway):
                 self=connection.self_,
             )
             quick_actions.actions.append(request)
-            if __debug__:
-                logger.trace(
-                    "queue OneBot 12 quick action : {request} {connection}",
-                    request=request,
-                    connection=connection,
-                )
             return request
 
         if isinstance(self.action_backend, HttpAction):
@@ -391,20 +371,7 @@ class OneBot12Gateway(Gateway):
                 )
                 raise RuntimeError(msg)
             body = await response.data
-        action_response = ActionResponse.model_validate_json(body)
-        if __debug__:
-            logger.debug(
-                "OneBot 12 HTTP action returned: {action} = {status}/{retcode}",
-                action=action,
-                status=action_response.status,
-                retcode=action_response.retcode,
-            )
-            logger.trace(
-                "OneBot 12 HTTP action response : {action} {response}",
-                action=action,
-                response=action_response,
-            )
-        return action_response
+        return ActionResponse.model_validate_json(body)
 
     @property
     def _authorization_headers(self) -> dict[str, str] | None:

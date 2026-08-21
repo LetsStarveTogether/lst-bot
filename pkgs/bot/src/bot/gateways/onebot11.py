@@ -26,7 +26,6 @@ from logbook import Logger
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Discriminator,
     Field,
     JsonValue,
     RootModel,
@@ -35,7 +34,6 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
-    Tag,
     ValidationError,
     model_validator,
 )
@@ -196,15 +194,6 @@ def _qq_self(user_id: str) -> BotSelf:
         msg = "OneBot 11 self ID must be a decimal integer"
         raise ValueError(msg)
     return BotSelf(platform="qq", user_id=user_id)
-
-
-def _event_payload_tag(value: object) -> str:
-    post_type = (
-        cast(Mapping[str, object], value).get("post_type")
-        if isinstance(value, Mapping)
-        else getattr(value, "post_type", None)
-    )
-    return post_type if isinstance(post_type, str) else ""
 
 
 class OneBot11ActionRequest(Model):
@@ -395,35 +384,37 @@ _NOTICE_EVENT_MODELS: Mapping[str, type[OneBot11NoticeEvent]] = {
 }
 
 
-type OneBot11EventVariant = Annotated[
-    Annotated[OneBot11MessageEvent, Tag("message")]
-    | Annotated[OneBot11NoticeEvent, Tag("notice")]
-    | Annotated[OneBot11RequestEvent, Tag("request")]
-    | Annotated[OneBot11MetaEvent, Tag("meta_event")],
-    Discriminator(_event_payload_tag),
-]
-
-
-class OneBot11EventPayload(RootModel[OneBot11EventVariant]):
-    pass
-
-
 def _validate_ob11_event(data: Mapping[str, JsonValue]) -> OneBot11Event:
-    event = OneBot11EventPayload.model_validate(data).root
-    if isinstance(event, OneBot11NoticeEvent):
-        model = _NOTICE_EVENT_MODELS.get(event.notice_type)
-        if model is not None:
-            event = model.model_validate(data)
-    elif isinstance(event, OneBot11RequestEvent) and event.request_type == "group":
-        event = OneBot11GroupRequestEvent.model_validate(data)
-    elif isinstance(event, OneBot11MetaEvent) and event.meta_event_type == "heartbeat":
-        event = OneBot11HeartbeatEvent.model_validate(data)
-    return event
+    post_type = data.get("post_type")
+    if post_type == "message":
+        model: type[OneBot11Event] = OneBot11MessageEvent
+    elif post_type == "notice":
+        notice_type = data.get("notice_type")
+        model = (
+            _NOTICE_EVENT_MODELS.get(notice_type, OneBot11NoticeEvent)
+            if isinstance(notice_type, str)
+            else OneBot11NoticeEvent
+        )
+    elif post_type == "request":
+        model = (
+            OneBot11GroupRequestEvent
+            if data.get("request_type") == "group"
+            else OneBot11RequestEvent
+        )
+    elif post_type == "meta_event":
+        model = (
+            OneBot11HeartbeatEvent
+            if data.get("meta_event_type") == "heartbeat"
+            else OneBot11MetaEvent
+        )
+    else:
+        model = OneBot11Event
+    return model.model_validate(data)
 
 
 def decode_event(payload: BaseModel | Mapping[str, JsonValue]) -> Event:
     """Validate and convert a OneBot 11 event payload."""
-    data = _json_object(payload)
+    data = _json_object(payload) if isinstance(payload, BaseModel) else payload
     return _event_from_payload(_validate_ob11_event(data))
 
 
@@ -567,7 +558,6 @@ class OneBot11Gateway(Gateway):
         async with self._lifecycle_lock:
             if self._started:
                 return
-            await super().start()
             self._closing = False
             try:
                 for ingress in self.ingress:
@@ -600,7 +590,6 @@ class OneBot11Gateway(Gateway):
     async def _finish_close(self) -> None:
         await self._close_transports()
         await self._close_http_pool()
-        await super().close()
         self._started = False
 
     async def _close_http_pool(self) -> None:
@@ -622,8 +611,7 @@ class OneBot11Gateway(Gateway):
         if self._ws_actions is not None:
             self._ws_actions.fail_all()
         await gather(*transport_tasks, return_exceptions=True)
-        for server in reverse_servers:
-            await server.wait_closed()
+        await gather(*(server.wait_closed() for server in reverse_servers))
         self._forward_tasks.clear()
         self._reverse_servers.clear()
         self._reverse_tasks.clear()
@@ -639,49 +627,35 @@ class OneBot11Gateway(Gateway):
 
     async def handle_http(
         self,
-        payload: BaseModel,
+        payload: BaseModel | Mapping[str, JsonValue],
         *,
         quick_response: bool = True,
     ) -> Response:
-        if __debug__:
-            logger.trace(
-                "handle OneBot 11 HTTP payload : {payload} {quick}",
-                payload=payload,
-                quick=quick_response,
-            )
         collector = _QuickOperations() if quick_response else None
-        token = _HTTP_QUICK_OPERATIONS.set(collector)
-        try:
+        with _HTTP_QUICK_OPERATIONS.set(collector):
             try:
-                data = _json_object(payload)
-                await self.dispatch_event(decode_event(data))
-            except QueueFull:
-                return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
-            except ValidationError as exc:
-                logger.warning(
-                    "reject OneBot 11 HTTP payload ({error})",
-                    error=exc.errors(include_url=False, include_input=False),
-                )
-                return text_response(HTTPStatus.BAD_REQUEST, str(exc))
-            except (TypeError, ValueError) as exc:
-                logger.warning(
-                    "reject OneBot 11 HTTP payload ({error})",
-                    error=type(exc).__name__,
-                )
-                return text_response(HTTPStatus.BAD_REQUEST, str(exc))
-            quick_operations = collector.values if collector is not None else []
-        finally:
-            if collector is not None:
-                collector.active = False
-            _HTTP_QUICK_OPERATIONS.reset(token)
+                try:
+                    await self.dispatch_event(decode_event(payload))
+                except QueueFull:
+                    return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
+                except ValidationError as exc:
+                    logger.warning(
+                        "reject OneBot 11 HTTP payload ({error})",
+                        error=exc.errors(include_url=False, include_input=False),
+                    )
+                    return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "reject OneBot 11 HTTP payload ({error})",
+                        error=type(exc).__name__,
+                    )
+                    return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+                quick_operations = collector.values if collector is not None else []
+            finally:
+                if collector is not None:
+                    collector.active = False
 
         if quick_operations:
-            if __debug__:
-                logger.trace(
-                    "return OneBot 11 quick operation : {operation} {payload}",
-                    operation=quick_operations[0],
-                    payload=payload,
-                )
             return json_response(HTTPStatus.OK, quick_operations[0])
         return empty_response(HTTPStatus.NO_CONTENT)
 
@@ -716,23 +690,16 @@ class OneBot11Gateway(Gateway):
         if action.kind != "request":
             return await super().execute_return_action(connection, event, action)
 
-        operation = _request_quick_operation(event, action)
+        operation, action_name, params = _request_response(event, action)
         quick_operations = _HTTP_QUICK_OPERATIONS.get()
         if (
             quick_operations is not None
             and quick_operations.active
             and not quick_operations.values
         ):
-            if __debug__:
-                logger.trace(
-                    "queue OneBot 11 request quick operation : {operation} {event}",
-                    operation=operation,
-                    event=event,
-                )
             quick_operations.values.append(operation)
             return operation
 
-        action_name, params = _request_response_action(event, action)
         return await self.request_action(connection, action_name, params)
 
     @override
@@ -834,20 +801,7 @@ class OneBot11Gateway(Gateway):
                 msg = f"OneBot 11 action request failed with HTTP {status}"
                 raise RuntimeError(msg)
             payload = orjson.loads(await response.data)
-        action_response = decode_action_response(payload)
-        if __debug__:
-            logger.debug(
-                "OneBot 11 HTTP action returned: {action} = {status}/{retcode}",
-                action=action,
-                status=action_response.status,
-                retcode=action_response.retcode,
-            )
-            logger.trace(
-                "OneBot 11 HTTP action response : {action} {response}",
-                action=action,
-                response=action_response,
-            )
-        return action_response
+        return decode_action_response(payload)
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
@@ -885,7 +839,7 @@ class OneBot11Gateway(Gateway):
                 )
             await self.bot.wait_until_running()
             return await self.handle_http(
-                payload,
+                data,
                 quick_response=ingress.quick_response,
             )
 
@@ -967,11 +921,14 @@ class OneBot11Gateway(Gateway):
                     self._ws_actions.bind_self(session, self_)
             while True:
                 try:
-                    payload = Model.model_validate_json(await websocket.receive_text())
+                    payload = orjson.loads(await websocket.receive_text())
                 except StopAsyncIteration, WebSocketDisconnect:
                     break
+                if not isinstance(payload, dict):
+                    msg = "OneBot 11 WebSocket payload must be an object"
+                    raise TypeError(msg)
                 expected_self = self._queue_ws_payload(
-                    payload,
+                    cast(dict[str, JsonValue], payload),
                     role,
                     session,
                     expected_self,
@@ -984,12 +941,11 @@ class OneBot11Gateway(Gateway):
 
     def _queue_ws_payload(
         self,
-        payload: BaseModel | Mapping[str, JsonValue],
+        data: Mapping[str, JsonValue],
         role: WebSocketRole,
         session: WebSocketActionSession | None,
         expected_self: BotSelf | None,
     ) -> BotSelf | None:
-        data = _json_object(payload)
         if "status" in data and "retcode" in data:
             self._receive_ws_action_response(session, data)
             return expected_self
@@ -1148,50 +1104,38 @@ def _event_detail_type(event: OneBot11Event) -> str:
     raise ValueError(msg)
 
 
-def _request_quick_operation(
+def _request_response(
     event: Event | None,
     action: ReturnAction,
-) -> OneBot11QuickOperation:
+) -> tuple[OneBot11QuickOperation, str, ActionParamModel]:
     approve = _request_approve(action)
     if isinstance(event, FriendRequestEvent):
         if action.reason:
             msg = "Friend request rejections do not support reason"
             raise TypeError(msg)
-        return OneBot11QuickOperation(approve=approve, remark=action.remark)
+        return (
+            OneBot11QuickOperation(approve=approve, remark=action.remark),
+            "set_friend_add_request",
+            ActionParamModel.model_validate({
+                "flag": event.flag,
+                "approve": approve,
+                "remark": action.remark,
+            }),
+        )
     if isinstance(event, GroupRequestEvent):
         if action.remark:
             msg = "Group request approvals do not support remark"
             raise TypeError(msg)
-        return OneBot11QuickOperation(approve=approve, reason=action.reason)
-
-    msg = "Request response return values require a supported request event"
-    raise TypeError(msg)
-
-
-def _request_response_action(
-    event: Event | None,
-    action: ReturnAction,
-) -> tuple[str, ActionParamModel]:
-    approve = _request_approve(action)
-    if isinstance(event, FriendRequestEvent):
-        if action.reason:
-            msg = "Friend request rejections do not support reason"
-            raise TypeError(msg)
-        return "set_friend_add_request", ActionParamModel.model_validate({
-            "flag": event.flag,
-            "approve": approve,
-            "remark": action.remark,
-        })
-    if isinstance(event, GroupRequestEvent):
-        if action.remark:
-            msg = "Group request approvals do not support remark"
-            raise TypeError(msg)
-        return "set_group_add_request", ActionParamModel.model_validate({
-            "flag": event.flag,
-            "sub_type": event.sub_type,
-            "approve": approve,
-            "reason": action.reason,
-        })
+        return (
+            OneBot11QuickOperation(approve=approve, reason=action.reason),
+            "set_group_add_request",
+            ActionParamModel.model_validate({
+                "flag": event.flag,
+                "sub_type": event.sub_type,
+                "approve": approve,
+                "reason": action.reason,
+            }),
+        )
 
     msg = "Request response return values require a supported request event"
     raise TypeError(msg)
