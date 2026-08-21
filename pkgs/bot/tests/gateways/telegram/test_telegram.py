@@ -236,6 +236,10 @@ def test_current_telegram_model_boundaries() -> None:
             telegram_api_module.TelegramMessage.model_validate(
                 message | {field: maximum_int32 + 1}
             )
+    with pytest.raises(ValidationError):
+        telegram_module._message_id(maximum_int32 + 1)
+    with pytest.raises(ValidationError):
+        TelegramGateway(Bot(), token=CREDENTIAL, poll_timeout=maximum_int32 + 1)
 
     webhook = {
         "url": "",
@@ -851,14 +855,14 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
         },
     )
     gateway = make_gateway(pool)
+    with pytest.raises(RuntimeError, match="reserved"):
+        await gateway.call_json("getUpdates")
+    with pytest.raises(RuntimeError, match="polling gateway"):
+        await gateway.call_json("setWebhook", {"url": "https://example.test"})
     await gateway.start()
     self_ = BotSelf(platform="telegram", user_id="123")
     connection = gateway.connection_for(self_)
     try:
-        with pytest.raises(RuntimeError, match="reserved"):
-            await gateway.call_json("getUpdates")
-        with pytest.raises(RuntimeError, match="unavailable while polling"):
-            await gateway.call_json("setWebhook", {"url": "https://example.test"})
         supported = await connection.action(Action.GET_SUPPORTED_ACTIONS)
         assert "getUpdates" not in supported.root  # ty: ignore[unresolved-attribute]
         assert "setWebhook" not in supported.root  # ty: ignore[unresolved-attribute]
@@ -910,35 +914,6 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
         await gateway.close()
 
 
-async def test_start_reserves_polling_before_identification(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gateway = make_gateway()
-    identifying = Event()
-    continue_identification = Event()
-
-    async def identify() -> TelegramUser:
-        identifying.set()
-        await continue_identification.wait()
-        return TelegramUser(id=123, is_bot=True, first_name="Bot")
-
-    monkeypatch.setattr(gateway, "_identify", identify)
-    startup = create_task(gateway.start())
-    try:
-        async with timeout(1):
-            await identifying.wait()
-            with pytest.raises(RuntimeError, match="unavailable while polling"):
-                await gateway.call_json(
-                    "setWebhook",
-                    {"url": "https://example.test/hook"},
-                )
-            continue_identification.set()
-            await startup
-    finally:
-        continue_identification.set()
-        await gateway.close()
-
-
 async def test_cancelling_one_start_waiter_keeps_shared_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -986,7 +961,6 @@ async def test_cancelling_only_start_waiter_rolls_back(
 
     assert gateway._closed
     assert gateway._startup_task is None
-    assert not gateway._polling_reserved
 
 
 async def test_failed_start_preserves_cleanup_error_and_can_retry(
@@ -1406,7 +1380,6 @@ async def test_webhook_conflict_fails_before_polling() -> None:
         await gateway.start()
     assert "secret.example" not in str(error.value)
     assert gateway._closed
-    assert not gateway._polling_reserved
 
 
 async def test_poller_respects_flood_wait_and_stops_on_auth_error(

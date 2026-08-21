@@ -8,26 +8,21 @@ from asyncio import (
     sleep,
     wait,
 )
-from asyncio import (
-    Event as AsyncEvent,
-)
 from collections.abc import Mapping
 from contextlib import suppress
 from html import escape
 from importlib.metadata import version
 from logging import getLogger
 from time import time
-from typing import Annotated, Self, cast, override
+from typing import Self, cast, override
 
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Field,
     JsonValue,
     RootModel,
     SecretStr,
     StrictBool,
-    StrictInt,
     StrictStr,
     TypeAdapter,
     model_validator,
@@ -61,6 +56,7 @@ from .base import Connection, Gateway, await_cleanup
 from .telegram_api import (
     TELEGRAM_API_BASE_URL,
     TELEGRAM_METHODS,
+    NonNegativeInt,
     PositiveInt,
     TelegramAPIError,
     TelegramChatJoinRequest,
@@ -92,8 +88,7 @@ _MEDIA_METHODS: dict[str | MsgSegmentType, tuple[str, str]] = {
     "telegram.sticker": ("sendSticker", "sticker"),
     "telegram.video_note": ("sendVideoNote", "video_note"),
 }
-_POLL_TIMEOUT_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
-_MESSAGE_ID_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
+_NON_NEGATIVE_INT_ADAPTER = TypeAdapter(NonNegativeInt)
 _USER_ID_ADAPTER = TypeAdapter(TelegramUserID)
 _NATIVE_ACTIONS = TELEGRAM_METHODS - {"getUpdates", "setWebhook"}
 _GROUP_METHODS = {
@@ -212,17 +207,13 @@ class TelegramGateway(Gateway, TelegramRestClient):
             base_url=base_url,
             http_pool=http_pool,
         )
-        self.poll_timeout = _POLL_TIMEOUT_ADAPTER.validate_python(poll_timeout)
+        self.poll_timeout = _NON_NEGATIVE_INT_ADAPTER.validate_python(poll_timeout)
         self._gateway_lock = Lock()
         self._startup_task: Task[None] | None = None
         self._startup_waiters = 0
         self._close_task: Task[None] | None = None
         self._task: Task[None] | None = None
         self._closing = False
-        self._polling_reserved = False
-        self._webhook_calls = 0
-        self._webhook_idle = AsyncEvent()
-        self._webhook_idle.set()
         self._online = False
         self._offset: int | None = None
         self._self: BotSelf | None = None
@@ -244,7 +235,6 @@ class TelegramGateway(Gateway, TelegramRestClient):
                     if startup is None or startup.done():
                         self._task = None
                         self._closing = False
-                        self._polling_reserved = True
                         startup = create_task(
                             self._start_gateway(),
                             name="telegram-gateway-start",
@@ -295,7 +285,6 @@ class TelegramGateway(Gateway, TelegramRestClient):
 
     async def _start_gateway(self) -> None:
         await TelegramRestClient.start(self)
-        await self._webhook_idle.wait()
         me = await self._identify()
         async with self._gateway_lock:
             if self._closing:
@@ -346,7 +335,6 @@ class TelegramGateway(Gateway, TelegramRestClient):
         async with self._gateway_lock:
             self._closing = True
             self._online = False
-            self._polling_reserved = True
             tasks = tuple(
                 task for task in (self._startup_task, self._task) if task is not None
             )
@@ -365,7 +353,6 @@ class TelegramGateway(Gateway, TelegramRestClient):
                         self._startup_task = None
                     if self._task in tasks:
                         self._task = None
-                    self._polling_reserved = False
 
     @override
     def connection_for(self, self_: BotSelf) -> TelegramConnection:
@@ -381,36 +368,18 @@ class TelegramGateway(Gateway, TelegramRestClient):
         request_timeout: float | None = None,
     ) -> JsonValue:
         canonical = method.casefold()
-        webhook_call = False
-        if canonical in {"getupdates", "setwebhook"}:
-            async with self._gateway_lock:
-                if (
-                    canonical == "getupdates"
-                    and self._polling_reserved
-                    and current_task() is not self._task
-                ):
-                    msg = "Telegram getUpdates is reserved for the running gateway"
-                    raise RuntimeError(msg)
-                if canonical == "setwebhook":
-                    if self._polling_reserved:
-                        msg = "Telegram setWebhook is unavailable while polling"
-                        raise RuntimeError(msg)
-                    self._webhook_calls += 1
-                    self._webhook_idle.clear()
-                    webhook_call = True
-        try:
-            return await super().call_json(
-                method,
-                params,
-                files,
-                request_timeout=request_timeout,
-            )
-        finally:
-            if webhook_call:
-                async with self._gateway_lock:
-                    self._webhook_calls -= 1
-                    if not self._webhook_calls:
-                        self._webhook_idle.set()
+        if canonical == "getupdates" and current_task() is not self._task:
+            msg = "Telegram getUpdates is reserved for the polling gateway"
+            raise RuntimeError(msg)
+        if canonical == "setwebhook":
+            msg = "Telegram setWebhook is unavailable on a polling gateway"
+            raise RuntimeError(msg)
+        return await super().call_json(
+            method,
+            params,
+            files,
+            request_timeout=request_timeout,
+        )
 
     @override
     async def request_action(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements] - protocol action router is intentionally flat
@@ -956,7 +925,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
 
 
 def _message_id(value: object) -> int:
-    return _validate_id(value, _MESSAGE_ID_ADAPTER)
+    return _validate_id(value, _NON_NEGATIVE_INT_ADAPTER)
 
 
 def _user_id(value: object) -> int:
