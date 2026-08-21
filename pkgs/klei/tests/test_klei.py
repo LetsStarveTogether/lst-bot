@@ -9,7 +9,6 @@ import pytest
 from klei import (
     KleiClient,
     LobbyData,
-    Platform,
     RoomData,
     VersionType,
 )
@@ -18,9 +17,9 @@ from pydantic import JsonValue, SecretStr, ValidationError
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
-VERSION_URL = "https://forum.example.test/versions/"
-LOBBY_URL = "https://lobby.example.test/{region}-{platform}.json.gz"
-ROOM_URL = "https://rooms.example.test/{region}/lobby/read"
+VERSION_URL = "https://kleiforums.com/game-updates/dst/"
+LOBBY_URL = "https://lobby-v2-cdn.klei.com/{region}-Steam.json.gz"
+ROOM_URL = "https://lobby-v2-{region}.klei.com/lobby/read"
 
 VERSION_HTML = """
 <li class="cCmsRecord_row">
@@ -159,9 +158,6 @@ def client(
 ) -> KleiClient:
     return KleiClient(
         access_token=SecretStr("test-token"),
-        version_url=VERSION_URL,
-        lobby_url=LOBBY_URL,
-        room_url=ROOM_URL,
         lobby_concurrency=lobby_concurrency,
         room_concurrency=room_concurrency,
         http_timeout=http_timeout,
@@ -189,7 +185,7 @@ async def test_client_reads_only_consumed_version_fields() -> None:
 
 async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     region = "sa-east-1"
-    lobby_url = LOBBY_URL.format(region=region, platform=Platform.Steam.name)
+    lobby_url = LOBBY_URL.format(region=region)
     room_url = ROOM_URL.format(region=region)
     pool = RecordingPool({
         lobby_url: rows_payload([
@@ -200,10 +196,7 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     })
 
     value = client(pool)
-    lobbies = await value.get_lobby_data(
-        regions=(region,),
-        platforms=(Platform.Steam,),
-    )
+    lobbies = await value.get_lobby_data(regions=(region,))
     rooms = await value.get_room_data(((lobbies[0].row_id, region),))
 
     assert len(lobbies) == 1
@@ -233,13 +226,13 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     assert pool.calls[1]["redirect"] is False
 
 
-async def test_non_success_http_status_fails_before_parsing_body() -> None:
+async def test_non_success_http_status_consumes_body_before_failing() -> None:
     pool = RecordingPool({VERSION_URL: Reply(VERSION_HTML.encode(), status=500)})
 
     with pytest.raises(HTTPError, match="HTTP 500"):
         await client(pool).get_latest_versions()
 
-    assert pool.responses[0].body_accessed is False
+    assert pool.responses[0].body_accessed is True
 
 
 @pytest.mark.parametrize("stage", ["request", "body"])
@@ -279,67 +272,17 @@ def test_client_limits_are_strict_positive_finite(kwargs: Any) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"room_url": "http://rooms.example.test/{region}/lobby/read"},
-        {"room_url": "https:///lobby/{region}/read"},
-        {"room_url": "https://user@rooms.example.test/{region}/lobby/read"},
-        {"room_url": "https://rooms.example.test/{region}/lobby/read#fragment"},
-        {"room_url": " https://rooms.example.test/{region}/lobby/read"},
-        {"lobby_url": "https://lobby.example.test/{region}.json.gz"},
-        {
-            "lobby_url": "https://lobby.example.test/"
-            "{region.__class__}-{platform}.json.gz"
-        },
-        {"version_url": "https://forum.example.test/{region}"},
-    ],
-)
-def test_client_rejects_unsafe_url_templates(kwargs: Any) -> None:
-    with pytest.raises(ValueError, match="Klei URL"):
-        KleiClient(
-            SecretStr("token"),
-            http_pool=cast("AsyncPoolManager", RecordingPool({})),
-            **kwargs,
-        )
-
-
-async def test_client_strictly_validates_platform_filters() -> None:
-    value = client(RecordingPool({}))
-
-    with pytest.raises(ValidationError):
-        await value.get_lobby_data(platforms=("Steam",))  # ty: ignore[invalid-argument-type]
-
-
-async def test_client_rejects_combined_platform_filters() -> None:
-    value = client(RecordingPool({}))
-
-    with pytest.raises(ValidationError, match="require one platform"):
-        await value.get_lobby_data(platforms=(Platform.Steam | Platform.PSN,))
-
-
 async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
     regions = ("us-east-1", "eu-central-1", "sa-east-1", "ca-central-1")
     routes: dict[str, bytes] = {
-        LOBBY_URL.format(region=region, platform=Platform.Steam.name): rows_payload([])
-        for region in regions
+        LOBBY_URL.format(region=region): rows_payload([]) for region in regions
     }
     pool = BlockingPool(routes, limit=2)
 
     value = client(pool, lobby_concurrency=2)
     async with TaskGroup() as tasks:
-        first = tasks.create_task(
-            value.get_lobby_data(
-                regions=regions[:2],
-                platforms=(Platform.Steam,),
-            )
-        )
-        second = tasks.create_task(
-            value.get_lobby_data(
-                regions=regions[2:],
-                platforms=(Platform.Steam,),
-            )
-        )
+        first = tasks.create_task(value.get_lobby_data(regions=regions[:2]))
+        second = tasks.create_task(value.get_lobby_data(regions=regions[2:]))
         async with timeout(1):
             await pool.saturated.wait()
         assert pool.max_active == 2

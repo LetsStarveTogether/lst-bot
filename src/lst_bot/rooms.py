@@ -3,7 +3,7 @@ from logging import getLogger
 from operator import attrgetter
 
 from bot import Cmd, EventRouter, Injected, admin_permission
-from klei import KleiClient, Platform, RoomData
+from klei import KleiClient, RoomData
 from lst import LstClient
 
 from .settings import Settings
@@ -51,7 +51,7 @@ async def get_host_rooms(
     *,
     connected_only: bool = False,
 ) -> list[RoomData]:
-    lobbies = await kc.get_lobby_data(platforms=(Platform.Steam,))
+    lobbies = await kc.get_lobby_data()
     rooms = (
         (data.row_id, data.region)
         for data in lobbies

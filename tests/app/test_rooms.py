@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 from bot import Bot, Cmd
 from bot.testing import private_message_event, recording_gateway
-from klei import KleiClient, Platform, RoomData
+from klei import KleiClient, RoomData
 from lst import LstClient
 from support import lobby_data, room_data
 
@@ -70,7 +70,7 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     client.get_room_data.return_value = [room_data(name="Alpha")]
     reply = await rooms(client, settings)
 
-    client.get_lobby_data.assert_awaited_once_with(platforms=(Platform.Steam,))
+    client.get_lobby_data.assert_awaited_once_with()
     room_data_call = client.get_room_data.await_args
     assert room_data_call is not None
     room_refs = list(room_data_call.args[0])
