@@ -32,8 +32,11 @@ dev = [
 ]
 
 [build-system]
-requires = ['uv_build~=0.11']
+requires = ['uv_build>=0.12.5,<0.13']
 build-backend = 'uv_build'
+
+[tool.uv]
+required-version = '==0.12.5'
 
 [tool.uv.workspace]
 members = [
@@ -47,7 +50,6 @@ klei = { workspace = true }
 lst = { workspace = true }
 
 [tool.ruff]
-fix = true
 preview = true
 required-version = '>=0.15'
 
@@ -59,13 +61,11 @@ ignore = [
     'TC',      # Runtime use of typing constructs is common now.
     'CPY',     # Covered by the standalone LICENSE file.
     'too-many-arguments', # Explicit is better than implicit.
-    'too-many-positional-arguments', # Complex is better than complicated.
     'no-self-use', # Violates the usual practice.
     'any-type',  # Framework boundaries carry protocol and DI values.
     'builtin-argument-shadowing',    # Event(type=...) is part of the public API.
     'blind-except',  # Dispatch records handler exceptions before re-raising.
     'D',       # Too verbose.
-    'subclass-builtin', # Message and State intentionally mirror built-in containers.
     'FBT',     # Too strict.
     'import-outside-top-level', # Optional runtime imports keep hard dependencies lazy.
     'too-many-return-statements', # Small resolver functions are branchy by nature.
