@@ -333,15 +333,6 @@ def test_secrets_are_not_represented() -> None:
     assert "managed-secret" not in str(secret_result)
 
 
-@pytest.mark.parametrize(
-    "base_url",
-    ["http://telegram.example", "https://:", "https://host:bad", "https://x/a b"],
-)
-def test_base_url_is_strict_https(base_url: str) -> None:
-    with pytest.raises(ValueError, match="absolute HTTPS URL"):
-        TelegramRestClient(CREDENTIAL, base_url=base_url)
-
-
 async def test_rest_boundaries_and_get_updates_parameters() -> None:
     pool = Pool(
         {

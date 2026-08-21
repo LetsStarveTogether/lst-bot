@@ -43,7 +43,7 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from bot.json import loads
 from bot.protocol.base import Model
 
-from .base import header_value
+from .base import header_value, validate_https_base_url
 
 QQ_API_BASE_URL = "https://api.bot.qq.com"
 _HTTP_TIMEOUT = 30.0
@@ -2058,17 +2058,9 @@ class QQRestClient:
                 else client_secret
             ),
         })
-        try:
-            parsed_url = _QQ_HTTPS_URL.validate_python(base_url)
-        except ValueError as exc:
-            msg = "QQ API base URL must be an absolute HTTPS URL"
-            raise ValueError(msg) from exc
-        if parsed_url.query or parsed_url.fragment:
-            msg = "QQ API base URL cannot contain a query or fragment"
-            raise ValueError(msg)
         self.app_id = credential.app_id
         self.client_secret = SecretStr(credential.client_secret)
-        self.base_url = str(parsed_url).rstrip("/")
+        self.base_url = validate_https_base_url(base_url, "QQ")
         self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
         self._owns_http_pool = http_pool is None
         self._token: SecretStr | None = None

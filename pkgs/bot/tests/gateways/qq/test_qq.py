@@ -42,7 +42,6 @@ from bot.gateways.qq_api import (
     QQMenuItem,
     QQMenuLinkItem,
     QQNoContent,
-    QQRestClient,
     QQRoleMemberListParams,
     QQSchedulePatch,
     QQSendC2CMessageRequest,
@@ -1369,10 +1368,6 @@ async def test_websocket_rejects_a_missed_heartbeat_ack() -> None:
 
 
 def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
-    for base_url in ("ws://qq.example", "https://qq.example?environment=test"):
-        with pytest.raises(ValueError, match="base URL"):
-            QQRestClient("app", CREDENTIAL, base_url=base_url)
-
     with pytest.raises(ValidationError):
         qq_gateway_module.QQJoinVerification.model_validate({
             "method": "admin_review_qa",

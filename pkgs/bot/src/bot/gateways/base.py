@@ -18,6 +18,7 @@ from urllib.parse import parse_qs
 from uuid import uuid4
 
 from pydantic import (
+    AnyHttpUrl,
     BaseModel,
     Field,
     JsonValue,
@@ -26,6 +27,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     TypeAdapter,
+    UrlConstraints,
 )
 from robyn import Response
 from urllib3_future import AsyncPoolManager
@@ -63,6 +65,27 @@ type PositiveSeconds = Annotated[
 ]
 type TcpPort = Annotated[StrictInt, Field(ge=0, le=65535)]
 _POSITIVE_SECONDS_ADAPTER = TypeAdapter(PositiveSeconds)
+_HTTPS_BASE_URL_ADAPTER = TypeAdapter(
+    Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
+)
+
+
+def validate_https_base_url(value: str, platform: str) -> str:
+    msg = f"{platform} API base URL must be an absolute HTTPS URL"
+    if not isinstance(value, str) or any(character.isspace() for character in value):
+        raise ValueError(msg)
+    try:
+        parsed = _HTTPS_BASE_URL_ADAPTER.validate_python(value)
+    except ValueError:
+        raise ValueError(msg) from None
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(msg)
+    return str(parsed).rstrip("/")
 
 
 class RobynServer(Protocol):

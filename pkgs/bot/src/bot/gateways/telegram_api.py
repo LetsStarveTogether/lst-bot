@@ -21,7 +21,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    HttpUrl,
     JsonValue,
     PlainSerializer,
     RootModel,
@@ -40,6 +39,8 @@ from urllib3_future.filepost import encode_multipart_formdata
 
 from bot.json import dumpb, loads
 from bot.protocol.base import Model
+
+from .base import validate_https_base_url
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
@@ -229,7 +230,6 @@ _OFFSET_ADAPTER = TypeAdapter(TelegramUpdateOffset | None, config=_STRICT_CONFIG
 _POLL_TIMEOUT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _NON_NEGATIVE_INT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _POSITIVE_INT_ADAPTER = TypeAdapter(PositiveInt, config=_STRICT_CONFIG)
-_BASE_URL_ADAPTER = TypeAdapter(HttpUrl, config=_STRICT_CONFIG)
 _METHODS_BY_CASE = {method.casefold(): method for method in TELEGRAM_METHODS}
 _RAW_UPDATES_ADAPTER = TypeAdapter(list[TelegramObject], config=_STRICT_CONFIG)
 
@@ -708,29 +708,13 @@ class TelegramRestClient:
         ):
             msg = "invalid Telegram bot token"
             raise ValueError(msg)
-        msg = "Telegram API base URL must be an absolute HTTPS URL"
-        if not isinstance(base_url, str) or any(
-            character.isspace() for character in base_url
-        ):
-            raise ValueError(msg)
-        try:
-            parsed = _BASE_URL_ADAPTER.validate_python(base_url)
-        except ValueError:
-            raise ValueError(msg) from None
-        if (
-            parsed.scheme != "https"
-            or any(value is not None for value in (parsed.username, parsed.password))
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError(msg)
         request_timeout = _REQUEST_TIMEOUT_ADAPTER.validate_python(request_timeout)
         max_rate_limit_retries = _NON_NEGATIVE_INT_ADAPTER.validate_python(
             max_rate_limit_retries
         )
         max_retry_after = _NON_NEGATIVE_INT_ADAPTER.validate_python(max_retry_after)
         self.token = SecretStr(value)
-        self.base_url = str(parsed).rstrip("/")
+        self.base_url = validate_https_base_url(base_url, "Telegram")
         self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
         self._owns_http_pool = http_pool is None
         self._pool_closed = False

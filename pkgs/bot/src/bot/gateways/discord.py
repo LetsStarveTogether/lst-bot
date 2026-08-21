@@ -33,7 +33,6 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsp
 
 from pydantic import (
     AfterValidator,
-    AnyHttpUrl,
     AwareDatetime,
     BaseModel,
     BeforeValidator,
@@ -81,6 +80,7 @@ from .base import (
     await_cleanup,
     connect_websocket,
     header_value,
+    validate_https_base_url,
 )
 
 logger = getLogger(__name__)
@@ -125,10 +125,6 @@ _INTERACTION_AUTO_RESPONSES: dict[int, JsonValue] = {
 
 type NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 type PositiveInt = Annotated[StrictInt, Field(gt=0)]
-type DiscordHttpUrl = Annotated[
-    AnyHttpUrl,
-    UrlConstraints(allowed_schemes=["https"]),
-]
 type DiscordWebsocketUrl = Annotated[
     WebsocketUrl,
     UrlConstraints(allowed_schemes=["wss"]),
@@ -138,8 +134,6 @@ type DiscordQueryValue = DiscordQueryScalar | list[DiscordQueryScalar]
 type MultipartFieldValue = (
     str | bytes | tuple[str, str | bytes] | tuple[str, str | bytes, str]
 )
-
-_HTTPS_URL_ADAPTER = TypeAdapter(DiscordHttpUrl)
 
 
 def _snowflake(value: str) -> str:
@@ -689,19 +683,8 @@ class DiscordRestClient:
         if not token_value or any(character.isspace() for character in token_value):
             msg = "Discord bot token must be non-empty and contain no whitespace"
             raise ValueError(msg)
-        try:
-            parsed_url = _HTTPS_URL_ADAPTER.validate_python(base_url)
-        except ValueError as exc:
-            msg = "Discord API base URL must be an absolute HTTPS URL"
-            raise ValueError(msg) from exc
-        if parsed_url.query or parsed_url.fragment:
-            msg = "Discord API base URL cannot contain a query or fragment"
-            raise ValueError(msg)
-        if parsed_url.username is not None or parsed_url.password is not None:
-            msg = "Discord API base URL cannot contain credentials"
-            raise ValueError(msg)
         self.token = SecretStr(token_value)
-        self.base_url = str(parsed_url).rstrip("/")
+        self.base_url = validate_https_base_url(base_url, "Discord")
         self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
         self._owns_http_pool = http_pool is None
         self._rest_lifecycle_lock = Lock()

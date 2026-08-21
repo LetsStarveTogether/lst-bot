@@ -26,6 +26,7 @@ from bot.gateways.base import (
     header_value,
     request_target_path,
     token_matches,
+    validate_https_base_url,
 )
 from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
@@ -40,6 +41,23 @@ class MultiValueFields:
 
     def get_all(self, name: str) -> list[str]:
         return self.values.get(name, [])
+
+
+def test_https_base_url_is_strict_and_canonical() -> None:
+    assert (
+        validate_https_base_url("https://api.example/path/", "Test")
+        == "https://api.example/path"
+    )
+    for invalid in (
+        "http://api.example",
+        " https://api.example",
+        "https://user:secret@api.example",
+        "https://api.example?query=1",
+        "https://api.example#fragment",
+        "https://:",
+    ):
+        with pytest.raises(ValueError, match="absolute HTTPS URL"):
+            validate_https_base_url(invalid, "Test")
 
 
 def test_json_codec_is_compact_utf8_and_strict() -> None:
