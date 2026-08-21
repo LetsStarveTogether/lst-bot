@@ -815,7 +815,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             raise TypeError(msg)
 
     text = "".join(text_parts)
-    if text_length > _MAX_TEXT_LENGTH:
+    if text_length > _MAX_TEXT_LENGTH and (html or "parse_mode" not in extra):
         msg = "Telegram message text exceeds 4096 characters"
         raise ValueError(msg)
     common = {"chat_id": chat_id, **extra}

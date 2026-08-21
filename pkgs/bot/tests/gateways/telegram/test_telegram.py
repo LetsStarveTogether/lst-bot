@@ -240,6 +240,11 @@ def test_message_text_limit() -> None:
         telegram_module._message_calls(  # ruff: ignore[private-member-access]
             "42", Msg.from_input("x" * 4097), {}
         )
+    assert telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        "42",
+        Msg.from_input(f"<b>{'x' * 4094}</b>"),
+        {"parse_mode": "HTML"},
+    )
 
 
 def test_unmapped_message_content_is_preserved() -> None:
