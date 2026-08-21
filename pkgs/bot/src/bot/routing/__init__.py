@@ -3,7 +3,6 @@ from .route import (
     DispatchEffect,
     DispatchResult,
     EventRoute,
-    ReturnEffect,
 )
 from .router import EventRouter
 from .rule import Permission, Rule
@@ -15,6 +14,5 @@ __all__ = [
     "EventRoute",
     "EventRouter",
     "Permission",
-    "ReturnEffect",
     "Rule",
 ]

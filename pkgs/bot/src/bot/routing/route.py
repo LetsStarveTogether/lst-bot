@@ -41,12 +41,9 @@ class EventRoute:
 
 
 @dataclass(slots=True, kw_only=True, match_args=False)
-class ReturnEffect:
+class DispatchEffect:
     action: ReturnAction
     outcome: BaseModel
-
-
-type DispatchEffect = ReturnEffect
 
 
 @dataclass(slots=True, kw_only=True, match_args=False)

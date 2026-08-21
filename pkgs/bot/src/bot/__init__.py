@@ -74,7 +74,6 @@ from .routing import (
     EventRoute,
     EventRouter,
     Permission,
-    ReturnEffect,
     Rule,
 )
 
@@ -145,7 +144,6 @@ __all__ = [
     "RequestResponse",
     "Retcode",
     "ReturnAction",
-    "ReturnEffect",
     "Rule",
     "Scope",
     "State",

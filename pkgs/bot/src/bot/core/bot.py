@@ -43,7 +43,6 @@ from bot.routing import (
     EventRoute,
     EventRouter,
     Permission,
-    ReturnEffect,
     Rule,
 )
 
@@ -872,4 +871,4 @@ class Bot:
                 connection=connection,
                 outcome=outcome,
             )
-        effects.append(ReturnEffect(action=action, outcome=outcome))
+        effects.append(DispatchEffect(action=action, outcome=outcome))

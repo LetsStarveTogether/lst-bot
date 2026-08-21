@@ -159,7 +159,7 @@ class ActionRequest(Model):
 
 class ActionResponse(Model):
     status: ApiStatus
-    retcode: StrictInt
+    retcode: Annotated[StrictInt, Field(ge=0, le=MAX_RETCODE)]
     data: JsonValue
     message: StrictStr
     echo: StrictStr | None = Field(
@@ -183,9 +183,6 @@ class ActionResponse(Model):
 
     @model_validator(mode="after")
     def match_status_and_retcode(self) -> Self:
-        if self.retcode < 0 or self.retcode > MAX_RETCODE:
-            msg = "action response retcode must be between 0 and 99999"
-            raise ValueError(msg)
         if self.status == ApiStatus.OK:
             if self.retcode != Retcode.OK:
                 msg = "ok action response must use retcode 0"
