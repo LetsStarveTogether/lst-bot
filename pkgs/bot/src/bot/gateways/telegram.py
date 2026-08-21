@@ -855,7 +855,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             params.pop("reply_parameters", None)
         if caption_used and index == 0:
             params["caption"] = text
-        elif html:
+        else:
             params.pop("parse_mode", None)
         calls.append((method, params))
     if not calls:

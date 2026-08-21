@@ -220,9 +220,13 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
         {"type": "text", "data": {"text": text}},
         {"type": "image", "data": {"file_id": "photo"}},
     ])
-    calls = telegram_module._message_calls("42", message, {})  # ruff: ignore[private-member-access]
+    calls = telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        "42", message, {"parse_mode": "HTML"}
+    )
     assert [method for method, _ in calls] == methods
     assert calls[-1][1].get("caption") == (text if length == 1024 else None)
+    assert calls[0][1]["parse_mode"] == "HTML"
+    assert calls[-1][1].get("parse_mode") == ("HTML" if length == 1024 else None)
 
 
 def test_message_text_limit() -> None:
@@ -304,7 +308,9 @@ def test_location_and_venue_conversion() -> None:
             },
         }
     ])
-    assert telegram_module._message_calls("42", location, {}) == [  # ruff: ignore[private-member-access]
+    assert telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        "42", location, {"parse_mode": "HTML"}
+    ) == [
         (
             "sendLocation",
             {"chat_id": "42", "latitude": 1.25, "longitude": 2.5},
