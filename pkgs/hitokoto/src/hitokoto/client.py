@@ -1,12 +1,12 @@
 from asyncio import Lock, TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
+from logging import getLogger
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 from weakref import WeakValueDictionary
 
-from logbook import Logger
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
@@ -25,7 +25,7 @@ _HITOKOTO_TYPES = TypeAdapter(
     config=ConfigDict(strict=True),
 )
 _CACHE_LOCKS: WeakValueDictionary[Path, Lock] = WeakValueDictionary()
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 
 class _BundleSentenceMeta(BaseModel):
@@ -70,7 +70,7 @@ class HitokotoClient:
         async with self._cache_lock:
             if await is_cache_valid(self.cache_path):
                 return
-            logger.info("refresh Hitokoto cache: {path}", path=self.cache_path)
+            logger.info("refresh Hitokoto cache: %s", self.cache_path)
             base_url = _bundle_base_url(self.bundle_url)
             version = _BundleVersion.model_validate_json(
                 await self._get(f"{base_url}version.json"),
@@ -91,9 +91,9 @@ class HitokotoClient:
             ])
             await write_cache(self.cache_path, sentences)
             logger.info(
-                "Hitokoto cache refreshed: {path} ({count} sentences)",
-                path=self.cache_path,
-                count=len(sentences),
+                "Hitokoto cache refreshed: %s (%d sentences)",
+                self.cache_path,
+                len(sentences),
             )
 
     async def _get(

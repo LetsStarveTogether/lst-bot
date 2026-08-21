@@ -5,7 +5,6 @@ description = "Local DST room control client for lst-bot."
 license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
-    "logbook>=1.9.2",
     "pystemd>=0.13.2",
 ]
 

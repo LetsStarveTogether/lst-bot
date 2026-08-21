@@ -397,14 +397,12 @@ name = "hitokoto"
 version = "0.0.0"
 source = { editable = "pkgs/hitokoto" }
 dependencies = [
-    { name = "logbook" },
     { name = "pydantic" },
     { name = "urllib3-future" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "logbook", specifier = ">=1.9.2" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "urllib3-future", specifier = ">=2.21.902" },
 ]
@@ -766,15 +764,11 @@ name = "lst"
 version = "0.0.0"
 source = { editable = "pkgs/lst" }
 dependencies = [
-    { name = "logbook" },
     { name = "pystemd" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "logbook", specifier = ">=1.9.2" },
-    { name = "pystemd", specifier = ">=0.13.2" },
-]
+requires-dist = [{ name = "pystemd", specifier = ">=0.13.2" }]
 
 [[package]]
 name = "lst-bot"
