@@ -25,7 +25,7 @@ from pydantic import (
 )
 from pydantic.experimental.missing_sentinel import MISSING
 
-from .base import Model, field_value
+from .base import Model, _field_value
 from .common import BotSelf
 from .enums import (
     Action,
@@ -151,13 +151,13 @@ class ActionResponse(Model):
 
 
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
-    detail_type = field_value(value, "detail_type")
+    detail_type = _field_value(value, "detail_type")
     if detail_type is None:
-        if field_value(value, "guild_id") and field_value(value, "channel_id"):
+        if _field_value(value, "guild_id") and _field_value(value, "channel_id"):
             return MsgTargetTag.CHANNEL
-        if field_value(value, "group_id"):
+        if _field_value(value, "group_id"):
             return MsgTargetTag.GROUP
-        if field_value(value, "user_id"):
+        if _field_value(value, "user_id"):
             return MsgTargetTag.PRIVATE
     try:
         return MsgTargetTag(detail_type)
@@ -166,7 +166,7 @@ def _send_msg_params_tag(value: object) -> MsgTargetTag:
 
 
 def _upload_file_params_tag(value: object) -> UploadFileTag:
-    file_type = field_value(value, "type")
+    file_type = _field_value(value, "type")
     try:
         return UploadFileTag(file_type)
     except ValueError:

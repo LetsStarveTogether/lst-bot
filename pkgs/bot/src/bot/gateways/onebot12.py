@@ -300,13 +300,7 @@ class OneBot12Gateway(Gateway):
         if actions:
             return json_response(
                 HTTPStatus.OK,
-                [
-                    action.model_dump(
-                        mode="json",
-                        exclude_unset=True,
-                    )
-                    for action in actions
-                ],
+                [action.model_dump(mode="json") for action in actions],
             )
         return empty_response(HTTPStatus.NO_CONTENT)
 
@@ -345,9 +339,7 @@ class OneBot12Gateway(Gateway):
                     params=params,
                     echo=echo,
                     self=connection.self_,
-                ).model_dump_json(
-                    exclude_unset=True,
-                ),
+                ).model_dump_json(),
             )
 
         msg = f"{action} is not supported without an action backend"
@@ -372,10 +364,7 @@ class OneBot12Gateway(Gateway):
                 HTTPMethod.POST,
                 backend.base_url,
                 headers=self._authorization_headers,
-                json=request.model_dump(
-                    mode="json",
-                    exclude_unset=True,
-                ),
+                json=request.model_dump(mode="json"),
             )
             if response.status != HTTPStatus.OK:
                 msg = f"OneBot 12 action request failed: HTTP {response.status}"

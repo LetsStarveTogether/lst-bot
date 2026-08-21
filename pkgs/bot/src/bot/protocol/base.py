@@ -4,7 +4,7 @@ from math import isfinite
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
-def field_value(value: object, key: str) -> object:
+def _field_value(value: object, key: str) -> object:
     return value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
 
 
