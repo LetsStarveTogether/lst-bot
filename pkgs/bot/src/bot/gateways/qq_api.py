@@ -286,7 +286,7 @@ class QQKeyboardAction(QQRequest):
 
 class QQKeyboardRenderData(QQRequest):
     label: StrictStr
-    visited_label: StrictStr | None = None
+    visited_label: StrictStr
     style: StrictIntLiteral[Literal[0, 1, 2, 3]]
 
 

@@ -442,11 +442,8 @@ def test_event_model_families_map_to_common_events() -> None:
         "INTERACTION_CREATE": {
             "id": "interaction",
             "type": 11,
-            "scene": "c2c",
-            "timestamp": "2026-08-17T00:00:00Z",
-            "data": {"resolved": {}},
+            "data": {"type": 11, "resolved": {}},
             "version": 1,
-            "application_id": "app",
         },
     }
     gateway = _gateway(FakePool())
@@ -485,6 +482,16 @@ def test_event_model_families_map_to_common_events() -> None:
             assert isinstance(qq_data, dict)
             assert qq_data["id"] == "message"
             assert event.model_extra["qq_raw"] is False
+
+
+def test_interaction_requires_data_type() -> None:
+    with pytest.raises(ValidationError):
+        qq_gateway_module.QQInteraction.model_validate({
+            "id": "interaction",
+            "type": 11,
+            "data": {"resolved": {}},
+            "version": 1,
+        })
 
 
 @pytest.mark.parametrize(

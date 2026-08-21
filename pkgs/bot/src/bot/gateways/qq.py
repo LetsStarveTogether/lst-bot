@@ -195,6 +195,14 @@ class QQUser(qq_api.QQUser):
     member_role: Literal["member", "admin", "owner"] | None = None
 
 
+class QQC2CUser(QQUser):
+    user_openid: QQID
+
+
+class QQGroupUser(QQUser):
+    member_openid: QQID
+
+
 class QQMessageScene(Model):
     source: StrictStr | None = None
     ext: list[StrictStr] = Field(default_factory=list)
@@ -230,7 +238,7 @@ class QQMessageElement(Model):
 
 class QQC2CMessage(Model):
     id: StrictStr
-    author: QQUser
+    author: QQC2CUser
     content: StrictStr
     timestamp: AwareDatetime
     message_type: StrictIntLiteral[Literal[0, 3, 101, 102, 103]] | None = None
@@ -241,6 +249,7 @@ class QQC2CMessage(Model):
 
 
 class QQGroupMessage(QQC2CMessage):
+    author: QQGroupUser
     group_openid: StrictStr
     mentions: list[QQUser] = Field(default_factory=list)
 
@@ -251,7 +260,7 @@ class QQLegacyChannelMessage(Model):
     guild_id: StrictStr
     content: StrictStr
     timestamp: AwareDatetime
-    author: QQUser
+    author: qq_api.QQIdentifiedUser
     attachments: list[QQAttachment] = Field(default_factory=list)
     mentions: list[QQUser] = Field(default_factory=list)
 
@@ -340,16 +349,16 @@ class QQInteractionResolved(Model):
 
 
 class QQInteractionData(Model):
-    type: StrictInt | None = None
+    type: StrictInt
     resolved: QQInteractionResolved
 
 
 class QQInteraction(Model):
     id: StrictStr
     type: StrictIntLiteral[Literal[11, 12, 13, 14, 15, 16, 18, 19, 20]]
-    scene: Literal["c2c", "group", "guild"]
+    scene: Literal["c2c", "group", "guild"] | None = None
     chat_type: StrictIntLiteral[Literal[0, 1, 2]] | None = None
-    timestamp: AwareDatetime
+    timestamp: AwareDatetime | None = None
     guild_id: StrictStr | None = None
     channel_id: StrictStr | None = None
     user_openid: StrictStr | None = None
@@ -357,7 +366,7 @@ class QQInteraction(Model):
     group_member_openid: StrictStr | None = None
     data: QQInteractionData
     version: StrictInt
-    application_id: StrictStr
+    application_id: StrictStr | None = None
 
 
 type QQEventData = (
@@ -443,7 +452,7 @@ class QQHelloData(Model):
 class QQReadyData(Model):
     version: StrictInt
     session_id: Annotated[StrictStr, Field(min_length=1)]
-    user: QQUser
+    user: qq_api.QQIdentifiedUser
     shard: tuple[NonNegativeInt, NonNegativeInt]
 
 
@@ -825,7 +834,7 @@ class QQGateway(Gateway, QQRestClient):
     async def _send_heartbeat(self, websocket: WebSocketConnection) -> None:
         await websocket.send_text(QQHeartbeat(d=self._seq).model_dump_json())
 
-    async def _receive_dispatch(  # ruff: ignore[complex-structure, too-many-branches] - one pass preserves sequence and queue ordering
+    async def _receive_dispatch(  # ruff: ignore[complex-structure] - one pass preserves sequence and queue ordering
         self, payload: QQGatewayPayload
     ) -> None:
         message_key: tuple[str, ...] | None = None
@@ -862,9 +871,6 @@ class QQGateway(Gateway, QQRestClient):
                     return
             if dispatch.t == "READY":
                 ready = QQReadyData.model_validate(dispatch.d)
-                if ready.user.id is None:
-                    msg = "QQ READY user.id is required"
-                    raise ValueError(msg)
                 self._session_id = ready.session_id
                 self._self = BotSelf(platform="qq", user_id=ready.user.id)
                 self._online = True
@@ -979,30 +985,19 @@ class QQGateway(Gateway, QQRestClient):
     ) -> MessageEvent | None:
         data = dispatch.d
         if isinstance(data, QQGroupMessage):
-            user_id = data.author.member_openid or data.author.user_openid
-            if user_id is None:
-                msg = "QQ group message author openid is required"
-                raise ValueError(msg)
             return GroupMessageEvent.model_validate({
                 **self._message_event_fields(dispatch, data),
-                "user_id": user_id,
+                "user_id": data.author.member_openid,
                 "group_id": data.group_openid,
             })
         if isinstance(data, QQC2CMessage):
-            user_id = data.author.user_openid or data.author.id
-            if user_id is None:
-                msg = "QQ C2C message author openid is required"
-                raise ValueError(msg)
             return PrivateMessageEvent.model_validate({
                 **self._message_event_fields(dispatch, data),
-                "user_id": user_id,
+                "user_id": data.author.user_openid,
                 "qq_scene": "c2c",
             })
         if not isinstance(data, QQLegacyChannelMessage):
             return None
-        if data.author.id is None:
-            msg = "QQ channel message author.id is required"
-            raise ValueError(msg)
         fields = {
             **self._message_event_fields(dispatch, data),
             "user_id": data.author.id,

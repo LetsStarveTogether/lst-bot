@@ -124,6 +124,40 @@ async def test_dispatch_envelope_and_control_frames_remain_strict() -> None:
                 QQGatewayPayload.model_validate(payload)
             )
 
+    with pytest.raises(ValidationError):
+        qq_gateway_module.QQReadyData.model_validate({
+            "version": 1,
+            "session_id": "session",
+            "user": {},
+            "shard": [0, 1],
+        })
+
+
+@pytest.mark.parametrize(
+    ("event_type", "fields"),
+    [
+        ("C2C_MESSAGE_CREATE", {}),
+        ("GROUP_MESSAGE_CREATE", {"group_openid": "group"}),
+        ("AT_MESSAGE_CREATE", {"channel_id": "channel", "guild_id": "guild"}),
+    ],
+)
+def test_message_models_require_scene_author_identifiers(
+    event_type: str,
+    fields: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        QQDispatch.model_validate({
+            "s": 1,
+            "t": event_type,
+            "d": {
+                "id": "message",
+                "author": {},
+                "content": "text",
+                "timestamp": "2026-08-21T00:00:00Z",
+                **fields,
+            },
+        })
+
 
 def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
     event = _gateway()._event_from_dispatch(  # ruff: ignore[private-member-access] - conversion boundary
