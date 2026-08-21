@@ -17,17 +17,20 @@ from html import escape
 from importlib.metadata import version
 from logging import getLogger
 from time import time
-from typing import Annotated, cast, override
+from typing import Annotated, Self, cast, override
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     JsonValue,
     RootModel,
     SecretStr,
+    StrictBool,
     StrictInt,
     StrictStr,
     TypeAdapter,
+    model_validator,
 )
 from urllib3_future import AsyncPoolManager
 
@@ -58,10 +61,13 @@ from .base import Connection, Gateway, await_cleanup
 from .telegram_api import (
     TELEGRAM_API_BASE_URL,
     TELEGRAM_METHODS,
+    PositiveInt,
     TelegramAPIError,
     TelegramChatJoinRequest,
     TelegramLocation,
     TelegramMessage,
+    TelegramMessageEntity,
+    TelegramObject,
     TelegramRestClient,
     TelegramResult,
     TelegramUpdate,
@@ -108,6 +114,36 @@ _COMMON_ACTIONS = (
 )
 
 
+class _TelegramMessageOptions(BaseModel):
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        extra="forbid",
+        hide_input_in_errors=True,
+    )
+
+    business_connection_id: StrictStr | None = None
+    message_thread_id: PositiveInt | None = None
+    direct_messages_topic_id: PositiveInt | None = None
+    receiver_user_id: TelegramUserID | None = None
+    callback_query_id: StrictStr | None = None
+    disable_notification: StrictBool | None = None
+    protect_content: StrictBool | None = None
+    allow_paid_broadcast: StrictBool | None = None
+    message_effect_id: StrictStr | None = None
+    suggested_post_parameters: TelegramObject | None = None
+    reply_parameters: TelegramObject | None = None
+    reply_markup: TelegramObject | None = None
+    parse_mode: StrictStr | None = None
+    entities: list[TelegramMessageEntity] | None = None
+
+    @model_validator(mode="after")
+    def one_formatting_mode(self) -> Self:
+        if self.parse_mode is not None and self.entities is not None:
+            msg = "Telegram parse_mode and entities are mutually exclusive"
+            raise ValueError(msg)
+        return self
+
+
 class TelegramConnection(Connection):
     @staticmethod
     @override
@@ -118,6 +154,10 @@ class TelegramConnection(Connection):
         params = Connection._message_action_params(  # ruff: ignore[private-member-access] - shared target mapping
             event, msg
         )
+        guest_query_id = getattr(event, "telegram_guest_query_id", None)
+        if isinstance(guest_query_id, str):
+            params["telegram_guest_query_id"] = guest_query_id
+            return params
         thread_id = getattr(event, "telegram_message_thread_id", None)
         chat_id = getattr(event, "telegram_chat_id", None)
         if isinstance(chat_id, int) and not isinstance(chat_id, bool):
@@ -151,9 +191,6 @@ class TelegramConnection(Connection):
         elif ephemeral_message_id is not None:
             msg = "Telegram ephemeral replies require a valid ephemeral_message_id"
             raise ValueError(msg)
-        guest_query_id = getattr(event, "telegram_guest_query_id", None)
-        if isinstance(guest_query_id, str):
-            params["telegram_guest_query_id"] = guest_query_id
         return params
 
 
@@ -638,6 +675,22 @@ class TelegramGateway(Gateway, TelegramRestClient):
         message = Msg.model_validate(params.pop("message"))
         guest_query_id = params.pop("telegram_guest_query_id", None)
         if guest_query_id is not None:
+            for key in (
+                "telegram_chat_id",
+                "chat_id",
+                "group_id",
+                "channel_id",
+                "user_id",
+                "guild_id",
+                "detail_type",
+            ):
+                params.pop(key, None)
+            if params:
+                msg = (
+                    "Telegram guest replies do not accept send-message options; "
+                    "use answerGuestQuery"
+                )
+                raise ValueError(msg)
             return await self._answer_guest_message(guest_query_id, message)
         chat_id = _pop_chat_id(params)
         calls = _message_calls(chat_id, message, params)
@@ -753,7 +806,7 @@ def _telegram_message(message: TelegramMessage) -> Msg:
     return Msg.model_validate(segments)
 
 
-def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements] - segment conversion is clearest as one flat pass
+def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements] - segment conversion is clearest as one flat pass
     chat_id: object,
     message: Msg,
     extra: Mapping[str, object],
@@ -814,11 +867,24 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             msg = f"Telegram does not support message segment {segment.type!s}"
             raise TypeError(msg)
 
+    options = _TelegramMessageOptions.model_validate(extra).model_dump(
+        exclude_none=True
+    )
+    parse_mode = cast(str | None, options.pop("parse_mode", None))
+    entities = cast(list[dict[str, object]] | None, options.pop("entities", None))
     text = "".join(text_parts)
-    if text_length > _MAX_TEXT_LENGTH and (html or "parse_mode" not in extra):
+    if not text and (parse_mode is not None or entities is not None):
+        msg = "Telegram formatting options require message text"
+        raise ValueError(msg)
+    if text_length > _MAX_TEXT_LENGTH and (html or parse_mode is None):
         msg = "Telegram message text exceeds 4096 characters"
         raise ValueError(msg)
-    common = {"chat_id": chat_id, **extra}
+    if html:
+        if entities is not None or parse_mode not in {None, "HTML"}:
+            msg = "Telegram mention segments require HTML parse mode"
+            raise ValueError(msg)
+        parse_mode = "HTML"
+    common = {"chat_id": chat_id, **options}
     keep_reply_context = False
     if reply is not None:
         if "reply_parameters" in common:
@@ -826,14 +892,12 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             raise ValueError(msg)
         common["reply_parameters"] = {"message_id": reply}
     elif isinstance(common.get("reply_parameters"), Mapping):
-        keep_reply_context = "ephemeral_message_id" in cast(
-            Mapping[str, object], common["reply_parameters"]
+        keep_reply_context = (
+            cast(Mapping[str, object], common["reply_parameters"]).get(
+                "ephemeral_message_id"
+            )
+            is not None
         )
-    if html:
-        if common.get("parse_mode", "HTML") != "HTML":
-            msg = "Telegram mention segments require HTML parse mode"
-            raise ValueError(msg)
-        common["parse_mode"] = "HTML"
 
     calls: list[tuple[str, dict[str, object]]] = []
     caption_used = bool(
@@ -844,10 +908,14 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
         not in {"sendSticker", "sendVideoNote", "sendLocation", "sendVenue"}
     )
     if text and not caption_used:
-        calls.append(("sendMessage", {**common, "text": text}))
+        params = {**common, "text": text}
+        if parse_mode is not None:
+            params["parse_mode"] = parse_mode
+        if entities is not None:
+            params["entities"] = entities
+        calls.append(("sendMessage", params))
         if not keep_reply_context:
             common.pop("reply_parameters", None)
-        common.pop("parse_mode", None)
 
     for index, (method, resource) in enumerate(resources):
         params = {**common, **resource}
@@ -855,8 +923,10 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             params.pop("reply_parameters", None)
         if caption_used and index == 0:
             params["caption"] = text
-        else:
-            params.pop("parse_mode", None)
+            if parse_mode is not None:
+                params["parse_mode"] = parse_mode
+            if entities is not None:
+                params["caption_entities"] = entities
         calls.append((method, params))
     if not calls:
         msg = "Telegram message must contain text or a supported resource"

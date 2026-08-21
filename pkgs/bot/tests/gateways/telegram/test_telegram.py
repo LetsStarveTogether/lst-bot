@@ -209,6 +209,14 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
     assert calls[-1][1].get("caption") == (text if length == 1024 else None)
     assert calls[0][1]["parse_mode"] == "HTML"
     assert calls[-1][1].get("parse_mode") == ("HTML" if length == 1024 else None)
+    entities = [{"type": "bold", "offset": 0, "length": 1}]
+    calls = telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        "42", message, {"entities": entities}
+    )
+    assert calls[0][1].get("entities") == (entities if length == 1025 else None)
+    assert calls[-1][1].get("caption_entities") == (
+        entities if length == 1024 else None
+    )
 
 
 def test_message_text_limit() -> None:
@@ -290,14 +298,75 @@ def test_location_and_venue_conversion() -> None:
             },
         }
     ])
-    assert telegram_module._message_calls(  # ruff: ignore[private-member-access]
-        "42", location, {"parse_mode": "HTML"}
-    ) == [
+    assert telegram_module._message_calls("42", location, {}) == [  # ruff: ignore[private-member-access]
         (
             "sendLocation",
             {"chat_id": "42", "latitude": 1.25, "longitude": 2.5},
         )
     ]
+    with pytest.raises(ValueError, match="require message text"):
+        telegram_module._message_calls(  # ruff: ignore[private-member-access]
+            "42", location, {"parse_mode": "HTML"}
+        )
+
+
+async def test_common_message_options_are_scoped_to_supported_methods() -> None:
+    message = Msg.from_input([
+        {"type": "text", "data": {"text": "reply"}},
+        {"type": "telegram.sticker", "data": {"file_id": "sticker"}},
+    ])
+    calls = telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        "42",
+        message,
+        {
+            "protect_content": True,
+            "reply_parameters": {"message_id": 7},
+        },
+    )
+    assert calls == [
+        (
+            "sendMessage",
+            {
+                "chat_id": "42",
+                "protect_content": True,
+                "reply_parameters": {"message_id": 7},
+                "text": "reply",
+            },
+        ),
+        (
+            "sendSticker",
+            {"chat_id": "42", "protect_content": True, "sticker": "sticker"},
+        ),
+    ]
+
+    with pytest.raises(ValidationError):
+        telegram_module._message_calls(  # ruff: ignore[private-member-access]
+            "42",
+            Msg.from_input({"type": "image", "data": {"file_id": "photo"}}),
+            {"has_spoiler": True},
+        )
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        telegram_module._message_calls(  # ruff: ignore[private-member-access]
+            "42",
+            Msg.from_input("formatted"),
+            {"parse_mode": "HTML", "entities": []},
+        )
+
+    pool = Pool({"ok": True, "result": {"message_id": 1}})
+    gateway = make_gateway(pool)
+    self_ = BotSelf(platform="telegram", user_id="123")
+    gateway._self = self_  # ruff: ignore[private-member-access] - isolate action routing
+    await gateway.connection_for(self_).action(
+        "sendPhoto",
+        chat_id=42,
+        photo="photo",
+        has_spoiler=True,
+    )
+    assert pool.requests[0][2]["json"] == {
+        "chat_id": 42,
+        "photo": "photo",
+        "has_spoiler": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -1045,7 +1114,9 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
             "update_id": 4,
             "guest_message": {
                 "message_id": 0,
+                "message_thread_id": 50,
                 "guest_query_id": "guest",
+                "business_connection_id": "business",
                 "date": 1,
                 "from": {"id": 42, "is_bot": False, "first_name": "User"},
                 "chat": {
@@ -1072,6 +1143,15 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         await connection.execute_message_action(
             guest_event,
             [{"type": "image", "data": {"file_id": "photo"}}],
+        )
+    with pytest.raises(ValueError, match="do not accept send-message options"):
+        await connection.action(
+            Action.SEND_MESSAGE,
+            detail_type="group",
+            group_id=str(SUPERGROUP_ID),
+            message="reply",
+            telegram_guest_query_id="guest",
+            parse_mode="HTML",
         )
 
     await connection.action(
