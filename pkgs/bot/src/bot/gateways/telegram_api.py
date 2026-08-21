@@ -1,14 +1,10 @@
 from asyncio import (
-    FIRST_COMPLETED,
-    CancelledError,
     Event,
     Lock,
-    create_task,
     timeout,
-    wait,
 )
 from base64 import b64encode
-from collections.abc import Coroutine, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from hashlib import sha256
 from http import HTTPStatus
@@ -40,7 +36,7 @@ from urllib3_future.filepost import encode_multipart_formdata
 from bot.json import dumpb, loads
 from bot.protocol.base import Model
 
-from .base import validate_https_base_url
+from .base import run_while_open, validate_https_base_url
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
@@ -798,7 +794,7 @@ class TelegramRestClient:
         retries = 0
         while True:
             self._ensure_open(closed_event)
-            envelope, status = await self._run_while_open(
+            envelope, status = await run_while_open(
                 self._request(
                     canonical,
                     validated_params,
@@ -806,6 +802,7 @@ class TelegramRestClient:
                     timeout_seconds,
                 ),
                 closed_event,
+                self._ensure_open,
             )
             if envelope.ok and HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
                 return envelope.result
@@ -892,7 +889,7 @@ class TelegramRestClient:
             f"{quote(path, safe='/')}"
         )
         self._ensure_open(closed_event)
-        data, checksum = await self._run_while_open(
+        data, checksum = await run_while_open(
             _download_response(
                 self.http_pool,
                 url,
@@ -900,6 +897,7 @@ class TelegramRestClient:
                 request_timeout=self.request_timeout,
             ),
             closed_event,
+            self._ensure_open,
         )
 
         return TelegramDownloadedFile(
@@ -916,29 +914,6 @@ class TelegramRestClient:
         ):
             msg = "Telegram REST client is closed"
             raise RuntimeError(msg)
-
-    async def _run_while_open[T](
-        self,
-        operation: Coroutine[object, object, T],
-        closed_event: Event,
-    ) -> T:
-        self._ensure_open(closed_event)
-        operation_task = create_task(operation)
-        closed_task = create_task(closed_event.wait())
-        try:
-            await wait((operation_task, closed_task), return_when=FIRST_COMPLETED)
-            self._ensure_open(closed_event)
-            result = await operation_task
-            self._ensure_open(closed_event)
-            return result
-        finally:
-            closed_task.cancel()
-            with suppress(CancelledError):
-                await closed_task
-            if not operation_task.done():
-                operation_task.cancel()
-                with suppress(CancelledError, Exception):
-                    await operation_task
 
     async def _request(
         self,

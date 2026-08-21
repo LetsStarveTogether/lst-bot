@@ -1,15 +1,10 @@
 from asyncio import (
-    FIRST_COMPLETED,
-    CancelledError,
     Event,
     Lock,
-    create_task,
     get_running_loop,
     timeout,
-    wait,
 )
-from collections.abc import Coroutine, Mapping
-from contextlib import suppress
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPMethod, HTTPStatus
@@ -43,7 +38,7 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from bot.json import loads
 from bot.protocol.base import Model
 
-from .base import header_value, validate_https_base_url
+from .base import header_value, run_while_open, validate_https_base_url
 
 QQ_API_BASE_URL = "https://api.bot.qq.com"
 _HTTP_TIMEOUT = 30.0
@@ -2074,9 +2069,10 @@ class QQRestClient:
         closed_event = self._closed_event
         self._ensure_open(closed_event)
         async with timeout(_HTTP_TIMEOUT):
-            return await self._run_while_open(
+            return await run_while_open(
                 self._access_token(closed_event),
                 closed_event,
+                self._ensure_open,
             )
 
     async def _access_token(self, closed_event: Event) -> str:
@@ -2137,9 +2133,10 @@ class QQRestClient:
         closed_event = self._closed_event
         self._ensure_open(closed_event)
         async with timeout(_HTTP_TIMEOUT):
-            return await self._run_while_open(
+            return await run_while_open(
                 self._request_qq(action, params, closed_event),
                 closed_event,
+                self._ensure_open,
             )
 
     async def _request_qq(
@@ -2270,32 +2267,6 @@ class QQRestClient:
         ):
             msg = "QQ REST client is closed"
             raise RuntimeError(msg)
-
-    async def _run_while_open[T](
-        self,
-        operation: Coroutine[object, object, T],
-        closed_event: Event,
-    ) -> T:
-        operation_task = create_task(operation)
-        closed_task = create_task(closed_event.wait())
-        try:
-            await wait((operation_task, closed_task), return_when=FIRST_COMPLETED)
-            if closed_event.is_set() or closed_task.done():
-                operation_task.cancel()
-                with suppress(CancelledError, Exception):
-                    await operation_task
-                self._ensure_open(closed_event)
-            result = await operation_task
-            self._ensure_open(closed_event)
-            return result
-        finally:
-            closed_task.cancel()
-            with suppress(CancelledError):
-                await closed_task
-            if not operation_task.done():
-                operation_task.cancel()
-            with suppress(CancelledError, Exception):
-                await operation_task
 
     async def _request(
         self,

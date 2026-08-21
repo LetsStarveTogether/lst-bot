@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from asyncio import (
+    FIRST_COMPLETED,
     CancelledError,
     Future,
     Task,
+    create_task,
     get_running_loop,
     shield,
     timeout,
+    wait,
 )
-from collections.abc import Awaitable, Callable, Mapping
+from asyncio import Event as AsyncEvent
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from hmac import compare_digest
 from logging import getLogger
@@ -86,6 +91,29 @@ def validate_https_base_url(value: str, platform: str) -> str:
     ):
         raise ValueError(msg)
     return str(parsed).rstrip("/")
+
+
+async def run_while_open[T](
+    operation: Coroutine[object, object, T],
+    closed_event: AsyncEvent,
+    ensure_open: Callable[[AsyncEvent], None],
+) -> T:
+    operation_task = create_task(operation)
+    closed_task = create_task(closed_event.wait())
+    try:
+        await wait((operation_task, closed_task), return_when=FIRST_COMPLETED)
+        ensure_open(closed_event)
+        result = await operation_task
+        ensure_open(closed_event)
+        return result
+    finally:
+        closed_task.cancel()
+        with suppress(CancelledError):
+            await closed_task
+        if not operation_task.done():
+            operation_task.cancel()
+        with suppress(CancelledError, Exception):
+            await operation_task
 
 
 class RobynServer(Protocol):
