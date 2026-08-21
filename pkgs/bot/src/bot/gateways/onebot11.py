@@ -59,6 +59,7 @@ from bot.protocol.events import (
     Event,
     EventPayload,
     FriendRequestEvent,
+    GroupMessageEvent,
     GroupRequestEvent,
     MessageEvent,
     NoticeEvent,
@@ -696,7 +697,7 @@ class OneBot11Gateway(Gateway):
             ):
                 operation = OneBot11QuickOperation(
                     reply=_dump_ob11_message(action.msg),
-                    at_sender=False,
+                    at_sender=False if isinstance(event, GroupMessageEvent) else None,
                 )
                 quick_operations.values.append(operation)
                 return operation
@@ -808,10 +809,10 @@ class OneBot11Gateway(Gateway):
                     mode="json",
                     exclude_unset=True,
                 ),
+                retries=False,
             )
-            status = getattr(response, "status", HTTPStatus.OK)
-            if status != HTTPStatus.OK:
-                msg = f"OneBot 11 action request failed with HTTP {status}"
+            if response.status != HTTPStatus.OK:
+                msg = f"OneBot 11 action request failed with HTTP {response.status}"
                 raise RuntimeError(msg)
             payload = loads(await response.data)
         return decode_action_response(payload)
@@ -868,10 +869,7 @@ class OneBot11Gateway(Gateway):
                 return websocket.respond(HTTPStatus.BAD_REQUEST, "Bad path\n")
             if path != ingress.path:
                 return websocket.respond(HTTPStatus.NOT_FOUND, "Not found\n")
-            if not token_matches(
-                self.access_token,
-                bearer_or_query_token(request),
-            ):
+            if not token_matches(self.access_token, bearer_or_query_token(request)):
                 return websocket.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
             role = _websocket_role(header_value(request.headers, "X-Client-Role"))
             self_id = header_value(request.headers, "X-Self-ID")

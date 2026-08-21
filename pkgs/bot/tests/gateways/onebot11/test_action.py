@@ -207,6 +207,8 @@ async def test_http_action_timeout_covers_response_body() -> None:
                 await connection.action("vendor_action")
 
     assert body.cancelled()
+    pool.request.assert_awaited_once()
+    assert pool.request.await_args.kwargs["retries"] is False
 
 
 async def test_closed_gateway_rejects_new_http_actions() -> None:

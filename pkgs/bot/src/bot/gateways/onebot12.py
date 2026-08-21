@@ -365,6 +365,7 @@ class OneBot12Gateway(Gateway):
                 backend.base_url,
                 headers=self._authorization_headers,
                 json=request.model_dump(mode="json"),
+                retries=False,
             )
             if response.status != HTTPStatus.OK:
                 msg = f"OneBot 12 action request failed: HTTP {response.status}"
@@ -400,10 +401,7 @@ class OneBot12Gateway(Gateway):
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
-            if not token_matches(
-                self.access_token,
-                bearer_or_query_token(request),
-            ):
+            if not token_matches(self.access_token, bearer_or_query_token(request)):
                 logger.warning(
                     "reject OneBot 12 HTTP webhook token: %s",
                     ingress.path,
@@ -444,10 +442,7 @@ class OneBot12Gateway(Gateway):
                 return websocket.respond(HTTPStatus.BAD_REQUEST, "Bad path\n")
             if path != ingress.path:
                 return websocket.respond(HTTPStatus.NOT_FOUND, "Not found\n")
-            if not token_matches(
-                self.access_token,
-                bearer_or_query_token(request),
-            ):
+            if not token_matches(self.access_token, bearer_or_query_token(request)):
                 return websocket.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
             try:
                 protocols = [

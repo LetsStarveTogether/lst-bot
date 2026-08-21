@@ -70,6 +70,7 @@ type PositiveSeconds = Annotated[
 ]
 type TcpPort = Annotated[StrictInt, Field(ge=0, le=65535)]
 _POSITIVE_SECONDS_ADAPTER = TypeAdapter(PositiveSeconds)
+_HTTP_BASE_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 _HTTPS_BASE_URL_ADAPTER = TypeAdapter(
     Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
 )
@@ -155,6 +156,18 @@ class HttpAction:
     http_pool: AsyncPoolManager | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        msg = "HTTP action base URL must be an absolute HTTP(S) URL"
+        if not isinstance(self.base_url, str) or any(
+            character.isspace() for character in self.base_url
+        ):
+            raise ValueError(msg)
+        try:
+            parsed = _HTTP_BASE_URL_ADAPTER.validate_python(self.base_url)
+        except ValueError:
+            raise ValueError(msg) from None
+        if parsed.fragment is not None:
+            raise ValueError(msg)
+        self.base_url = str(parsed)
         self.timeout = _POSITIVE_SECONDS_ADAPTER.validate_python(self.timeout)
 
 

@@ -87,7 +87,6 @@ async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> Non
     assert response.status_code == HTTPStatus.OK
     assert response_json(response) == {
         "reply": [{"type": "text", "data": {"text": "one"}}],
-        "at_sender": False,
     }
     assert [(request.path, request.json) for request in server.requests] == [
         (
@@ -101,7 +100,7 @@ async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> Non
     ]
 
 
-async def test_http_quick_reply_does_not_need_action_backend() -> None:
+async def test_group_http_quick_reply_does_not_need_action_backend() -> None:
     bot = Bot()
     gateway = OneBot11Gateway(bot)
     bot.add_gateway(gateway)
@@ -112,7 +111,12 @@ async def test_http_quick_reply_does_not_need_action_backend() -> None:
 
     async with bot:
         response = await gateway.handle_http(
-            Model.model_validate(private_msg_payload())
+            Model.model_validate({
+                **private_msg_payload(),
+                "message_type": "group",
+                "sub_type": "normal",
+                "group_id": 20000,
+            })
         )
 
     assert response.status_code == HTTPStatus.OK

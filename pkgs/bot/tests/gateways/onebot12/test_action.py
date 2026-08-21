@@ -217,6 +217,9 @@ async def test_http_action_timeout_includes_response_body() -> None:
             with pytest.raises(TimeoutError):
                 await gateway.connection_for(SELF).action("get_version")
 
+    pool.request.assert_awaited_once()
+    assert pool.request.await_args.kwargs["retries"] is False
+
 
 async def test_closed_gateway_rejects_actions() -> None:
     bot = Bot()

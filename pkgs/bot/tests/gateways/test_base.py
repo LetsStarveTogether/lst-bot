@@ -60,6 +60,24 @@ def test_https_base_url_is_strict_and_canonical() -> None:
             validate_https_base_url(invalid, "Test")
 
 
+def test_http_action_base_url_is_strict_and_canonical() -> None:
+    assert (
+        HttpAction("http://onebot.example/action?source=test").base_url
+        == "http://onebot.example/action?source=test"
+    )
+    for invalid in (
+        "",
+        "/action",
+        "ftp://onebot.example/action",
+        " http://onebot.example/action",
+        "http://onebot.example/a b",
+        "http://onebot.example/action#fragment",
+        "http://",
+    ):
+        with pytest.raises(ValueError, match=r"absolute HTTP\(S\) URL"):
+            HttpAction(invalid)
+
+
 def test_json_codec_is_compact_utf8_and_strict() -> None:
     payload = {"文本": ["é", 1.5]}
     encoded = dumpb(payload)
