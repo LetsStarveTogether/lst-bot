@@ -25,6 +25,7 @@ from .support import ObservableReadinessBot, private_message_payload
 
 IDENTITY_HEADERS = {
     "Content-Type": "application/json",
+    "User-Agent": "OneBot/12",
     "X-OneBot-Version": "12",
     "X-Impl": "test",
 }
@@ -129,6 +130,15 @@ async def test_http_can_disable_quick_actions() -> None:
 
     assert response.status_code == HTTPStatus.NO_CONTENT
     request_action.assert_awaited_once()
+    action_call = request_action.await_args
+    assert action_call is not None
+    _, action, params = action_call.args
+    assert action == "send_message"
+    assert params.model_dump(mode="json") == {
+        "detail_type": "private",
+        "message": [{"type": "text", "data": {"text": "pong"}}],
+        "user_id": "42",
+    }
 
 
 async def test_http_event_waits_for_bot_startup() -> None:
@@ -238,17 +248,30 @@ def test_http_webhook_authentication(
     ("headers", "status"),
     [
         (
-            {"Content-Type": "application/json", "X-Impl": "test"},
+            {
+                "Content-Type": "application/json",
+                "User-Agent": "OneBot/12",
+                "X-Impl": "test",
+            },
             HTTPStatus.BAD_REQUEST,
         ),
         (IDENTITY_HEADERS | {"X-OneBot-Version": "11"}, HTTPStatus.BAD_REQUEST),
         (
-            {"Content-Type": "application/json", "X-OneBot-Version": "12"},
+            {
+                "Content-Type": "application/json",
+                "User-Agent": "OneBot/12",
+                "X-OneBot-Version": "12",
+            },
             HTTPStatus.BAD_REQUEST,
         ),
         (IDENTITY_HEADERS | {"X-Impl": "BAD"}, HTTPStatus.BAD_REQUEST),
+        (IDENTITY_HEADERS | {"User-Agent": ""}, HTTPStatus.BAD_REQUEST),
         (
-            {"X-OneBot-Version": "12", "X-Impl": "test"},
+            {
+                "User-Agent": "OneBot/12",
+                "X-OneBot-Version": "12",
+                "X-Impl": "test",
+            },
             HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
         ),
         (
@@ -261,6 +284,7 @@ def test_http_webhook_authentication(
         "wrong-version",
         "missing-implementation",
         "invalid-implementation",
+        "empty-user-agent",
         "missing-content-type",
         "wrong-content-type",
     ),

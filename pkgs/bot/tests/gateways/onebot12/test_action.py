@@ -1,5 +1,5 @@
 from asyncio import Event as AsyncEvent
-from asyncio import timeout
+from asyncio import create_task, timeout
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import cast
@@ -50,6 +50,7 @@ async def test_http_action_preserves_wire_envelope_defaults_and_null() -> None:
             )
             await connection.action(
                 Action.SEND_MESSAGE,
+                detail_type="private",
                 user_id="42",
                 message=Msg.reply("message-1"),
             )
@@ -244,3 +245,45 @@ async def test_closed_gateway_rejects_actions() -> None:
 
     with pytest.raises(RuntimeError, match="gateway is closed"):
         await connection.action("get_version")
+
+
+async def test_http_action_cannot_cross_close_and_restart() -> None:
+    class BlockingPool:
+        def __init__(self) -> None:
+            self.started = AsyncEvent()
+            self.release = AsyncEvent()
+
+        async def request(self, *_: object, **__: object) -> object:
+            self.started.set()
+            await self.release.wait()
+            return SimpleNamespace(
+                status=HTTPStatus.OK,
+                headers={"Content-Type": "application/json"},
+                data=AsyncMock(
+                    return_value=ActionResponse.ok().model_dump_json().encode()
+                )(),
+            )
+
+    pool = BlockingPool()
+    gateway = OneBot12Gateway(
+        Bot(),
+        action=HttpAction(
+            "http://onebot.example/action",
+            http_pool=cast(AsyncPoolManager, pool),
+        ),
+    )
+    connection = gateway.connection_for(SELF)
+    async with timeout(1):
+        await gateway.start()
+        action = create_task(connection.action("vendor_action"))
+        try:
+            await pool.started.wait()
+            await gateway.close()
+            await gateway.start()
+            pool.release.set()
+            with pytest.raises(RuntimeError, match="gateway is closed"):
+                await action
+        finally:
+            pool.release.set()
+            async with timeout(1):
+                await gateway.close()

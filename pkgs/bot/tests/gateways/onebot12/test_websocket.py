@@ -28,7 +28,7 @@ from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import Server
 from websockets.exceptions import ConnectionClosed, InvalidStatus
-from websockets.typing import Subprotocol
+from websockets.typing import Origin, Subprotocol
 
 from .support import (
     SELF,
@@ -132,12 +132,13 @@ async def test_reverse_websocket_close_cancels_prestartup_handler() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "headers", "subprotocols", "status"),
+    ("path", "headers", "subprotocols", "client_headers", "status"),
     [
         pytest.param(
             "/wrong?access_token=test-value",
             None,
             [Subprotocol("12.test")],
+            ("test", None),
             HTTPStatus.NOT_FOUND,
             id="wrong-path",
         ),
@@ -145,6 +146,7 @@ async def test_reverse_websocket_close_cancels_prestartup_handler() -> None:
             "/onebot/ws?access_token=test-value",
             {"Authorization": "Bearer wrong"},
             [Subprotocol("12.test")],
+            ("test", None),
             HTTPStatus.UNAUTHORIZED,
             id="invalid-bearer-precedes-query",
         ),
@@ -152,6 +154,7 @@ async def test_reverse_websocket_close_cancels_prestartup_handler() -> None:
             "/onebot/ws?access_token=test-value",
             None,
             None,
+            ("test", None),
             HTTPStatus.BAD_REQUEST,
             id="missing-subprotocol",
         ),
@@ -159,8 +162,25 @@ async def test_reverse_websocket_close_cancels_prestartup_handler() -> None:
             "/onebot/ws?access_token=test-value",
             None,
             [Subprotocol("12.BAD")],
+            ("test", None),
             HTTPStatus.BAD_REQUEST,
             id="invalid-implementation-name",
+        ),
+        pytest.param(
+            "/onebot/ws?access_token=test-value",
+            None,
+            [Subprotocol("12.test")],
+            (None, None),
+            HTTPStatus.BAD_REQUEST,
+            id="missing-user-agent",
+        ),
+        pytest.param(
+            "/onebot/ws?access_token=test-value",
+            None,
+            [Subprotocol("12.test")],
+            ("test", Origin("https://evil.example")),
+            HTTPStatus.FORBIDDEN,
+            id="browser-origin",
         ),
     ],
 )
@@ -168,10 +188,12 @@ async def test_reverse_websocket_handshake_rejections(
     path: str,
     headers: dict[str, str] | None,
     subprotocols: list[Subprotocol] | None,
+    client_headers: tuple[str | None, Origin | None],
     status: HTTPStatus,
 ) -> None:
     bot = Bot()
     gateway = reverse_gateway(bot, token=AUTH)
+    user_agent, origin = client_headers
 
     async with timeout(3), bot:
         port = gateway.reverse_websocket_ports[0]
@@ -180,6 +202,8 @@ async def test_reverse_websocket_handshake_rejections(
                 websocket_url(port, path),
                 additional_headers=headers,
                 subprotocols=subprotocols,
+                user_agent_header=user_agent,
+                origin=origin,
                 proxy=None,
             ):
                 pass
@@ -487,6 +511,7 @@ async def test_websocket_event_waits_for_bot_startup() -> None:
         )
         await bot.waiting.wait()
         assert not serving.done()
+        assert not received.is_set()
         await bot.start()
         try:
             await received.wait()

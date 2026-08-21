@@ -1,4 +1,4 @@
-from asyncio import get_running_loop, timeout
+from asyncio import Event, create_task, get_running_loop, timeout
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import cast
@@ -48,6 +48,7 @@ async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None
         async with gateway:
             response = await connection.action(
                 "send_message",
+                detail_type="private",
                 user_id="42",
                 message=[
                     {"type": "text", "data": {"text": "hello"}},
@@ -57,8 +58,7 @@ async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None
 
     assert isinstance(response, ActionResponse)
     assert response.data == {"message_id": "99"}
-    assert len(server.requests) == 1
-    request = server.requests[0]
+    (request,) = server.requests
     assert request.path == "/base/send_private_msg?trace=1"
     assert request.headers["Authorization"] == "Bearer token-1"
     assert request.json == {
@@ -252,6 +252,45 @@ async def test_closed_gateway_rejects_new_http_actions() -> None:
         await connection.action("get_status")
 
     assert gateway.http_pool is None
+
+
+async def test_http_action_cannot_cross_close_and_restart() -> None:
+    class BlockingPool:
+        def __init__(self) -> None:
+            self.started = Event()
+            self.release = Event()
+
+        async def request(self, *_: object, **__: object) -> object:
+            self.started.set()
+            await self.release.wait()
+            return SimpleNamespace(
+                status=HTTPStatus.OK,
+                data=AsyncMock(return_value=b'{"status":"ok","retcode":0,"data":{}}')(),
+            )
+
+    pool = BlockingPool()
+    gateway = OneBot11Gateway(
+        Bot(),
+        action=HttpAction(
+            "http://onebot.example",
+            http_pool=cast(AsyncPoolManager, pool),
+        ),
+    )
+    connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
+    async with timeout(1):
+        await gateway.start()
+        action = create_task(connection.action("vendor_action"))
+        try:
+            await pool.started.wait()
+            await gateway.close()
+            await gateway.start()
+            pool.release.set()
+            with pytest.raises(RuntimeError, match="gateway is closed"):
+                await action
+        finally:
+            pool.release.set()
+            async with timeout(1):
+                await gateway.close()
 
 
 async def test_gateway_does_not_close_borrowed_http_pool() -> None:
@@ -523,8 +562,9 @@ async def test_message_return_uses_group_action() -> None:
                 ),
             )
 
-    assert server.requests[0].path == "/send_group_msg"
-    assert server.requests[0].json == {
+    (request,) = server.requests
+    assert request.path == "/send_group_msg"
+    assert request.json == {
         "group_id": 20000,
         "message": [
             {"type": "reply", "data": {"id": "msg-1"}},
@@ -545,6 +585,7 @@ async def test_onebot11_does_not_support_internal_channel_send() -> None:
         with pytest.raises(LookupError):
             await connection.action(
                 "send_message",
+                detail_type="channel",
                 guild_id="g",
                 channel_id="c",
                 message="hello",

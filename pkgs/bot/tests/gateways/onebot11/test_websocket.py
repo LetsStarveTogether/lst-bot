@@ -28,6 +28,7 @@ from bot.testing import ScriptedWebSocket
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import Server
 from websockets.exceptions import InvalidStatus
+from websockets.typing import Origin
 
 from .support import private_msg_payload
 
@@ -192,7 +193,7 @@ def test_gateway_rejects_duplicate_ingress(
 
 
 @pytest.mark.parametrize(
-    ("path", "headers", "status"),
+    ("path", "headers", "origin", "status"),
     [
         pytest.param(
             "/onebot/ws",
@@ -201,12 +202,14 @@ def test_gateway_rejects_duplicate_ingress(
                 "X-Self-ID": "10000",
                 "X-Client-Role": "Universal",
             },
+            None,
             HTTPStatus.UNAUTHORIZED,
             id="access-token",
         ),
         pytest.param(
             "/onebot/ws",
             {"Authorization": "Bearer secret", "X-Self-ID": "10000"},
+            None,
             HTTPStatus.BAD_REQUEST,
             id="missing-role",
         ),
@@ -217,6 +220,7 @@ def test_gateway_rejects_duplicate_ingress(
                 "X-Self-ID": "10000",
                 "X-Client-Role": "bad",
             },
+            None,
             HTTPStatus.BAD_REQUEST,
             id="invalid-role",
         ),
@@ -226,6 +230,7 @@ def test_gateway_rejects_duplicate_ingress(
                 "Authorization": "Bearer secret",
                 "X-Client-Role": "Universal",
             },
+            None,
             HTTPStatus.BAD_REQUEST,
             id="missing-self",
         ),
@@ -236,6 +241,7 @@ def test_gateway_rejects_duplicate_ingress(
                 "X-Self-ID": "bot",
                 "X-Client-Role": "Universal",
             },
+            None,
             HTTPStatus.BAD_REQUEST,
             id="invalid-self",
         ),
@@ -246,14 +252,27 @@ def test_gateway_rejects_duplicate_ingress(
                 "X-Self-ID": "10000",
                 "X-Client-Role": "Universal",
             },
+            None,
             HTTPStatus.NOT_FOUND,
             id="path",
+        ),
+        pytest.param(
+            "/onebot/ws",
+            {
+                "Authorization": "Bearer secret",
+                "X-Self-ID": "10000",
+                "X-Client-Role": "Universal",
+            },
+            Origin("https://evil.example"),
+            HTTPStatus.FORBIDDEN,
+            id="browser-origin",
         ),
     ],
 )
 async def test_reverse_websocket_handshake_boundaries(
     path: str,
     headers: dict[str, str],
+    origin: Origin | None,
     status: HTTPStatus,
 ) -> None:
     bot = Bot()
@@ -271,6 +290,7 @@ async def test_reverse_websocket_handshake_boundaries(
             async with connect(
                 f"ws://127.0.0.1:{port}{path}",
                 additional_headers=headers,
+                origin=origin,
                 proxy=None,
             ):
                 pass
@@ -508,6 +528,7 @@ async def test_forward_websocket_waits_until_bot_start_completes() -> None:
         started = tasks.create_task(bot.start())
         await startup_paused.wait()
         await connected.wait()
+        assert not received.is_set()
         continue_startup.set()
         await started
         await received.wait()
@@ -535,13 +556,15 @@ async def test_websocket_closes_when_bot_start_fails() -> None:
         bot,
         "wait_until_running",
         AsyncMock(side_effect=RuntimeError("startup failed")),
-    ):
+    ) as wait_until_running:
         await gateway.start()
         try:
             async with timeout(1):
                 await websocket.closed.wait()
         finally:
             await gateway.close()
+
+    wait_until_running.assert_awaited_once()
 
 
 async def test_forward_websocket_receives_action_while_waiting_for_events() -> None:

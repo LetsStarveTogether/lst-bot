@@ -1,4 +1,5 @@
 import re
+from asyncio import Event as AsyncEvent
 from asyncio import (
     Lock,
     QueueFull,
@@ -38,7 +39,7 @@ from pydantic import (
 )
 from pydantic.dataclasses import dataclass as validated_dataclass
 from pydantic.experimental.missing_sentinel import MISSING
-from robyn import Request, Response, Robyn, WebSocketDisconnect
+from robyn import Request, Response, Robyn
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Request as WebSocketRequest
@@ -100,6 +101,7 @@ from .base import (
     header_value,
     json_response,
     request_target_path,
+    run_while_open,
     text_response,
     token_matches,
 )
@@ -541,6 +543,7 @@ class OneBot11Gateway(Gateway):
         self._lifecycle_lock = Lock()
         self._started = False
         self._closing = False
+        self._closed_event = AsyncEvent()
 
     @property
     def authorization_headers(self) -> dict[str, str] | None:
@@ -567,6 +570,7 @@ class OneBot11Gateway(Gateway):
                 await self._finish_close()
             if self._owns_http_pool and self.http_pool is None:
                 self.http_pool = AsyncPoolManager()
+            self._closed_event = AsyncEvent()
             self._closing = False
             try:
                 for ingress in self.ingress:
@@ -594,6 +598,8 @@ class OneBot11Gateway(Gateway):
     @override
     async def close(self) -> None:
         async with self._lifecycle_lock:
+            self._closing = True
+            self._closed_event.set()
             finishing = create_task(
                 self._finish_close(),
                 name="onebot11-gateway-close",
@@ -602,6 +608,7 @@ class OneBot11Gateway(Gateway):
 
     async def _finish_close(self) -> None:
         self._closing = True
+        self._closed_event.set()
         try:
             try:
                 await self._close_transports()
@@ -727,18 +734,21 @@ class OneBot11Gateway(Gateway):
         action: str,
         params: ActionParamModel,
     ) -> BaseModel:
-        if self._closing:
-            msg = "OneBot 11 gateway is closed"
-            raise RuntimeError(msg)
+        closed_event = self._closed_event
+        self._ensure_open(closed_event)
         if connection.gateway is not self:
             msg = "OneBot 11 action connection belongs to another gateway"
             raise ValueError(msg)
         action_name, payload = self._normalize_action(action, params)
         if isinstance(self.action_backend, HttpAction):
-            response = await self._request_http_action(
-                self.action_backend,
-                action_name,
-                payload,
+            response = await run_while_open(
+                self._request_http_action(
+                    self.action_backend,
+                    action_name,
+                    payload,
+                ),
+                closed_event,
+                self._ensure_open,
             )
         elif self._ws_actions is not None:
             response = await self._ws_actions.request(
@@ -756,6 +766,15 @@ class OneBot11Gateway(Gateway):
             raise LookupError(msg)
 
         return adapt_action_response(action, response, connection.self_)
+
+    def _ensure_open(self, closed_event: AsyncEvent) -> None:
+        if (
+            self._closing
+            or closed_event is not self._closed_event
+            or closed_event.is_set()
+        ):
+            msg = "OneBot 11 gateway is closed"
+            raise RuntimeError(msg)
 
     def _normalize_action(
         self,
@@ -894,6 +913,7 @@ class OneBot11Gateway(Gateway):
             self._serve_reverse_websocket,
             ingress.host,
             ingress.port,
+            origins=[None],
             process_request=authenticate,
         )
 
@@ -938,7 +958,7 @@ class OneBot11Gateway(Gateway):
             while True:
                 try:
                     payload = loads(await websocket.receive_text())
-                except StopAsyncIteration, WebSocketDisconnect:
+                except StopAsyncIteration:
                     break
                 if not isinstance(payload, dict):
                     msg = "OneBot 11 WebSocket payload must be an object"

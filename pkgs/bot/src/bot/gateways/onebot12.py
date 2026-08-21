@@ -1,4 +1,5 @@
 import re
+from asyncio import Event as AsyncEvent
 from asyncio import (
     Lock,
     QueueFull,
@@ -70,6 +71,7 @@ from .base import (
     header_value,
     json_response,
     request_target_path,
+    run_while_open,
     token_matches,
 )
 
@@ -198,6 +200,7 @@ class OneBot12Gateway(Gateway):
         self._lifecycle_lock = Lock()
         self._started = False
         self._closing = False
+        self._closed_event = AsyncEvent()
 
     @override
     async def start(self) -> None:
@@ -206,6 +209,7 @@ class OneBot12Gateway(Gateway):
                 return
             if self._closing:
                 await self._finish_close()
+            self._closed_event = AsyncEvent()
             self._closing = False
             try:
                 for ingress in self.ingress:
@@ -233,6 +237,8 @@ class OneBot12Gateway(Gateway):
     @override
     async def close(self) -> None:
         async with self._lifecycle_lock:
+            self._closing = True
+            self._closed_event.set()
             finishing = create_task(
                 self._finish_close(),
                 name="onebot12-gateway-close",
@@ -241,6 +247,7 @@ class OneBot12Gateway(Gateway):
 
     async def _finish_close(self) -> None:
         self._closing = True
+        self._closed_event.set()
         try:
             try:
                 await self._close_transports()
@@ -313,9 +320,8 @@ class OneBot12Gateway(Gateway):
         action: str,
         params: ActionParamModel,
     ) -> ActionRequest | ActionResponse:
-        if self._closing:
-            msg = "OneBot 12 gateway is closed"
-            raise RuntimeError(msg)
+        closed_event = self._closed_event
+        self._ensure_open(closed_event)
         if connection.gateway is not self:
             msg = "OneBot 12 action connection belongs to another gateway"
             raise ValueError(msg)
@@ -330,11 +336,16 @@ class OneBot12Gateway(Gateway):
             return request
 
         if isinstance(self.action_backend, HttpAction):
-            return await self._request_http_action(
-                self.action_backend,
-                action,
-                params,
-                connection.self_,
+            return await run_while_open(
+                self._request_http_action(
+                    self.action_backend,
+                    action,
+                    params,
+                    connection.self_,
+                    closed_event,
+                ),
+                closed_event,
+                self._ensure_open,
             )
         if self._ws_actions is not None:
             return await self._ws_actions.request(
@@ -350,13 +361,24 @@ class OneBot12Gateway(Gateway):
         msg = f"{action} is not supported without an action backend"
         raise LookupError(msg)
 
+    def _ensure_open(self, closed_event: AsyncEvent) -> None:
+        if (
+            self._closing
+            or closed_event is not self._closed_event
+            or closed_event.is_set()
+        ):
+            msg = "OneBot 12 gateway is closed"
+            raise RuntimeError(msg)
+
     async def _request_http_action(
         self,
         backend: HttpAction,
         action: str,
         params: ActionParamModel,
         self_: BotSelf,
+        closed_event: AsyncEvent,
     ) -> ActionResponse:
+        self._ensure_open(closed_event)
         if self.http_pool is None:
             if not self._owns_http_pool:
                 msg = "OneBot 12 HTTP action pool is unavailable"
@@ -414,7 +436,13 @@ class OneBot12Gateway(Gateway):
                 return empty_response(HTTPStatus.UNAUTHORIZED)
             version = header_value(request.headers, "X-OneBot-Version")
             impl = header_value(request.headers, "X-Impl")
-            if version != "12" or impl is None or NAME_PATTERN.fullmatch(impl) is None:
+            user_agent = header_value(request.headers, "User-Agent")
+            if (
+                version != "12"
+                or impl is None
+                or NAME_PATTERN.fullmatch(impl) is None
+                or not user_agent
+            ):
                 return empty_response(HTTPStatus.BAD_REQUEST)
             content_type = header_value(request.headers, "Content-Type")
             media_type = (
@@ -449,6 +477,8 @@ class OneBot12Gateway(Gateway):
                 return websocket.respond(HTTPStatus.NOT_FOUND, "Not found\n")
             if not token_matches(self.access_token, bearer_or_query_token(request)):
                 return websocket.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
+            if not header_value(request.headers, "User-Agent"):
+                return websocket.respond(HTTPStatus.BAD_REQUEST, "Missing User-Agent\n")
             try:
                 protocols = [
                     protocol
@@ -465,6 +495,7 @@ class OneBot12Gateway(Gateway):
             self._handle_reverse_websocket,
             ingress.host,
             ingress.port,
+            origins=[None],
             select_subprotocol=lambda _websocket, protocols: next(
                 filter(_is_onebot12_subprotocol, protocols),
                 None,
