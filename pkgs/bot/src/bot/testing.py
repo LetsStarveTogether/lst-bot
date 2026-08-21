@@ -44,7 +44,7 @@ class RecordingGateway(Gateway):
     ) -> None:
         super().__init__(bot)
         self.actions: list[ActionCall] = []
-        self.responses = responses or {}
+        self.responses = responses if responses is not None else {}
 
     @property
     def connection(self) -> Connection:
