@@ -86,7 +86,9 @@ class EventRouter:
             for prefix in context.bot.cmd_prefixes:
                 for item in cmds:
                     token = f"{prefix}{item}"
-                    if text == token or text.startswith(f"{token} "):
+                    if text == token or (
+                        text.startswith(token) and text[len(token)].isspace()
+                    ):
                         arg = text[len(token) :].strip()
                         context.cmd = Cmd(raw=token, arg=arg)
                         return True

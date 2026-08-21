@@ -92,7 +92,7 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
         )
         await bot.dispatch(
             gateway.connection,
-            private_message_event("!p now", event_id="alias"),
+            private_message_event("!p\tnow", event_id="alias"),
         )
 
     assert seen == ["!p:now"]
