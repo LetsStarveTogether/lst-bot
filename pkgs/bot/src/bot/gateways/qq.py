@@ -982,6 +982,13 @@ class QQGateway(Gateway, QQRestClient):
         data: QQC2CMessage | QQLegacyChannelMessage,
     ) -> dict[str, object]:
         message = _qq_message(data)
+        reply_text = (
+            data.msg_elements[0].content
+            if isinstance(data, QQC2CMessage)
+            and data.message_type == _QUOTED_MESSAGE_TYPE
+            and data.msg_elements
+            else None
+        )
         return {
             "id": self._event_id(dispatch),
             "time": data.timestamp.timestamp(),
@@ -990,6 +997,11 @@ class QQGateway(Gateway, QQRestClient):
             "message_id": data.id,
             "message": message,
             "alt_message": data.content,
+            **(
+                {"reply_alt_message": reply_text}
+                if reply_text and reply_text.strip()
+                else {}
+            ),
             "qq_event_id": dispatch.id,
             "qq_message_type": getattr(data, "message_type", None),
             "qq_message_scene": self._event_data_json(

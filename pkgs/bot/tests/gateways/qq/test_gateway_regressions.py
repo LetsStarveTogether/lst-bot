@@ -162,6 +162,8 @@ def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
         "message_id": "quoted-index",
         "user_id": "quoted-user",
     }
+    assert event.model_extra is not None
+    assert event.model_extra["reply_alt_message"] == "quoted text must not leak"
 
     group_event = _gateway()._event_from_dispatch(  # ruff: ignore[private-member-access] - conversion boundary
         QQDispatch.model_validate({
@@ -182,6 +184,8 @@ def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
     )
     assert isinstance(group_event, GroupMessageEvent)
     assert group_event.message[0].data.model_dump().get("message_id") == "group-quoted"
+    assert group_event.model_extra is not None
+    assert "reply_alt_message" not in group_event.model_extra
 
 
 async def test_passive_reply_sequence_wraps_and_preserves_explicit_value(
