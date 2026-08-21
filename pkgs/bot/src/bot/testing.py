@@ -91,8 +91,10 @@ class ScriptedWebSocket:
 
     async def receive_text(self) -> str:
         self.receiving.set()
-        value = await self.incoming.get()
-        self.receiving.clear()
+        try:
+            value = await self.incoming.get()
+        finally:
+            self.receiving.clear()
         if isinstance(value, BaseException):
             raise value
         return value

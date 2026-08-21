@@ -26,7 +26,7 @@ logger = getLogger(__name__)
 type Sleep = Callable[[float], Awaitable[object]]
 type Clock = Callable[[tzinfo], datetime]
 
-CURRENT_SCHEDULER_BOT: ContextVar[object | None] = ContextVar(
+CURRENT_SCHEDULER_BOT: ContextVar[tuple[object, Task[None]] | None] = ContextVar(
     "bot_current_scheduler",
     default=None,
 )
@@ -122,7 +122,8 @@ class CronJob:
     ) -> None:
         logger.debug("scheduled job run: %s", self)
         try:
-            with CURRENT_SCHEDULER_BOT.set(self.bot):
+            owner = cast(Task[None], current_task())
+            with CURRENT_SCHEDULER_BOT.set((self.bot, owner)):
                 await self._call_handler(gateway, connection)
         except Exception:
             logger.exception("Scheduled job failed: %s", self)

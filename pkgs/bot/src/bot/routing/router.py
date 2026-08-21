@@ -33,11 +33,15 @@ class EventRouter:
         block: bool = False,
         name: str | None = None,
     ) -> Callable:
-        route_rule = rule if isinstance(rule, Rule) else Rule(rule or (lambda: True))
+        route_rule = (
+            rule
+            if isinstance(rule, Rule)
+            else Rule((lambda: True) if rule is None else rule)
+        )
         route_permission = (
             permission
             if isinstance(permission, Permission)
-            else Permission(permission or (lambda: True))
+            else Permission((lambda: True) if permission is None else permission)
         )
 
         def decorator(handler: Callable) -> Callable:

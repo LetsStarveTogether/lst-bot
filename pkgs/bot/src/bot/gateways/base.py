@@ -531,10 +531,9 @@ def bearer_or_query_token(source: object) -> str | None:
     if authorizations:
         if len(authorizations) != 1 or not isinstance(authorizations[0], str):
             return None
-        authorization = authorizations[0]
-        prefix = "Bearer "
+        scheme, separator, token = authorizations[0].partition(" ")
         return (
-            authorization[len(prefix) :] if authorization.startswith(prefix) else None
+            token.lstrip(" ") if separator and scheme.casefold() == "bearer" else None
         )
 
     query_params = getattr(source, "query_params", None)

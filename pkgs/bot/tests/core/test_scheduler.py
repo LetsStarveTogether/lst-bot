@@ -1,4 +1,4 @@
-from asyncio import Event, Queue, wait_for
+from asyncio import Event, Queue, Task, create_task, wait_for
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -100,19 +100,36 @@ async def test_cron_handler_cannot_close_its_bot() -> None:
     bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
     sleep = use_scripted_time(bot)
     rejected = Event()
+    release = Event()
+    background: Task[None] | None = None
+
+    async def close_later() -> None:
+        await release.wait()
+        await bot.close()
 
     @bot.on_cron("* * * * *", self_=None)
     async def shutdown() -> None:
+        nonlocal background
         with pytest.raises(RuntimeError, match="scheduled handler"):
             await bot.close()
         with pytest.raises(RuntimeError, match="cannot close themselves"):
             await bot.scheduler.jobs[0].close()
+        background = create_task(close_later())
         rejected.set()
 
     await bot.start()
-    await sleep.advance()
-    await wait_for(rejected.wait(), timeout=1)
-    await bot.close()
+    try:
+        await sleep.advance()
+        await wait_for(rejected.wait(), timeout=1)
+        handler_task = bot.scheduler.jobs[0]._running  # ruff: ignore[private-member-access]
+        assert handler_task is not None
+        await wait_for(handler_task, timeout=1)
+        assert background is not None
+        release.set()
+        await wait_for(background, timeout=1)
+    finally:
+        release.set()
+        await bot.close()
 
 
 @pytest.mark.parametrize(

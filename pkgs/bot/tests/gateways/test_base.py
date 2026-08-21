@@ -50,6 +50,17 @@ def test_authorization_header_does_not_fall_back_to_query_token() -> None:
     assert bearer_or_query_token(source) is None
 
 
+@pytest.mark.parametrize(
+    "authorization", ["bearer token", "BEARER token", "Bearer  token"]
+)
+def test_bearer_scheme_is_case_insensitive_and_allows_multiple_spaces(
+    authorization: str,
+) -> None:
+    source = SimpleNamespace(headers={"Authorization": authorization})
+
+    assert bearer_or_query_token(source) == "token"
+
+
 def test_websocket_request_reads_query_token_from_target() -> None:
     source = SimpleNamespace(headers={}, path="/onebot/ws?access_token=query-token")
 
@@ -116,6 +127,18 @@ def test_header_value_rejects_repeated_headers() -> None:
 def test_token_matches_supports_unicode_credentials() -> None:
     assert token_matches("密钥", "密钥") is True
     assert token_matches("密钥", "别的") is False
+
+
+async def test_scripted_websocket_clears_receiving_after_cancellation() -> None:
+    websocket = ScriptedWebSocket()
+    receive = create_task(websocket.receive_text())
+    await websocket.receiving.wait()
+
+    receive.cancel()
+    with pytest.raises(CancelledError):
+        await receive
+
+    assert not websocket.receiving.is_set()
 
 
 async def test_await_cleanup_finishes_after_repeated_cancellation() -> None:

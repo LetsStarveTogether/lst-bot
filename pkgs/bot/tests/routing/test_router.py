@@ -14,6 +14,30 @@ from bot import (
 from bot.testing import private_message_event, recording_gateway
 
 
+async def test_falsey_permission_is_not_replaced() -> None:
+    class Deny:
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self) -> bool:
+            return False
+
+    bot = Bot()
+    router = EventRouter()
+    seen: list[str] = []
+
+    @router.on_msg(permission=Deny())
+    def protected() -> None:
+        seen.append("allowed")
+
+    bot.add_router(router)
+    gateway = recording_gateway(bot)
+    async with bot:
+        await bot.dispatch(gateway.connection, private_message_event("hello"))
+
+    assert seen == []
+
+
 @pytest.mark.parametrize("role", [[], {}], ids=["list", "mapping"])
 async def test_admin_permission_rejects_non_hashable_sender_role(
     role: list[object] | dict[str, object],

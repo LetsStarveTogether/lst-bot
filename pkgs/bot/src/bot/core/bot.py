@@ -21,7 +21,7 @@ from datetime import timedelta, tzinfo
 from functools import partial
 from logging import getLogger
 from types import MappingProxyType, TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 from diwire import (
     Container,
@@ -56,7 +56,9 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 _EVENT_QUEUE_CAPACITY = 64
-_CURRENT_DISPATCHER: ContextVar[Bot | None] = ContextVar(
+type _TaskOwner = tuple[object, Task[None]]
+
+_CURRENT_DISPATCHER: ContextVar[_TaskOwner | None] = ContextVar(
     "bot_current_dispatcher",
     default=None,
 )
@@ -65,6 +67,10 @@ _CURRENT_LIFECYCLE: ContextVar[Bot | None] = ContextVar(
     default=None,
 )
 type _CleanupCallback = Callable[[], Awaitable[None]]
+
+
+def _task_is_active_for(owner: _TaskOwner | None, bot: Bot) -> bool:
+    return owner is not None and owner[0] is bot and not owner[1].done()
 
 
 @dataclass(slots=True)
@@ -108,10 +114,10 @@ class Bot(EventRouter):
         self.container = Container(
             missing_policy=MissingPolicy.ERROR,
             dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
+            use_resolver_context=False,
         )
         self.container.add_instance(self, provides=Bot)
         self._gateways: list[Gateway] = []
-        register_context_providers(self.container)
         self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
         self._lifecycle_started = False
@@ -197,7 +203,9 @@ class Bot(EventRouter):
 
     async def start(self) -> None:
         self._reject_lifecycle_reentry()
-        self._lifecycle_started = True
+        if not self._lifecycle_started:
+            register_context_providers(self.container)
+            self._lifecycle_started = True
         async with self._lifecycle_lock:
             with _CURRENT_LIFECYCLE.set(self):
                 if self._pending_cleanup:
@@ -216,10 +224,10 @@ class Bot(EventRouter):
                 self._running.set()
 
     async def close(self) -> None:
-        if _CURRENT_DISPATCHER.get() is self:
+        if _task_is_active_for(_CURRENT_DISPATCHER.get(), self):
             msg = "Bot cannot be closed from a dispatch handler"
             raise RuntimeError(msg)
-        if CURRENT_SCHEDULER_BOT.get() is self:
+        if _task_is_active_for(CURRENT_SCHEDULER_BOT.get(), self):
             msg = "Bot cannot be closed from a scheduled handler"
             raise RuntimeError(msg)
         self._reject_lifecycle_reentry()
@@ -312,7 +320,7 @@ class Bot(EventRouter):
         *,
         gateway: Gateway | None = None,
     ) -> None:
-        if _CURRENT_DISPATCHER.get() is self:
+        if _task_is_active_for(_CURRENT_DISPATCHER.get(), self):
             msg = "Recursive dispatch is not supported"
             raise RuntimeError(msg)
         result = get_running_loop().create_future()
@@ -415,7 +423,8 @@ class Bot(EventRouter):
         self,
         item: _QueuedEvent,
     ) -> None:
-        with _CURRENT_DISPATCHER.set(self):
+        owner = cast(Task[None], current_task())
+        with _CURRENT_DISPATCHER.set((self, owner)):
             await self._dispatch_event(
                 item.connection,
                 item.event,
@@ -510,6 +519,7 @@ class Bot(EventRouter):
             event,
             gateway or "-",
             f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
+            exc_info=exc,
         )
 
     def _log_dispatch_timeout(

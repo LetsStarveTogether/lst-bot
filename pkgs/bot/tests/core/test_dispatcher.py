@@ -1,4 +1,12 @@
-from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
+from asyncio import (
+    CancelledError,
+    Event,
+    QueueFull,
+    Task,
+    TaskGroup,
+    create_task,
+    timeout,
+)
 from contextvars import ContextVar
 from datetime import timedelta
 from typing import override
@@ -71,6 +79,26 @@ async def test_enqueue_preserves_fifo_order_and_context() -> None:
         ("second", "captured"),
         ("third", "captured"),
     ]
+
+
+async def test_event_subclass_defined_after_bot_is_injectable() -> None:
+    bot = Bot()
+    gateway = RecordingGateway(bot)
+
+    class CustomEvent(PrivateMessageEvent):
+        pass
+
+    seen: list[CustomEvent] = []
+
+    @bot.on_msg()
+    def handle(message: Injected[CustomEvent]) -> None:
+        seen.append(message)
+
+    message = CustomEvent.model_validate(event("custom").model_dump())
+    async with bot:
+        await bot.dispatch(gateway.connection, message)
+
+    assert seen == [message]
 
 
 async def test_dispatch_respects_the_global_worker_limit() -> None:
@@ -161,22 +189,34 @@ async def test_queued_event_uses_its_admission_deadline() -> None:
     assert not expired_ran
 
 
-async def test_recursive_dispatch_is_rejected() -> None:
+async def test_dispatch_context_expires_with_its_handler() -> None:
     bot = Bot()
     gateway = RecordingGateway(bot)
-    rejected = False
+    release = Event()
+    background: Task[None] | None = None
+    seen: list[str] = []
+
+    async def dispatch_later() -> None:
+        await release.wait()
+        await bot.dispatch(gateway.connection, event("child"))
 
     @bot.on_msg(block=True)
-    async def handle() -> None:
-        nonlocal rejected
-        with pytest.raises(RuntimeError, match="Recursive dispatch"):
-            await bot.dispatch(gateway.connection, event("nested"))
-        rejected = True
+    async def handle(message: Injected[PrivateMessageEvent]) -> None:
+        nonlocal background
+        if message.id == "outer":
+            with pytest.raises(RuntimeError, match="Recursive dispatch"):
+                await bot.dispatch(gateway.connection, event("nested"))
+            background = create_task(dispatch_later())
+        else:
+            seen.append(message.id)
 
     async with bot:
         await bot.dispatch(gateway.connection, event("outer"))
+        assert background is not None
+        release.set()
+        await background
 
-    assert rejected
+    assert seen == ["child"]
 
 
 async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
