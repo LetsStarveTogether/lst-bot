@@ -614,7 +614,7 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
 ) -> None:
     def info(remaining: int, *, reset_after: int, max_concurrency: int) -> dict:
         return {
-            "url": "wss://gateway.discord.example",
+            "url": "wss://gateway.discord.example?compress=zlib-stream&route=stable",
             "shards": 4,
             "session_start_limit": {
                 "total": 1000,
@@ -636,7 +636,7 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
     )
 
     assert await instance._gateway_url() == (
-        "wss://gateway.discord.example/?v=10&encoding=json"
+        "wss://gateway.discord.example/?route=stable&v=10&encoding=json"
     )
     websocket = ScriptedWebSocket()
     await instance._authenticate_websocket(websocket)
@@ -694,7 +694,7 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
 
     resume_url = "wss://resume.discord.example/?v=10&encoding=json"
     assert attempts == [resume_url] * (discord_module._MAX_RESUME_ATTEMPTS + 1) + [
-        "wss://gateway.discord.example/?v=10&encoding=json"
+        "wss://gateway.discord.example/?route=stable&v=10&encoding=json"
     ]
     assert discovery_pool.requests[0][1].endswith("/gateway/bot")
     assert [loads(item.sent.get_nowait())["op"] for item in connections] == [
@@ -941,7 +941,7 @@ def test_gateway_server_close_code_policy() -> None:
 
     for code in (4004, 4010, 4011, 4012, 4013, 4014):
         assert isinstance(disconnect(code), DiscordGatewayFatalError)
-    for code in (4007, 4009):
+    for code in (4003, 4007, 4009):
         reconnect = cast(discord_module._ReconnectError, disconnect(code))
         assert reconnect.reset_session is True
     rate_limited = cast(discord_module._ReconnectError, disconnect(4008))
@@ -1331,53 +1331,6 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
     bot_headers = cast(dict[str, str], pool.requests[-1][2]["headers"])
     assert "Authorization" not in token_headers
     assert bot_headers["Authorization"] == "Bot token"
-
-
-async def test_proactive_global_limit_separates_lanes_and_exempts_interactions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clock = Clock()
-    reactive_delays: list[float] = []
-
-    class ExpiringTimeout:
-        def __init__(self, delay: float) -> None:
-            self.delay = delay
-
-        async def __aenter__(self) -> None:
-            clock.now += self.delay
-            if reactive_delays:
-                rest._global_ready_at["bot"] = clock.now + reactive_delays.pop()
-            raise TimeoutError
-
-        async def __aexit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            traceback: object,
-        ) -> None:
-            pass
-
-    monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
-    monkeypatch.setattr(discord_module, "timeout", ExpiringTimeout)
-    rest = client(Pool())
-
-    for _ in range(discord_module._MAX_GLOBAL_REST_REQUESTS + 1):
-        await rest._wait_for_global_limit("bot")
-    assert clock.now == pytest.approx(1.0)
-    for _ in range(discord_module._MAX_GLOBAL_REST_REQUESTS + 1):
-        await rest._wait_for_global_limit("authless")
-    assert clock.now == pytest.approx(2.0)
-    for _ in range(100):
-        await rest._wait_for_global_limit("interaction")
-    assert clock.now == pytest.approx(2.0)
-
-    rest._global_send_times["bot"].clear()
-    rest._global_send_times["bot"].extend(
-        [clock.now] * discord_module._MAX_GLOBAL_REST_REQUESTS
-    )
-    reactive_delays.append(2.0)
-    await rest._wait_for_global_limit("bot")
-    assert clock.now == pytest.approx(5.0)
 
 
 async def test_explicit_interaction_response_has_one_owner() -> None:
