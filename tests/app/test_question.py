@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
-from bot import ActionResponse, Bot, Msg, ReturnAction
+from bot import ActionResponse, Bot, Msg
 from bot.testing import RecordingGateway, private_message_event, recording_gateway
 
 from lst_bot.agent import DstQuestionAgent
@@ -67,7 +67,7 @@ async def test_build_question_combines_reply_and_command_text() -> None:
     assert len(gateway.actions) == 1
 
 
-async def test_question_command_dispatches_with_injected_agent_and_reply() -> None:
+async def test_question_command_sends_reply_from_injected_agent() -> None:
     bot = Bot()
     agent = Mock(spec_set=DstQuestionAgent)
     agent.answer.return_value = "答案"
@@ -76,15 +76,12 @@ async def test_question_command_dispatches_with_injected_agent_and_reply() -> No
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/问 巨鹿什么时候来？"),
         )
 
     agent.answer.assert_awaited_once_with("用户问题：\n巨鹿什么时候来？")
-    value = results[0].values[0]
-    assert isinstance(value, ReturnAction)
-    assert value.kind == "message"
     action = gateway.actions[0].model_dump(mode="json", by_alias=True)
     assert action["action"] == "send_message"
     assert action["params"]["message"][0]["type"] == "reply"

@@ -6,8 +6,7 @@ from bot import (
     EventRouter,
     Injected,
     MessageEvent,
-    Reply,
-    ReturnAction,
+    Msg,
 )
 from bot.protocol.msg import ReplySegment
 from logbook import Logger
@@ -90,10 +89,11 @@ async def ask_dst_question(
     event: Injected[MessageEvent],
     conn: Injected[Connection],
     agent: Injected[DstQuestionAgent],
-    r: Injected[Reply],
-) -> ReturnAction:
+) -> Msg:
     question = await build_question(conn, event, cmd.arg)
     if not question:
-        return r(f"用法：{cmd.raw} 《饥荒联机版》相关问题")
+        answer = f"用法：{cmd.raw} 《饥荒联机版》相关问题"
+    else:
+        answer = await agent.answer(question)
 
-    return r(await agent.answer(question))
+    return Msg.reply(event.message_id, answer, user_id=event.user_id)

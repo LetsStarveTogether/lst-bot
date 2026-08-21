@@ -6,10 +6,7 @@ from .core import (
     CronJob,
     CronScheduler,
     InjectionContext,
-    Mention,
     RecentSelf,
-    Reply,
-    RequestResponse,
     State,
 )
 from .gateways import Connection, Gateway
@@ -125,7 +122,6 @@ __all__ = [
     "Injected",
     "InjectionContext",
     "Lifetime",
-    "Mention",
     "MessageEvent",
     "MetaEvent",
     "Msg",
@@ -139,9 +135,7 @@ __all__ = [
     "PrivateMessageDeleteNoticeEvent",
     "PrivateMessageEvent",
     "RecentSelf",
-    "Reply",
     "RequestEvent",
-    "RequestResponse",
     "Retcode",
     "ReturnAction",
     "Rule",

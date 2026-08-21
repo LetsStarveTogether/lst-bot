@@ -10,14 +10,7 @@ from typing import TYPE_CHECKING
 from diwire import Container, Lifetime, ResolverProtocol, Scope, resolver_context
 
 from bot.gateways import Connection, Gateway
-from bot.protocol.events import (
-    Event,
-    FriendRequestEvent,
-    GroupRequestEvent,
-    MessageEvent,
-)
-from bot.protocol.msg import Msg, MsgInput
-from bot.protocol.returns import ReturnAction
+from bot.protocol.events import Event
 
 if TYPE_CHECKING:
     from bot.routing.cmd import Cmd
@@ -43,45 +36,6 @@ class InjectionContext:
     state: State | None = None
     route: EventRoute | None = None
     cmd: Cmd | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Reply:
-    event: MessageEvent
-
-    def __call__(self, message: MsgInput = None) -> ReturnAction:
-        return ReturnAction.message(
-            Msg.reply(
-                self.event.message_id,
-                message,
-                user_id=self.event.user_id,
-            )
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class Mention:
-    event: MessageEvent
-
-    def __call__(self, message: MsgInput = None) -> ReturnAction:
-        return ReturnAction.message(Msg.mention(self.event.user_id, message))
-
-
-@dataclass(frozen=True, slots=True)
-class RequestResponse:
-    event: FriendRequestEvent | GroupRequestEvent
-
-    def approve(self, *, remark: str = "") -> ReturnAction:
-        if isinstance(self.event, GroupRequestEvent) and remark:
-            msg = "Group request approvals do not support remark"
-            raise TypeError(msg)
-        return ReturnAction.request(True, remark=remark)
-
-    def reject(self, reason: str = "") -> ReturnAction:
-        if isinstance(self.event, FriendRequestEvent) and reason:
-            msg = "Friend request rejections do not support reason"
-            raise TypeError(msg)
-        return ReturnAction.request(False, reason=reason)
 
 
 _CURRENT_CONTEXT: ContextVar[InjectionContext | None] = ContextVar(
@@ -160,24 +114,6 @@ def register_context_providers(
         scope=Scope.REQUEST,
         lifetime=Lifetime.SCOPED,
     )
-    container.add_factory(
-        _reply_from_context,
-        provides=Reply,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
-    )
-    container.add_factory(
-        _mention_from_context,
-        provides=Mention,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
-    )
-    container.add_factory(
-        _request_response_from_context,
-        provides=RequestResponse,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
-    )
     for event_type in _event_types(Event):
         container.add_factory(
             bind_event_provider(event_type),
@@ -221,30 +157,6 @@ def _connection_from_context() -> Connection:
         msg = "Injection context has no connection"
         raise TypeError(msg)
     return connection
-
-
-def _message_event_from_context() -> MessageEvent:
-    event = current_injection_context().event
-    if not isinstance(event, MessageEvent):
-        msg = "Current event has no message"
-        raise TypeError(msg)
-    return event
-
-
-def _reply_from_context() -> Reply:
-    return Reply(_message_event_from_context())
-
-
-def _mention_from_context() -> Mention:
-    return Mention(_message_event_from_context())
-
-
-def _request_response_from_context() -> RequestResponse:
-    event = current_injection_context().event
-    if not isinstance(event, FriendRequestEvent | GroupRequestEvent):
-        msg = "Current event is not a supported request event"
-        raise TypeError(msg)
-    return RequestResponse(event)
 
 
 def _event_types(root: type[Event]) -> Iterator[type[Event]]:

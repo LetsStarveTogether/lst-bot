@@ -12,7 +12,6 @@ from bot import (
     Injected,
     Msg,
     PrivateMessageEvent,
-    RequestResponse,
     ReturnAction,
 )
 from bot.gateways.onebot11 import HttpAction, HttpWebhook, OneBot11Gateway
@@ -201,17 +200,15 @@ async def test_http_quick_operation_context_expires_with_response() -> None:
 async def test_http_request_quick_response(
     payload: dict[str, JsonValue],
     approve: bool,
-    expected: dict[str, JsonValue],
+    expected: dict[str, str],
 ) -> None:
     bot = Bot()
     gateway = OneBot11Gateway(bot)
     bot.add_gateway(gateway)
 
     @bot.on_event(block=True)
-    def collect(request: Injected[RequestResponse]) -> ReturnAction:
-        if approve:
-            return request.approve(remark="tester")
-        return request.reject("not now")
+    def collect() -> ReturnAction:
+        return ReturnAction.request(approve, **expected)
 
     async with bot:
         response = await gateway.handle_http(Model.model_validate(payload))

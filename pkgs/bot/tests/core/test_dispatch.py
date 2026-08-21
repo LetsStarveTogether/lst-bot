@@ -13,11 +13,9 @@ from bot import (
     EventRouter,
     GroupMessageEvent,
     Injected,
-    Mention,
     Msg,
     Permission,
     PrivateMessageEvent,
-    Reply,
     Retcode,
     ReturnAction,
 )
@@ -268,45 +266,6 @@ async def test_dispatch_executes_action_returns() -> None:
         "get_user_info",
     ]
     assert [effect.action.kind for effect in results[0].effects] == ["call", "call"]
-
-
-async def test_dispatch_injects_reply_and_mention_helpers() -> None:
-    bot = Bot()
-    gateway = recording_gateway(bot)
-
-    @bot.on_msg(block=True)
-    def handle(
-        reply: Injected[Reply],
-        mention: Injected[Mention],
-    ) -> list[ReturnAction]:
-        return [mention(" look"), reply("done")]
-
-    async with bot:
-        results = await bot.dispatch(
-            gateway.connection,
-            make_event("ping", user_id="u1"),
-        )
-
-    assert [effect.action.kind for effect in results[0].effects] == [
-        "message",
-        "message",
-    ]
-    assert [
-        action.params.model_dump(mode="json", by_alias=True)["message"]
-        for action in gateway.actions
-    ] == [
-        [
-            {"type": "mention", "data": {"user_id": "u1"}},
-            {"type": "text", "data": {"text": " look"}},
-        ],
-        [
-            {
-                "type": "reply",
-                "data": {"message_id": "evt-1-message", "user_id": "u1"},
-            },
-            {"type": "text", "data": {"text": "done"}},
-        ],
-    ]
 
 
 async def test_dispatch_rejects_unsupported_return_values() -> None:
