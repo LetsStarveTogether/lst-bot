@@ -24,7 +24,6 @@ from bot.gateways.telegram_api import (
     TelegramUser,
     TelegramVenue,
 )
-from bot.json import dumpb
 from bot.protocol.enums import Action
 from bot.protocol.events import (
     GroupMessageEvent,
@@ -35,24 +34,17 @@ from bot.protocol.events import (
 from bot.protocol.returns import ReturnAction
 from diwire import Injected
 from pydantic import JsonValue, ValidationError
+from tests.gateways.support import response
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
 CREDENTIAL = "opaque-token"
 SUPERGROUP_ID = -1_000_000_000_001
 
 
-def response(payload: JsonValue, status: int = 200) -> AsyncHTTPResponse:
-    return AsyncHTTPResponse(
-        body=dumpb(payload),
-        status=status,
-        headers={"Content-Type": "application/json"},
-    )
-
-
 class Pool:
     def __init__(self, *payloads: JsonValue) -> None:
         self.responses: list[AsyncHTTPResponse] = [
-            response(payload) for payload in payloads
+            response(200, payload) for payload in payloads
         ]
         self.requests: list[tuple[str, str, dict[str, object]]] = []
 
@@ -503,15 +495,18 @@ async def test_rate_limit_retry_and_error_parameters() -> None:
         "parameters": {"retry_after": 0},
     }
     pool = Pool()
-    pool.responses = [response(limited, 429), response({"ok": True, "result": 1})]
+    pool.responses = [
+        response(429, limited),
+        response(200, {"ok": True, "result": 1}),
+    ]
     assert await client(pool).call_json("getMe") == 1
     assert len(pool.requests) == 2
 
     pool = Pool()
     pool.responses = [
         response(
-            {**limited, "parameters": {"retry_after": 31}},
             429,
+            {**limited, "parameters": {"retry_after": 31}},
         )
     ]
     with pytest.raises(TelegramAPIError) as error:
@@ -520,7 +515,7 @@ async def test_rate_limit_retry_and_error_parameters() -> None:
     assert error.value.parameters.retry_after == 31
 
     pool = Pool()
-    pool.responses = [response(limited, 429)]
+    pool.responses = [response(429, limited)]
     with pytest.raises(TelegramAPIError):
         await client(pool, max_rate_limit_retries=0).call_json("getMe")
     assert len(pool.requests) == 1
@@ -545,15 +540,15 @@ async def test_close_stops_rate_limit_retry() -> None:
     pool = SignallingPool()
     pool.responses = [
         response(
+            429,
             {
                 "ok": False,
                 "error_code": 429,
                 "description": "retry later",
                 "parameters": {"retry_after": 1},
             },
-            429,
         ),
-        response({"ok": True, "result": True}),
+        response(200, {"ok": True, "result": True}),
     ]
     rest = client(pool)
 
@@ -848,25 +843,34 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
             self.requests.append((method, params))
             if method == "getMe":
                 self.generation += 1
-                return response({
-                    "ok": True,
-                    "result": {"id": 123, "is_bot": True, "first_name": "Bot"},
-                })
-            if method == "getWebhookInfo":
-                return response({
-                    "ok": True,
-                    "result": {
-                        "url": "",
-                        "has_custom_certificate": False,
-                        "pending_update_count": 0,
+                return response(
+                    200,
+                    {
+                        "ok": True,
+                        "result": {"id": 123, "is_bot": True, "first_name": "Bot"},
                     },
-                })
+                )
+            if method == "getWebhookInfo":
+                return response(
+                    200,
+                    {
+                        "ok": True,
+                        "result": {
+                            "url": "",
+                            "has_custom_certificate": False,
+                            "pending_update_count": 0,
+                        },
+                    },
+                )
             if method == "getUpdates" and self.generation not in self.delivered:
                 self.delivered.add(self.generation)
-                return response({
-                    "ok": True,
-                    "result": [message_update(self.generation).raw],
-                })
+                return response(
+                    200,
+                    {
+                        "ok": True,
+                        "result": [message_update(self.generation).raw],
+                    },
+                )
             await Event().wait()
             msg = "unreachable"
             raise AssertionError(msg)

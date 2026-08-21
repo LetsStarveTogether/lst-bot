@@ -173,11 +173,7 @@ _CHANNEL_NAME_ADAPTER = TypeAdapter(DiscordChannelName)
 
 
 class DiscordRequestModel(Model):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        hide_input_in_errors=True,
-    )
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class DiscordUser(Model):
@@ -387,8 +383,6 @@ class DiscordInteractionData(Model):
 
 
 class DiscordInteraction(Model):
-    model_config = ConfigDict(hide_input_in_errors=True)
-
     id: Snowflake
     application_id: Snowflake
     type: Annotated[StrictInt, Field(ge=1, le=5)]
@@ -1257,8 +1251,6 @@ def _strict_opcode(value: object) -> object:
 
 
 class DiscordGatewayPayload(Model):
-    model_config = ConfigDict(hide_input_in_errors=True)
-
     op: Annotated[DiscordOpcode, BeforeValidator(_strict_opcode)]
     d: JsonValue = Field(None, repr=False)
     s: NonNegativeInt | None = None

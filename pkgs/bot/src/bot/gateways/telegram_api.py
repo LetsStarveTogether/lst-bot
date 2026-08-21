@@ -721,9 +721,6 @@ class TelegramRestClient:
         self._closed = False
         self._closed_event = Event()
 
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}(base_url={self.base_url!r})"
-
     async def start(self) -> None:
         async with self._lifecycle_lock:
             if not self._closed:

@@ -28,7 +28,6 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StrictStr,
-    TypeAdapter,
     UrlConstraints,
     WebsocketUrl,
     model_validator,
@@ -54,7 +53,6 @@ type QQUInt64 = Annotated[StrictInt, Field(ge=0, le=2**64 - 1)]
 type QQPositiveInt = Annotated[StrictInt, Field(gt=0)]
 type QQByteSize = Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
 type QQHttpsUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
-_QQ_HTTPS_URL = TypeAdapter(QQHttpsUrl)
 type QQWebsocketUrl = Annotated[
     WebsocketUrl,
     UrlConstraints(allowed_schemes=["wss"]),
