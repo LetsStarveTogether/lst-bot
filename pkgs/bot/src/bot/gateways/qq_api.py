@@ -2055,6 +2055,10 @@ class QQAPIError(RuntimeError):
         super().__init__(detail)
 
 
+class QQAccessTokenError(QQAPIError):
+    pass
+
+
 class QQRestClient:
     def __init__(
         self,
@@ -2130,6 +2134,7 @@ class QQRestClient:
                     response.status,
                     response.headers,
                     response_payload,
+                    error_type=QQAccessTokenError,
                 )
             try:
                 token = QQAccessToken.model_validate(response_payload)
@@ -2415,6 +2420,8 @@ class QQRestClient:
         status: int,
         headers: Mapping[str, object],
         payload: JsonValue,
+        *,
+        error_type: type[QQAPIError] = QQAPIError,
     ) -> QQAPIError:
         code = cls._error_code(payload)
         message: str | None = None
@@ -2431,7 +2438,7 @@ class QQRestClient:
             or header_value(headers, "X-Trace-ID")
             or body_trace_id
         )
-        return QQAPIError(
+        return error_type(
             status,
             code=code,
             message=message,

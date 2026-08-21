@@ -83,6 +83,7 @@ _AUTHENTICATION_FAILED = 4004
 _RATE_LIMITED = 4008
 _RESUMABLE_SESSION_TIMEOUT = 4009
 _APPLICATION_CLOSE_CODES = range(4000, 5000)
+_NON_RETRYABLE_ACCESS_TOKEN_CODES = {"10004", "100007", "100016"}
 _MESSAGE_SEQUENCE_MODULUS = 1 << 16
 _QUOTED_MESSAGE_TYPE = 103
 
@@ -667,10 +668,6 @@ class QQGateway(Gateway, QQRestClient):
                 websocket = await self._websocket_connector(str(gateway.url), None)
                 await self._serve_websocket(websocket, token)
                 return  # ruff: ignore[try-consider-else] - keep success path local
-            except QQGatewayFatalError as exc:
-                self._clear_session()
-                logger.exception("QQ Gateway stopped: {error}", error=str(exc))
-                return
             except _ReconnectError as exc:
                 if exc.reset_token:
                     self.invalidate_token()
@@ -684,6 +681,16 @@ class QQGateway(Gateway, QQRestClient):
                     ]
                 )
             except Exception as exc:
+                if isinstance(exc, QQGatewayFatalError) or (
+                    isinstance(exc, qq_api.QQAccessTokenError)
+                    and str(exc.code) in _NON_RETRYABLE_ACCESS_TOKEN_CODES
+                ):
+                    self._clear_session()
+                    logger.exception(
+                        "QQ Gateway stopped: {error}",
+                        error=str(exc),
+                    )
+                    return
                 delay = _RECONNECT_DELAYS[
                     min(self._retry_count, len(_RECONNECT_DELAYS) - 1)
                 ]

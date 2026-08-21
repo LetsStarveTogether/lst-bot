@@ -30,6 +30,7 @@ from bot.gateways.base import WebsocketsConnection
 from bot.gateways.qq import QQDispatch, QQGateway
 from bot.gateways.qq_api import (
     QQ_ROUTES,
+    QQAccessTokenError,
     QQAction,
     QQAPIError,
     QQAsyncResult,
@@ -87,6 +88,10 @@ def test_route_registry_preserves_qq_wire_modes() -> None:
         assert "?" not in route.path
         assert "#" not in route.path
         assert placeholders <= route.request.model_fields.keys()
+        for name in placeholders:
+            field = route.request.model_fields[name]
+            assert field.is_required()
+            assert field.serialization_alias in {None, name}
 
     assert {action for action, route in QQ_ROUTES.items() if route.query} == {
         QQAction.LIST_BOT_GUILDS,
@@ -829,7 +834,7 @@ async def test_rest_reports_business_and_token_errors() -> None:
         {"access_token": "token", "expires_in": 7200},
         {
             "code": 0,
-            "err_code": 40011027,
+            "err_code": 10004,
             "message": "business failure",
             "trace_id": "body-trace",
         },
@@ -842,16 +847,38 @@ async def test_rest_reports_business_and_token_errors() -> None:
             channel_id="channel",
             content="message",
         )
+    assert type(business_error.value) is QQAPIError
     assert (
         business_error.value.status,
         business_error.value.code,
         business_error.value.trace_id,
-    ) == (200, 40011027, "body-trace")
+    ) == (200, 10004, "body-trace")
 
     token_client = _client(FakePool({"code": 100007, "message": "appid invalid"}))
-    with pytest.raises(QQAPIError) as token_error:
+    with pytest.raises(QQAccessTokenError) as token_error:
         await token_client.access_token()
     assert (token_error.value.status, token_error.value.code) == (200, 100007)
+
+
+@pytest.mark.parametrize(
+    ("code", "retries"),
+    [(100001, 1), (10004, 0), (100007, 0), (100016, 0)],
+)
+async def test_gateway_retries_only_retryable_token_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    retries: int,
+) -> None:
+    gateway = _gateway(FakePool({"code": code, "message": "token error"}))
+    pause = AsyncMock(
+        side_effect=lambda _: setattr(gateway, "_closing", True),
+    )
+    monkeypatch.setattr(gateway.bot, "wait_until_running", AsyncMock())
+    monkeypatch.setattr(qq_gateway_module, "sleep", pause)
+
+    await gateway._run_gateway()  # ruff: ignore[private-member-access]
+
+    assert pause.await_count == retries
 
 
 async def test_rest_maps_created_accepted_and_empty_successes() -> None:
