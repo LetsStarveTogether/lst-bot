@@ -12,6 +12,7 @@ from klei import (
     KleiClient,
     LobbyData,
     Platform,
+    RoomData,
     Secondary,
     VersionType,
 )
@@ -152,6 +153,7 @@ def lobby_row(
         "guid": "guid",
         "intent": "social",
         "steamroom": "steam-room",
+        "secondaries": {"1": {"id": "1", "port": 11000, "__addr": "127.0.0.2"}},
     }
 
 
@@ -212,7 +214,10 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     lobby_url = LOBBY_URL.format(region=region, platform=Platform.Steam.name)
     room_url = ROOM_URL.format(region=region)
     pool = RecordingPool({
-        lobby_url: rows_payload([lobby_row(), {"__rowId": "invalid"}]),
+        lobby_url: rows_payload([
+            lobby_row() | {"season": "mild"},
+            {"__rowId": "invalid"},
+        ]),
         room_url: rows_payload([{"__rowId": "invalid"}, room_row()]),
     })
 
@@ -226,6 +231,7 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     assert len(lobbies) == 1
     assert lobbies[0].region == region
     assert lobbies[0].platform is Platform.Steam
+    assert lobbies[0].season == "mild"
     assert len(rooms) == 1
     assert rooms[0].tick == 12_345
     assert pool.calls[1]["json"] == {
@@ -299,6 +305,13 @@ async def test_client_strictly_validates_platform_filters() -> None:
         await value.get_lobby_data(platforms=("Steam",))  # ty: ignore[invalid-argument-type]
 
 
+async def test_client_rejects_combined_platform_filters() -> None:
+    value = client(RecordingPool({}))
+
+    with pytest.raises(ValidationError, match="require one platform"):
+        await value.get_lobby_data(platforms=(Platform.Steam | Platform.PSN,))
+
+
 async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
     regions = ("us-east-1", "eu-central-1", "sa-east-1", "ca-central-1")
     routes: dict[str, bytes] = {
@@ -333,18 +346,39 @@ def test_response_envelope_and_lobby_bounds_are_validated() -> None:
     with pytest.raises(ValidationError):
         KleiDataResponse[LobbyData].model_validate({})
 
+    internal = LobbyData.model_validate_json(
+        jsonlib.dumps(lobby_row() | {"platform": 19}),
+        context={"region": "us-east-1"},
+    )
+    assert internal.platform.value == 19
+
     for changes in (
         {"port": 0},
         {"port": 65536},
         {"connected": -1},
         {"maxconnections": -1},
         {"connected": 7},
+        {"v": "736959"},
+        {"v": -1},
+        {"allownewplayers": 1},
+        {"__addr": True},
+        {"__addr": 2130706433},
+        {"platform": True},
+        {"secondaries": {"1": {"id": "1", "__addr": True}}},
+        {"secondaries": {"1": {"id": "1", "__addr": 2130706433}}},
     ):
         with pytest.raises(ValidationError):
-            LobbyData.model_validate(
-                lobby_row() | changes,
+            LobbyData.model_validate_json(
+                jsonlib.dumps(lobby_row() | changes),
                 context={"region": "us-east-1"},
             )
 
     with pytest.raises(ValidationError):
         Secondary.model_validate({"id": "secondary", "port": 0})
+
+    for changes in ({"tick": "12345"}, {"clientmodsoff": 0}, {"nat": "1"}):
+        with pytest.raises(ValidationError):
+            RoomData.model_validate_json(
+                jsonlib.dumps(room_row() | changes),
+                context={"region": "us-east-1"},
+            )

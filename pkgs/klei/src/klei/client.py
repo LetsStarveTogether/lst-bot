@@ -5,7 +5,14 @@ from itertools import product
 from typing import Annotated, Self
 
 from logbook import Logger
-from pydantic import ConfigDict, Field, OnErrorOmit, SecretStr, TypeAdapter
+from pydantic import (
+    AfterValidator,
+    ConfigDict,
+    Field,
+    OnErrorOmit,
+    SecretStr,
+    TypeAdapter,
+)
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
@@ -30,7 +37,19 @@ _POSITIVE_FLOAT = TypeAdapter(
     Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 )
 _REGIONS = TypeAdapter(tuple[Region, ...])
-_PLATFORMS = TypeAdapter(tuple[Platform, ...], config=ConfigDict(strict=True))
+
+
+def _query_platform(value: Platform) -> Platform:
+    if value.value.bit_count() != 1:
+        msg = "Klei lobby queries require one platform"
+        raise ValueError(msg)
+    return value
+
+
+_PLATFORMS = TypeAdapter(
+    tuple[Annotated[Platform, AfterValidator(_query_platform)], ...],
+    config=ConfigDict(strict=True),
+)
 _ROOMS = TypeAdapter(
     tuple[tuple[Annotated[str, Field(strict=True, min_length=1)], Region], ...]
 )

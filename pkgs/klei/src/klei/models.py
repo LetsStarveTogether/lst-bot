@@ -6,6 +6,8 @@ from typing import Annotated, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
+    ConfigDict,
     Field,
     OnErrorOmit,
     TypeAdapter,
@@ -14,16 +16,25 @@ from pydantic import (
 )
 from selectolax.parser import HTMLParser, Node
 
-from .enums import Platform, Region, Season, VersionType
+from .enums import Platform, Region, VersionType
 
 _VERSION_DATE_PATTERN = re.compile(r"\d{1,2}/\d{1,2}/\d{2}")
 _VERSION_NUMBER_PATTERN = re.compile(r"\b\d+\b")
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 Port = Annotated[int, Field(strict=True, ge=1, le=65535)]
-Count = Annotated[int, Field(strict=True, ge=0)]
+
+
+def _platform_value(value: object) -> Platform:
+    if isinstance(value, Platform):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Platform(value)
+    msg = "platform must be an integer"
+    raise ValueError(msg)
 
 
 class Version(BaseModel):
-    number: int
+    number: NonNegativeInt
     type: VersionType
     date: date
 
@@ -50,7 +61,7 @@ class Version(BaseModel):
 
         month, day, year = (int(part) for part in date_match.group().split("/"))
         return {
-            "number": number_match.group(),
+            "number": int(number_match.group()),
             "type": badge.text(strip=True),
             "date": date(2000 + year, month, day),
         }
@@ -72,6 +83,8 @@ class KleiDataResponse[T](BaseModel):
 
 
 class Secondary(BaseModel):
+    model_config = ConfigDict(strict=True)
+
     id: str
     port: Port | None = None
     addr: Annotated[IPv4Address | None, Field(alias="__addr")] = None
@@ -79,14 +92,16 @@ class Secondary(BaseModel):
 
 
 class LobbyData(BaseModel):
+    model_config = ConfigDict(strict=True)
+
     row_id: Annotated[str, Field(alias="__rowId")]
     name: str
     addr: Annotated[IPv4Address, Field(alias="__addr")]
     port: Port
     host: str
-    connected: Count
-    maxconnections: Count
-    v: int
+    connected: NonNegativeInt
+    maxconnections: NonNegativeInt
+    v: NonNegativeInt
     allownewplayers: bool
     clanonly: bool
     clienthosted: bool
@@ -97,7 +112,7 @@ class LobbyData(BaseModel):
     password: bool
     pvp: bool
     serverpaused: bool
-    platform: Platform
+    platform: Annotated[Platform, BeforeValidator(_platform_value)]
     session: str
     guid: str
     intent: str
@@ -106,7 +121,7 @@ class LobbyData(BaseModel):
 
     tags: str | None = None
     mode: str | None = None
-    season: Season | None = None
+    season: str | None = None
     steamid: str | None = None
     secondaries: dict[str, Secondary] | None = None
 
@@ -131,9 +146,9 @@ class LobbyData(BaseModel):
 
 
 class RoomData(LobbyData):
-    tick: int
+    tick: NonNegativeInt
     clientmodsoff: bool
-    nat: int
+    nat: NonNegativeInt
     data: str | None = None
     worldgen: str | None = None
     mods_info: list[str | bool | None] | None = None

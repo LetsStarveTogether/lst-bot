@@ -122,6 +122,17 @@ def bundle_routes(text: str = "cached hello") -> dict[str, object]:
     }
 
 
+def test_model_strictly_validates_identifiers_and_parses_official_time() -> None:
+    payload = hitokoto_payload() | {"created_at": "1468605909"}
+    assert Hitokoto.model_validate(payload).created_at.timestamp() == 1468605909
+
+    for field in ("id", "creator_uid", "reviewer"):
+        with pytest.raises(ValidationError):
+            Hitokoto.model_validate(payload | {field: True})
+    with pytest.raises(ValidationError):
+        Hitokoto.model_validate(payload | {"id": -1})
+
+
 @pytest.mark.parametrize(
     ("types", "expected_fields"),
     [

@@ -11,18 +11,19 @@ QUOTE_WIDTH = 12
 QUOTE_SPACE = "\u3000"
 QUOTE_CORNERS = "┌┐└┘"
 SOURCE_QUOTES = "《》"
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
 
 class Hitokoto(BaseModel):
-    id: int
+    id: NonNegativeInt
     uuid: UUID
     hitokoto: str
     type: HitokotoType
     from_: Annotated[str, Field(alias="from")]
     from_who: str | None
     creator: str
-    creator_uid: int
-    reviewer: int
+    creator_uid: NonNegativeInt
+    reviewer: NonNegativeInt
     commit_from: str
     created_at: datetime
 
