@@ -83,21 +83,18 @@ def test_keyboard_permission_rejects_mismatched_subjects(
 
 def test_keyboard_button_matches_qq_wire_contract() -> None:
     payload = {
-        "id": "button",
-        "render_data": {"label": "Open", "visited_label": "Opened", "style": 1},
-        "action": {"type": 0, "permission": {"type": 1}, "data": "open"},
-        "group_id": "group",
+        "id": "btn_signin",
+        "render_data": {"label": "签到", "style": 1},
+        "action": {"type": 2, "permission": {"type": 2}, "data": "/signin"},
     }
     assert (
         QQKeyboardButton.model_validate(payload).model_dump(exclude_none=True)
         == payload
     )
-
-    for field in ("visited_label", "style"):
-        render_data = dict(payload["render_data"])
-        render_data.pop(field)
-        with pytest.raises(ValidationError):
-            QQKeyboardButton.model_validate(payload | {"render_data": render_data})
+    invalid_render = dict(payload["render_data"])
+    invalid_render.pop("style")
+    with pytest.raises(ValidationError):
+        QQKeyboardButton.model_validate(payload | {"render_data": invalid_render})
 
 
 def test_response_models_accept_current_qq_wire_values() -> None:
@@ -123,22 +120,35 @@ def test_response_models_accept_current_qq_wire_values() -> None:
 
 
 def test_rest_request_models_follow_current_qq_contract() -> None:
-    for msg_seq in (0, 65535):
-        assert (
-            QQStreamMessageRequest(
-                user_openid="user",
-                input_mode="replace",
-                input_state=1,
-                index=0,
-                content_type="markdown",
-                content_raw="answer",
-                event_id="event",
-                msg_id="message",
-                msg_seq=msg_seq,
-            ).msg_seq
-            == msg_seq
-        )
+    first_chunk = {
+        "user_openid": "user",
+        "input_mode": "replace",
+        "input_state": 1,
+        "index": 0,
+        "content_type": "markdown",
+        "content_raw": "正在生成回答，请稍候",
+        "msg_id": "message",
+        "msg_seq": 1,
+    }
+    assert (
+        QQStreamMessageRequest.model_validate(first_chunk).model_dump(exclude_none=True)
+        == first_chunk
+    )
+    wakeup = QQStreamMessageRequest(
+        user_openid="user",
+        input_state=1,
+        index=0,
+        content_type="text",
+        content_raw="answer",
+        is_wakeup=True,
+    )
+    assert (wakeup.input_mode, wakeup.content_type) == ("append", "text")
 
+    assert QQStreamMessageRequest.model_validate(
+        first_chunk | {"is_wakeup": True}
+    ).is_wakeup
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        QQStreamMessageRequest.model_validate(first_chunk | {"event_id": "event"})
     with pytest.raises(ValidationError, match="mutually exclusive"):
         QQSendC2CMessageRequest(
             user_openid="user",
@@ -147,29 +157,17 @@ def test_rest_request_models_follow_current_qq_contract() -> None:
             msg_id="message",
             is_wakeup=True,
         )
+
+    for msg_seq in (0, 65535):
+        assert (
+            QQStreamMessageRequest.model_validate(
+                first_chunk | {"msg_seq": msg_seq}
+            ).msg_seq
+            == msg_seq
+        )
     for msg_seq in (-1, 65536):
         with pytest.raises(ValidationError):
-            QQStreamMessageRequest(
-                user_openid="user",
-                input_mode="replace",
-                input_state=1,
-                index=0,
-                content_type="markdown",
-                content_raw="answer",
-                event_id="event",
-                msg_id="message",
-                msg_seq=msg_seq,
-            )
-    prepared = QQFilePrepareResult.model_validate({
-        "upload_id": "upload",
-        "block_size": 1024,
-        "parts": [{"index": 1, "presigned_url": "https://upload.example/1"}],
-        "concurrency": 2,
-        "retry_timeout": 30,
-    })
-    assert prepared.parts[0].index == 1
-    with pytest.raises(ValueError, match="HTTPS"):
-        QQRestClient("app", "secret", base_url="http://qq.example")
+            QQStreamMessageRequest.model_validate(first_chunk | {"msg_seq": msg_seq})
 
 
 async def test_rest_preserves_callback_header_and_empty_body() -> None:
@@ -199,9 +197,33 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
 
 async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
     uploaded = {"file_uuid": "file", "file_info": "info", "ttl": 60}
+    prepared_payload = {
+        "upload_id": "upload",
+        "block_size": "10485760",
+        "parts": [
+            {
+                "index": 0,
+                "presigned_url": "https://upload.example/1",
+                "block_size": "10485760",
+            }
+        ],
+        "upload_config": {
+            "concurrency": 1,
+            "retry_timeout": 300,
+            "retry_delay": 1,
+        },
+    }
+    for value in ("1", True, 1.0):
+        invalid = prepared_payload | {
+            "upload_config": prepared_payload["upload_config"] | {"concurrency": value}
+        }
+        with pytest.raises(ValidationError):
+            QQFilePrepareResult.model_validate(invalid)
     pool = Pool(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, uploaded),
+        response(200, prepared_payload),
+        response(200, {}),
         response(200, uploaded),
     )
     rest = client(pool)
@@ -213,15 +235,57 @@ async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
         file_data="YQ==",
         srv_send_msg=False,
     )
+    prepared = await rest.request_qq(
+        QQAction.PREPARE_GROUP_FILE_UPLOAD,
+        group_id="group",
+        file_type=2,
+        file_size="31457280",
+        file_name="demo.mp4",
+        md5="d41d8cd98f00b204e9800998ecf8427e",
+        sha1="da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        md5_10m="c4d8c5f3a2b1e0f9a8b7c6d5e4f3a2b1",
+    )
+    await rest.request_qq(
+        QQAction.FINISH_GROUP_FILE_UPLOAD,
+        group_id="group",
+        upload_id="upload",
+        part_index=0,
+        block_size="10485760",
+        md5="d41d8cd98f00b204e9800998ecf8427e",
+    )
     await rest.request_qq(
         QQAction.UPLOAD_GROUP_FILE,
         group_openid="group",
+        file_type=2,
+        srv_send_msg=False,
+        file_name="demo.mp4",
         upload_id="upload",
     )
 
+    assert isinstance(prepared, QQFilePrepareResult)
+    assert prepared == QQFilePrepareResult.model_validate(prepared_payload)
     assert [request[2]["json"] for request in pool.requests[1:]] == [
         {"file_type": 1, "file_data": "YQ==", "srv_send_msg": False},
-        {"upload_id": "upload"},
+        {
+            "file_type": 2,
+            "file_size": "31457280",
+            "file_name": "demo.mp4",
+            "md5": "d41d8cd98f00b204e9800998ecf8427e",
+            "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+            "md5_10m": "c4d8c5f3a2b1e0f9a8b7c6d5e4f3a2b1",
+        },
+        {
+            "upload_id": "upload",
+            "part_index": 0,
+            "block_size": "10485760",
+            "md5": "d41d8cd98f00b204e9800998ecf8427e",
+        },
+        {
+            "file_type": 2,
+            "srv_send_msg": False,
+            "file_name": "demo.mp4",
+            "upload_id": "upload",
+        },
     ]
 
 

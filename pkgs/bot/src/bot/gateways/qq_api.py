@@ -56,6 +56,8 @@ type QQID = Annotated[StrictStr, Field(min_length=1)]
 type QQLimit50 = Annotated[StrictInt, Field(ge=1, le=50)]
 type QQLimit100 = Annotated[StrictInt, Field(ge=1, le=100)]
 type QQUInt64 = Annotated[StrictInt, Field(ge=0, le=2**64 - 1)]
+type QQPositiveInt = Annotated[StrictInt, Field(gt=0)]
+type QQByteSize = Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
 type QQHttpsUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
 _QQ_HTTPS_URL = TypeAdapter(QQHttpsUrl)
 type QQWebsocketUrl = Annotated[
@@ -275,7 +277,7 @@ class QQKeyboardAction(QQRequest):
 
 class QQKeyboardRenderData(QQRequest):
     label: StrictStr
-    visited_label: StrictStr
+    visited_label: StrictStr | None = None
     style: Literal[0, 1, 2, 3]
 
 
@@ -513,15 +515,12 @@ class QQDirectMessage(Model):
     create_time: StrictStr | None = None
 
 
-class QQStreamMessageRequest(QQUserParams):
-    input_mode: Literal["replace"]
+class QQStreamMessageRequest(QQUserParams, QQReplySourceFields):
+    input_mode: Literal["append", "replace"] = "append"
     input_state: Literal[1, 10]
     index: Annotated[StrictInt, Field(ge=0)]
-    content_type: Literal["markdown"]
+    content_type: Literal["text", "markdown"]
     content_raw: StrictStr
-    event_id: QQID
-    msg_id: QQID
-    msg_seq: Annotated[StrictInt, Field(ge=0, le=65535)]
     stream_msg_id: QQID | None = None
 
     @model_validator(mode="after")
@@ -536,10 +535,10 @@ class QQStreamMessageRequest(QQUserParams):
 
 
 class QQFileUploadFields(QQRequest):
-    file_type: Literal[1, 2, 3, 4] | None = None
+    file_type: Literal[1, 2, 3, 4]
+    srv_send_msg: StrictBool
     url: AnyHttpUrl | None = None
     file_data: StrictStr | None = Field(default=None, repr=False)
-    srv_send_msg: StrictBool | None = None
     file_name: StrictStr | None = None
     upload_id: QQID | None = None
 
@@ -553,16 +552,6 @@ class QQFileUploadFields(QQRequest):
             != 1
         ):
             msg = "exactly one of url, file_data and upload_id is required"
-            raise ValueError(msg)
-        if self.upload_id is not None:
-            if any(
-                value is not None
-                for value in (self.file_type, self.srv_send_msg, self.file_name)
-            ):
-                msg = "upload_id completion accepts no file metadata"
-                raise ValueError(msg)
-        elif self.file_type is None or self.srv_send_msg is None:
-            msg = "file_type and srv_send_msg are required for direct uploads"
             raise ValueError(msg)
         return self
 
@@ -585,7 +574,7 @@ class QQFileInfo(Model):
 
 class QQFilePrepareFields(QQRequest):
     file_type: Literal[1, 2, 3, 4]
-    file_size: Annotated[StrictInt, Field(ge=0)]
+    file_size: QQByteSize
     file_name: Annotated[StrictStr, Field(min_length=1)]
     md5: Annotated[StrictStr, Field(pattern=r"^[0-9a-fA-F]{32}$")]
     sha1: Annotated[StrictStr, Field(pattern=r"^[0-9a-fA-F]{40}$")]
@@ -603,20 +592,26 @@ class QQPrepareC2CFileRequest(QQFilePrepareFields):
 class QQUploadPart(Model):
     index: Annotated[StrictInt, Field(ge=0)]
     presigned_url: StrictStr
+    block_size: QQByteSize
+
+
+class QQUploadConfig(Model):
+    concurrency: QQPositiveInt
+    retry_timeout: QQPositiveInt
+    retry_delay: QQPositiveInt
 
 
 class QQFilePrepareResult(Model):
     upload_id: QQID
-    block_size: Annotated[StrictInt, Field(ge=0)]
+    block_size: QQByteSize
     parts: list[QQUploadPart]
-    concurrency: PositiveInt | None = None
-    retry_timeout: PositiveInt | None = None
+    upload_config: QQUploadConfig
 
 
 class QQFinishFileFields(QQRequest):
     upload_id: QQID
     part_index: Annotated[StrictInt, Field(ge=0)]
-    block_size: Annotated[StrictInt, Field(ge=0)]
+    block_size: QQByteSize
     md5: Annotated[StrictStr, Field(pattern=r"^[0-9a-fA-F]{32}$")]
 
 
@@ -842,7 +837,7 @@ class QQStrategyRecord(Model):
     expire_at: AwareDatetime | None = None
     remark: StrictStr | None = None
     group_openids: list[QQID] | None = None
-    group_ids: list[QQUInt64] | None = None
+    group_ids: list[StrictStr] | None = None
     whitelist_user_count: Annotated[StrictInt, Field(ge=0)] | None = None
     created_at: AwareDatetime | None = None
     updated_at: AwareDatetime | None = None

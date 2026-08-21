@@ -1266,39 +1266,3 @@ def _common_action_params(
         params.pop("guild_id", None)
         params["name"] = params.pop("channel_name")
     return params
-
-
-__all__ = [
-    "QQAction",
-    "QQArkData",
-    "QQAttachment",
-    "QQAuthorizeData",
-    "QQC2CMessage",
-    "QQC2CStatus",
-    "QQChannelEvent",
-    "QQConnection",
-    "QQDispatch",
-    "QQFriendAdd",
-    "QQFriendDelete",
-    "QQGateway",
-    "QQGatewayFatalError",
-    "QQGatewayPayload",
-    "QQGroupJoinRequest",
-    "QQGroupMember",
-    "QQGroupMessage",
-    "QQGroupStatus",
-    "QQGuildEvent",
-    "QQIdentify",
-    "QQIdentifyData",
-    "QQIntent",
-    "QQInteraction",
-    "QQLegacyChannelMessage",
-    "QQMessageElement",
-    "QQMessageScene",
-    "QQOpcode",
-    "QQReadyData",
-    "QQResume",
-    "QQResumeData",
-    "QQSubscribeMessageStatus",
-    "QQUser",
-]

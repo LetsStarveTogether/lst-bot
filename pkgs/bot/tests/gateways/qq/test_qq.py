@@ -757,7 +757,21 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
             ],
             "next_cursor": "next",
         },
-        {"strategies": []},
+        {
+            "strategies": [
+                {
+                    "strategy_id": "strategy",
+                    "group_openids": [],
+                    "group_ids": ["10****499"],
+                    "whitelist_user_count": 0,
+                    "is_enable": "on",
+                    "expire_at": "2027-08-05T15:30:16+08:00",
+                    "created_at": "2026-08-05T15:30:16+08:00",
+                    "updated_at": "2026-08-05T15:45:28+08:00",
+                }
+            ],
+            "next_cursor": "",
+        },
         {"strategies": []},
     )
     client = _client(pool)
@@ -780,6 +794,7 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
     assert isinstance(requests, QQJoinRequestList)
     assert requests.list[0].member_openid == "member"
     assert isinstance(strategies, QQStrategyList)
+    assert strategies.strategies[0].group_ids == ["10****499"]
     assert isinstance(empty_strategy_page, QQStrategyList)
     assert [request[:2] for request in pool.requests[1:]] == [
         (
@@ -1232,7 +1247,6 @@ def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
                 "input_mode": "replace",
                 "content_type": "markdown",
                 "content_raw": "stream",
-                "event_id": "event",
                 "msg_id": "message",
                 "msg_seq": 0,
                 **stream,
