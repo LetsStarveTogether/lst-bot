@@ -5,7 +5,6 @@ Description=Podman container for napcat
 AutoUpdate=registry
 ContainerName=napcat
 Image=docker.io/mlikiowa/napcat-docker
-# PodmanArgs=--mac-address=
 PublishPort=127.0.0.1:6099:6099
 Volume=/srv/napcat/config:/app/napcat/config
 Volume=/srv/napcat/ntqq:/app/.config/QQ

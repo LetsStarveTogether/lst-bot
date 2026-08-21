@@ -21,8 +21,7 @@ test: tc
     uv run pytest
 
 check:
-    uv lock --check
-    uv run ruff format --check
+    uv run --locked ruff format --check
     uv run ruff check
     uv run ty check
 

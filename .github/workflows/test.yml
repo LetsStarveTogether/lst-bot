@@ -6,7 +6,6 @@ on:
     branches:
       - dev
       - main
-  workflow_call:
 
 permissions: {}
 
@@ -29,8 +28,7 @@ jobs:
 
       - name: Run checks
         run: |
-          uv lock --check
-          uv run ruff format --check
+          uv run --locked ruff format --check
           uv run ruff check
           uv run ty check
           uv build --all-packages --no-create-gitignore --no-sources
