@@ -590,12 +590,11 @@ class Bot(EventRouter):
         effects: list[DispatchEffect] = []
         exception: BaseException | None = None
         try:
-            for handler in route.handlers:
-                self._log_handler_run(context, route, handler)
-                value = await call_with_injection(handler, context, resolver)
-                if value is not None:
-                    values.append(value)
-                    await self._execute_return_value(context, value, effects)
+            self._log_handler_run(context, route, route.handler)
+            value = await call_with_injection(route.handler, context, resolver)
+            if value is not None:
+                values.append(value)
+                await self._execute_return_value(context, value, effects)
         except Exception as exc:
             exception = exc
             self._log_dispatch_exception(context, route, exc)

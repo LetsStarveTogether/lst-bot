@@ -36,19 +36,34 @@ class EventRouter:
         name: str | None = None,
         dependencies: Iterable[Callable] = (),
     ) -> Callable:
-        return self._register(
-            event_type=event_type,
-            rule=rule if isinstance(rule, Rule) else Rule(rule or (lambda: True)),
-            permission=(
-                permission
-                if isinstance(permission, Permission)
-                else Permission(permission or (lambda: True))
-            ),
-            priority=priority,
-            block=block,
-            name=name,
-            dependencies=list(dependencies),
+        route_rule = rule if isinstance(rule, Rule) else Rule(rule or (lambda: True))
+        route_permission = (
+            permission
+            if isinstance(permission, Permission)
+            else Permission(permission or (lambda: True))
         )
+        route_dependencies = list(dependencies)
+
+        def decorator(handler: Callable) -> Callable:
+            route_name = name or getattr(handler, "__name__", "handler")
+            if self.name:
+                route_name = f"{self.name}.{route_name}"
+            self.routes.append(
+                EventRoute(
+                    event_type=event_type,
+                    rule=route_rule,
+                    permission=route_permission,
+                    priority=priority,
+                    block=block,
+                    handler=handler,
+                    name=route_name,
+                    dependencies=[*self.dependencies, *route_dependencies],
+                ),
+            )
+            self.routes.sort(key=ROUTE_PRIORITY_KEY)
+            return handler
+
+        return decorator
 
     def on_msg(
         self,
@@ -110,35 +125,3 @@ class EventRouter:
     def add_router(self, router: EventRouter) -> None:
         self.routes.extend(router.routes)
         self.routes.sort(key=ROUTE_PRIORITY_KEY)
-
-    def _register(
-        self,
-        *,
-        event_type: EventKind | None,
-        rule: Rule,
-        permission: Permission,
-        priority: int,
-        block: bool,
-        name: str | None,
-        dependencies: list[Callable],
-    ) -> Callable:
-        def decorator(handler: Callable) -> Callable:
-            route_name = name or getattr(handler, "__name__", "handler")
-            if self.name:
-                route_name = f"{self.name}.{route_name}"
-            self.routes.append(
-                EventRoute(
-                    event_type=event_type,
-                    rule=rule,
-                    permission=permission,
-                    priority=priority,
-                    block=block,
-                    handlers=[handler],
-                    name=route_name,
-                    dependencies=[*self.dependencies, *dependencies],
-                ),
-            )
-            self.routes.sort(key=ROUTE_PRIORITY_KEY)
-            return handler
-
-        return decorator

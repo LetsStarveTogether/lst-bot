@@ -18,7 +18,7 @@ class EventRoute:
     permission: Permission
     priority: int
     block: bool
-    handlers: list[Callable]
+    handler: Callable
     name: str
     dependencies: list[Callable] = field(default_factory=list)
 
