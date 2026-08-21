@@ -8,7 +8,7 @@ from bot.gateways.discord import DiscordGateway
 from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAction
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 from klei import KleiClient
 from lst import LstClient
 from pydantic_ai import Agent

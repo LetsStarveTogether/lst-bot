@@ -10,14 +10,15 @@ from bot.gateways.discord import DiscordGateway
 from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
-from httpx import AsyncClient
+from httpx import AsyncClient as MCPHttpClient
+from httpx2 import AsyncClient
 from klei import KleiClient
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from urllib3_future import AsyncPoolManager
 
-from lst_bot.agent import mcp_http_client
+from lst_bot.agent import REQUEST_TIMEOUT, build_question_agent
 from lst_bot.main import build_bot, main, run
 from lst_bot.settings import Settings
 
@@ -41,10 +42,24 @@ async def test_run_closes_model_client_when_agent_build_fails(
     assert clients[0].is_closed
 
 
-async def test_mcp_client_refuses_redirects_that_could_leak_api_key() -> None:
-    async with mcp_http_client(None, follow_redirects=True) as client:
-        assert client.follow_redirects is False
-        assert client.trust_env is False
+async def test_mcp_client_uses_hardened_http_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_client = Mock(return_value=Mock(spec=MCPHttpClient))
+    monkeypatch.setattr("lst_bot.agent.MCPHttpClient", create_client)
+    async with AsyncClient(trust_env=False) as model_client:
+        build_question_agent(
+            Settings(_env_file=None, http_proxy=""),
+            http_client=model_client,
+        )
+
+    create_client.assert_called_once_with(
+        headers={"X-Dosu-API-Key": "test"},
+        proxy=None,
+        timeout=REQUEST_TIMEOUT,
+        trust_env=False,
+        follow_redirects=False,
+    )
 
 
 def test_main_never_lowers_dependency_log_level(

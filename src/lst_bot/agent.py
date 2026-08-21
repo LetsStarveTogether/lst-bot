@@ -1,8 +1,5 @@
-from functools import partial
-from typing import Any
-
-from fastmcp.client.transports import StreamableHttpTransport
-from httpx import AsyncClient
+from httpx import AsyncClient as MCPHttpClient
+from httpx2 import AsyncClient
 from pydantic_ai import Agent, WebSearchTool
 from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.mcp import MCPToolset
@@ -51,11 +48,6 @@ DST_AGENT_INSTRUCTIONS = """\
 """
 
 
-def mcp_http_client(configured_proxy: str | None, **kwargs: Any) -> AsyncClient:
-    kwargs.update(proxy=configured_proxy, trust_env=False, follow_redirects=False)
-    return AsyncClient(**kwargs)
-
-
 def build_question_agent(
     settings: Settings,
     *,
@@ -73,12 +65,15 @@ def build_question_agent(
         instructions=DST_AGENT_INSTRUCTIONS,
         toolsets=[
             MCPToolset(
-                StreamableHttpTransport(
-                    settings.dosu_mcp_endpoint,
+                settings.dosu_mcp_endpoint,
+                http_client=MCPHttpClient(
                     headers={
                         "X-Dosu-API-Key": settings.dosu_api_key.get_secret_value()
                     },
-                    httpx_client_factory=partial(mcp_http_client, proxy),  # ty: ignore[invalid-argument-type]
+                    proxy=proxy,
+                    timeout=REQUEST_TIMEOUT,
+                    trust_env=False,
+                    follow_redirects=False,
                 ),
                 init_timeout=REQUEST_TIMEOUT,
                 read_timeout=REQUEST_TIMEOUT,
