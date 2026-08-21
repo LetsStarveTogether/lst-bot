@@ -1276,18 +1276,11 @@ async def test_websocket_hello_timeout_is_bounded(
     assert stalled.closed.is_set()
 
 
-@pytest.mark.parametrize(
-    ("resumable", "reset_session"),
-    [(True, False), (False, True)],
-    ids=["resume", "identify"],
-)
-async def test_websocket_invalid_session_selects_authentication_mode(
-    resumable: bool,
-    reset_session: bool,
-) -> None:
+@pytest.mark.parametrize("data", [True, False])
+async def test_websocket_invalid_session_clears_resume_state(data: bool) -> None:
     websocket = ScriptedWebSocket(
         {"op": 10, "d": {"heartbeat_interval": 60_000}},
-        {"op": 9, "d": resumable},
+        {"op": 9, "d": data},
     )
 
     async with timeout(1):
@@ -1297,7 +1290,7 @@ async def test_websocket_invalid_session_selects_authentication_mode(
                 "token",
             )
 
-    assert vars(caught.value)["reset_session"] is reset_session
+    assert vars(caught.value)["reset_session"] is True
     assert websocket.closed.is_set()
 
 

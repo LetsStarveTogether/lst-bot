@@ -795,10 +795,7 @@ class QQGateway(Gateway, QQRestClient):
                 raise _ReconnectError(msg)
             if payload.op is QQOpcode.INVALID_SESSION:
                 msg = "QQ Gateway session is invalid"
-                raise _ReconnectError(
-                    msg,
-                    reset_session=payload.d is not True,
-                )
+                raise _ReconnectError(msg, reset_session=True)
             if payload.op is QQOpcode.DISPATCH:
                 await self._receive_dispatch(payload)
                 continue

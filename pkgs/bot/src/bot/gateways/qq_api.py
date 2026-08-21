@@ -2157,7 +2157,9 @@ class QQRestClient:
                 response_payload,
                 qq_action,
             )
-        if response.status == HTTPStatus.NO_CONTENT:
+        if response.status == HTTPStatus.NO_CONTENT or (
+            response_payload is None and route.response is QQNoContent
+        ):
             return QQNoContent()
         try:
             return route.response.model_validate(response_payload)

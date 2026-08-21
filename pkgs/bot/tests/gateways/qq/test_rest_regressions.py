@@ -181,7 +181,8 @@ def test_rest_request_models_follow_current_qq_contract() -> None:
 async def test_rest_preserves_callback_header_and_empty_body() -> None:
     pool = Pool(
         response(200, {"access_token": "token", "expires_in": 7200}),
-        response(200, {}),
+        response(200, body=b""),
+        response(200, body=b""),
         response(200, {"url_link": "https://qq.example/share"}),
     )
     rest = client(pool)
@@ -190,9 +191,15 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
         QQAction.ACK_INTERACTION,
         interaction_id="interaction",
     )
+    recalled = await rest.request_qq(
+        QQAction.RECALL_GROUP_MESSAGE,
+        group_openid="group",
+        message_id="message",
+    )
     await rest.request_qq(QQAction.GENERATE_SHARE_LINK)
 
     assert isinstance(result, QQNoContent)
+    assert isinstance(recalled, QQNoContent)
     assert pool.requests[1][0:2] == (
         HTTPMethod.PUT,
         "https://qq.example/interactions/interaction",
@@ -200,7 +207,11 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
     headers = cast(dict[str, str], pool.requests[1][2]["headers"])
     assert headers["X-Callback-AppID"] == "app"
     assert pool.requests[1][2]["json"] == {"code": 0}
-    assert pool.requests[2][2]["json"] == {}
+    assert pool.requests[2][0:2] == (
+        HTTPMethod.DELETE,
+        "https://qq.example/v2/groups/group/messages/message",
+    )
+    assert pool.requests[3][2]["json"] == {}
 
 
 async def test_file_upload_supports_chunk_completion() -> None:
