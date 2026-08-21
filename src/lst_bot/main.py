@@ -1,3 +1,4 @@
+import logging
 from asyncio import Event as AsyncEvent
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from functools import partial
@@ -12,6 +13,8 @@ from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAc
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
 from klei import KleiClient
+from logbook.compat import redirected_logging
+from logbook.more import ColorizedStderrHandler
 from lst import LstClient
 from urllib3_future import AsyncProxyManager
 
@@ -20,7 +23,7 @@ from .general import report
 from .general import router as general_router
 from .question import router as question_router
 from .rooms import router as rooms_router
-from .settings import Settings, configure_logging
+from .settings import Settings
 
 
 class Application:
@@ -107,7 +110,9 @@ def build_application(settings: Settings) -> Application:
                 intents=DiscordIntent(settings.discord_intents),
                 http_pool=http_pool,
                 websocket_connector=partial(
-                    connect_websocket, proxy=settings.http_proxy
+                    connect_websocket,
+                    proxy=settings.http_proxy,
+                    max_size=None,
                 ),
             )
         )
@@ -145,7 +150,12 @@ def build_application(settings: Settings) -> Application:
 
 def main() -> None:
     settings = Settings()
-    with configure_logging(settings):
+    for name in ("httpcore", "urllib3_future", "websockets", "mcp"):
+        logging.getLogger(name).setLevel(logging.INFO)
+    with (
+        redirected_logging(),
+        ColorizedStderrHandler(level=settings.log_level).applicationbound(),
+    ):
         uvloop.run(build_application(settings).run())
 
 

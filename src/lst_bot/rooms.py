@@ -116,7 +116,7 @@ def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
         room_ids = parse_room_ids(room_ids_text)
         days = int(days_text)
     except ValueError:
-        return f"用法：{cmd.raw} 1,2,4-6"
+        return f"用法：{cmd.raw} 1,2,4-6 2"
 
     lc.rollback_rooms(room_ids, days)
     return f"已回档 {days} 天 {room_ids}"

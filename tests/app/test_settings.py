@@ -18,9 +18,10 @@ def test_log_level_accepts_names_and_numbers() -> None:
     assert default.log_level == TRACE
 
 
-def test_log_level_rejects_unknown_value() -> None:
+@pytest.mark.parametrize("value", ["verbose", True, 1.5, []])
+def test_log_level_rejects_invalid_value(value: object) -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, log_level="verbose")
+        Settings(_env_file=None, log_level=value)
 
 
 @pytest.mark.parametrize(

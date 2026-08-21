@@ -1,13 +1,8 @@
-import logging
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from logbook import DEBUG, NOTSET, TRACE, lookup_level
-from logbook.compat import redirected_logging
-from logbook.more import ColorizedStderrHandler
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, StrictInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +14,7 @@ class Settings(BaseSettings):
     bot_timeout: timedelta | None = timedelta(seconds=900)
     bot_timezone: ZoneInfo | None = None
 
-    log_level: int = NOTSET
+    log_level: StrictInt = NOTSET
     http_proxy: str = "http://127.0.0.1:1080"
 
     onebot_self_id: str = ""
@@ -45,9 +40,11 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         return self
 
-    @field_validator("log_level", mode="plain")
+    @field_validator("log_level", mode="before")
     @classmethod
-    def validate_log_level(cls, value: int | str) -> int:
+    def validate_log_level(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, int | str):
+            return value
         try:
             level = lookup_level(value.upper() if isinstance(value, str) else value)
         except LookupError:
@@ -57,24 +54,3 @@ class Settings(BaseSettings):
             level = TRACE if __debug__ else DEBUG
 
         return level
-
-
-@contextmanager
-def configure_logging(settings: Settings) -> Iterator[None]:
-    library_loggers = tuple(
-        logging.getLogger(name)
-        for name in ("httpcore", "urllib3_future", "websockets", "mcp")
-    )
-    library_levels = tuple(logger.level for logger in library_loggers)
-
-    with (
-        redirected_logging(),
-        ColorizedStderrHandler(level=settings.log_level).applicationbound(),
-    ):
-        for logger in library_loggers:
-            logger.setLevel(logging.INFO)
-        try:
-            yield
-        finally:
-            for logger, level in zip(library_loggers, library_levels, strict=True):
-                logger.setLevel(level)
