@@ -7,28 +7,11 @@ from bot.gateways.discord import (
     DiscordRestClient,
 )
 from pydantic import JsonValue
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future import AsyncPoolManager
+
+from tests.gateways.support import Pool
 
 CREDENTIAL = "token"
-
-
-class Pool:
-    def __init__(self, *responses: AsyncHTTPResponse) -> None:
-        self.responses = list(responses)
-        self.requests: list[tuple[str, str, dict[str, object]]] = []
-        self.cleared = False
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs: object,
-    ) -> AsyncHTTPResponse:
-        self.requests.append((method, url, kwargs))
-        return self.responses.pop(0)
-
-    async def clear(self) -> None:
-        self.cleared = True
 
 
 def client(pool: Pool) -> DiscordRestClient:

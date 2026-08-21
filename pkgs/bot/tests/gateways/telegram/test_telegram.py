@@ -36,27 +36,10 @@ from diwire import Injected
 from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
-from tests.gateways.support import response
+from tests.gateways.support import Pool, response
 
 CREDENTIAL = "opaque-token"
 SUPERGROUP_ID = -1_000_000_000_001
-
-
-class Pool:
-    def __init__(self, *payloads: JsonValue) -> None:
-        self.responses: list[AsyncHTTPResponse] = [
-            response(200, payload) for payload in payloads
-        ]
-        self.requests: list[tuple[str, str, dict[str, object]]] = []
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs: object,
-    ) -> AsyncHTTPResponse:
-        self.requests.append((method, url, kwargs))
-        return self.responses.pop(0)
 
 
 class StreamResponse:

@@ -30,6 +30,28 @@ def response(
     )
 
 
+class Pool:
+    def __init__(self, *items: JsonValue | AsyncHTTPResponse) -> None:
+        self.responses = [
+            item if isinstance(item, AsyncHTTPResponse) else response(200, item)
+            for item in items
+        ]
+        self.requests: list[tuple[str, str, dict[str, object]]] = []
+        self.cleared = False
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        **kwargs: object,
+    ) -> AsyncHTTPResponse:
+        self.requests.append((method, url, kwargs))
+        return self.responses.pop(0)
+
+    async def clear(self) -> None:
+        self.cleared = True
+
+
 @dataclass(frozen=True, slots=True)
 class RecordedRequest:
     path: str

@@ -58,6 +58,8 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 
+from tests.gateways.support import response as _response
+
 from .support import (
     CREDENTIAL,
 )
@@ -69,9 +71,6 @@ from .support import (
 )
 from .support import (
     gateway as _gateway,
-)
-from .support import (
-    response as _response,
 )
 
 

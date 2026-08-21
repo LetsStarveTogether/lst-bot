@@ -25,7 +25,9 @@ from bot.json import dumpb
 from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
-from .support import Pool, client, response
+from tests.gateways.support import response
+
+from .support import Pool, client
 
 
 class GatedResponse:

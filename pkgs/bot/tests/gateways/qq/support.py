@@ -4,28 +4,11 @@ from bot import Bot
 from bot.gateways.base import WebSocketConnector
 from bot.gateways.qq import QQGateway
 from bot.gateways.qq_api import QQRestClient
-from pydantic import JsonValue
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future import AsyncPoolManager
 
-from tests.gateways.support import response
+from tests.gateways.support import Pool
 
 CREDENTIAL = "secret"
-
-
-class Pool:
-    def __init__(self, *responses: JsonValue | AsyncHTTPResponse) -> None:
-        self.responses = list(responses)
-        self.requests: list[tuple[str, str, dict[str, object]]] = []
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs: object,
-    ) -> AsyncHTTPResponse:
-        self.requests.append((method, url, kwargs))
-        item = self.responses.pop(0)
-        return item if isinstance(item, AsyncHTTPResponse) else response(200, item)
 
 
 def client(pool: object) -> QQRestClient:
