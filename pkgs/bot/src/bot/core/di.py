@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -28,12 +27,6 @@ inject = resolver_context.inject(
     dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
     auto_open_scope=False,
 )
-
-
-@asynccontextmanager
-async def request_scope(container: Container) -> AsyncIterator[ResolverProtocol]:
-    async with container.compile().enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
-        yield resolver
 
 
 @dataclass(slots=True)
@@ -102,14 +95,12 @@ def register_context_providers(
         _connection_from_context,
         provides=Connection,
         scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
     )
     for event_type in _event_types(Event):
         container.add_factory(
             bind_event_provider(event_type),
             provides=event_type,
             scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
         )
 
 

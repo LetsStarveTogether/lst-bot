@@ -11,11 +11,12 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
+from diwire import Scope
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
 
-from .di import InjectionContext, call_with_injection, inject, request_scope
+from .di import InjectionContext, call_with_injection, inject
 
 if TYPE_CHECKING:
     from .bot import Bot
@@ -135,7 +136,7 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
-        async with request_scope(self.bot.container) as resolver:
+        async with self.bot.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
             context = InjectionContext(
                 bot=self.bot,
                 gateway=gateway,

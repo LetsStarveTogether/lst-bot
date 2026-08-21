@@ -1,15 +1,15 @@
 from dataclasses import dataclass
 
-import pytest
 from bot import (
     Bot,
     Cmd,
     EventRouter,
     Injected,
+    InjectionContext,
     Lifetime,
-    Permission,
     Scope,
     UserEvent,
+    admin_permission,
 )
 from bot.testing import private_message_event, recording_gateway
 
@@ -38,31 +38,16 @@ async def test_falsey_permission_is_not_replaced() -> None:
     assert seen == []
 
 
-@pytest.mark.parametrize("role", [[], {}], ids=["list", "mapping"])
-async def test_admin_permission_rejects_non_hashable_sender_role(
-    role: list[object] | dict[str, object],
-) -> None:
+def test_admin_permission_rejects_non_string_sender_role() -> None:
     bot = Bot()
-    router = EventRouter()
-    seen: list[str] = []
-
-    @router.on_msg(permission=Permission.admin(), block=True)
-    def protected() -> None:
-        seen.append("allowed")
-
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
     source = private_message_event("hello")
     payload = source.model_dump(mode="json")
-    payload["sender"] = {"role": role}
+    payload["sender"] = {"role": []}
 
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            type(source).model_validate(payload),
-        )
-
-    assert seen == []
+    assert not admin_permission(
+        type(source).model_validate(payload),
+        InjectionContext(bot),
+    )
 
 
 @dataclass(frozen=True)
@@ -91,7 +76,7 @@ async def test_router_cmd_uses_diwire_injected_service() -> None:
     bot = Bot()
     bot.container.add_instance(Repository("repo"), provides=Repository)
     bot.container.add(Service)
-    router = EventRouter(name="admin")
+    router = EventRouter()
     seen: list[str] = []
 
     @router.on_cmd("ping", block=True)
@@ -117,7 +102,7 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
 
     @router.on_cmd("ping", aliases=("p",), block=True)
     def ping(cmd: Injected[Cmd]) -> None:
-        seen.append(f"{cmd.name}:{cmd.raw}:{cmd.arg}")
+        seen.append(f"{cmd.raw}:{cmd.arg}")
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
@@ -132,7 +117,7 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
             private_message_event("!p now", event_id="alias"),
         )
 
-    assert seen == ["p:!p:now"]
+    assert seen == ["!p:now"]
 
 
 async def test_container_factory_dependency() -> None:

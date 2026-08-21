@@ -14,10 +14,10 @@ from bot import (
     GroupMessageEvent,
     Injected,
     Msg,
-    Permission,
     PrivateMessageEvent,
     Retcode,
     ReturnAction,
+    admin_permission,
 )
 from bot.testing import private_message_event as make_event
 from bot.testing import recording_gateway
@@ -98,7 +98,7 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
     bot.container.add_instance(Greeter(), provides=Greeter)
     gateway = recording_gateway(bot)
 
-    @bot.on_cmd("ping", permission=Permission.admin(), block=True)
+    @bot.on_cmd("ping", permission=admin_permission, block=True)
     async def handle(
         connection: Injected[Connection],
         cmd: Injected[Cmd],
@@ -129,7 +129,7 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    @bot.on_cmd("secure", permission=Permission.admin(), block=True)
+    @bot.on_cmd("secure", permission=admin_permission, block=True)
     def secure(cmd: Injected[Cmd]) -> None:
         seen.append(cmd.arg)
 
@@ -165,7 +165,7 @@ async def test_admin_permission_namespaces_user_ids_by_platform() -> None:
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    @bot.on_cmd("secure", permission=Permission.admin(), block=True)
+    @bot.on_cmd("secure", permission=admin_permission, block=True)
     def secure() -> None:
         seen.append("matched")
 

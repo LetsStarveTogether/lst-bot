@@ -1,6 +1,5 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from inspect import isawaitable
 
 from diwire import Injected, ResolverProtocol
 
@@ -33,27 +32,17 @@ class Rule:
         resolver: ResolverProtocol,
     ) -> bool:
         if self.raw:
-            value = self.checker(context, resolver)
-            if isawaitable(value):
-                return bool(await value)
-            return bool(value)
+            return bool(await self.checker(context, resolver))
         return bool(await call_with_injection(self.checker, context, resolver))
 
 
-class Permission(Rule):
-    __slots__ = ()
+def admin_permission(
+    event: Injected[UserEvent],
+    context: Injected[InjectionContext],
+) -> bool:
+    if event.user_id in context.bot.admin_ids.get(event.self_.platform, ()):
+        return True
 
-    @classmethod
-    def admin(cls) -> Permission:
-        def check(
-            event: Injected[UserEvent],
-            context: Injected[InjectionContext],
-        ) -> bool:
-            if event.user_id in context.bot.admin_ids.get(event.self_.platform, ()):
-                return True
-
-            sender = (event.model_extra or {}).get("sender")
-            role = sender.get("role") if isinstance(sender, Mapping) else None
-            return isinstance(role, str) and role in {"admin", "owner"}
-
-        return cls(check)
+    sender = (event.model_extra or {}).get("sender")
+    role = sender.get("role") if isinstance(sender, Mapping) else None
+    return isinstance(role, str) and role in {"admin", "owner"}

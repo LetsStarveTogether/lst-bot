@@ -122,7 +122,7 @@ def test_room_commands_dispatch_to_lst(
     expected_reply: str,
 ) -> None:
     client = Mock(spec_set=LstClient)
-    reply = handler(Cmd(name="", raw="", arg=arg), client)
+    reply = handler(Cmd(raw="", arg=arg), client)
 
     method = getattr(client, method_name)
     method.assert_called_once_with(*expected_args)
@@ -132,7 +132,7 @@ def test_room_commands_dispatch_to_lst(
 def test_restart_room_hides_internal_error() -> None:
     client = Mock(spec_set=LstClient)
     client.restart_rooms.side_effect = RuntimeError("internal details")
-    assert restart_room(Cmd(name="", raw="", arg="1"), client) == "重启失败：[1]"
+    assert restart_room(Cmd(raw="", arg="1"), client) == "重启失败：[1]"
 
 
 async def test_room_admin_command_rejects_non_admin() -> None:

@@ -28,6 +28,7 @@ from diwire import (
     DependencyRegistrationPolicy,
     MissingPolicy,
     ResolverProtocol,
+    Scope,
 )
 
 from bot.gateways import Connection, Gateway
@@ -42,7 +43,6 @@ from .di import (
     InjectionContext,
     call_with_injection,
     register_context_providers,
-    request_scope,
 )
 from .scheduler import (
     CURRENT_SCHEDULER_BOT,
@@ -453,7 +453,7 @@ class Bot(EventRouter):
             active_gateway or "-",
         )
 
-        async with request_scope(self.container) as resolver:
+        async with self.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
             for route in self.routes:
                 if route.event_type is not None and route.event_type != event.type:
                     continue
@@ -466,7 +466,7 @@ class Bot(EventRouter):
                 try:
                     if not await self._before_deadline(
                         deadline,
-                        partial(route.check, context, resolver),
+                        partial(route.rule, context, resolver),
                     ):
                         continue
                     await self._before_deadline(

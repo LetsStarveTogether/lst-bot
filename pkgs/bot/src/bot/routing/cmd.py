@@ -1,7 +1,7 @@
-from bot.protocol.base import Model
+from dataclasses import dataclass
 
 
-class Cmd(Model):
-    name: str
+@dataclass(frozen=True, slots=True)
+class Cmd:
     raw: str
     arg: str

@@ -9,18 +9,13 @@ from bot.protocol.events import MessageEvent
 
 from .cmd import Cmd
 from .route import EventRoute
-from .rule import Permission, Rule
+from .rule import Rule
 
 ROUTE_PRIORITY_KEY = attrgetter("priority")
 
 
 class EventRouter:
-    def __init__(
-        self,
-        *,
-        name: str | None = None,
-    ) -> None:
-        self.name = name
+    def __init__(self) -> None:
         self.routes: list[EventRoute] = []
 
     def on_event(
@@ -28,7 +23,7 @@ class EventRouter:
         event_type: EventKind | None = None,
         *,
         rule: Rule | Callable | None = None,
-        permission: Permission | Callable | None = None,
+        permission: Rule | Callable | None = None,
         priority: int = 1,
         block: bool = False,
         name: str | None = None,
@@ -38,21 +33,15 @@ class EventRouter:
             if isinstance(rule, Rule)
             else Rule((lambda: True) if rule is None else rule)
         )
-        route_permission = (
-            permission
-            if isinstance(permission, Permission)
-            else Permission((lambda: True) if permission is None else permission)
-        )
+        if permission is not None:
+            route_rule &= permission
 
         def decorator(handler: Callable) -> Callable:
             route_name = name or getattr(handler, "__name__", "handler")
-            if self.name:
-                route_name = f"{self.name}.{route_name}"
             self.routes.append(
                 EventRoute(
                     event_type=event_type,
                     rule=route_rule,
-                    permission=route_permission,
                     priority=priority,
                     block=block,
                     handler=handler,
@@ -68,7 +57,7 @@ class EventRouter:
         self,
         *,
         rule: Rule | Callable | None = None,
-        permission: Permission | Callable | None = None,
+        permission: Rule | Callable | None = None,
         priority: int = 1,
         block: bool = False,
         name: str | None = None,
@@ -88,7 +77,7 @@ class EventRouter:
         *,
         aliases: Iterable[str] = (),
         rule: Rule | Callable | None = None,
-        permission: Permission | Callable | None = None,
+        permission: Rule | Callable | None = None,
         priority: int = 1,
         block: bool = True,
         name: str | None = None,
@@ -105,7 +94,7 @@ class EventRouter:
                     token = f"{prefix}{item}"
                     if text == token or text.startswith(f"{token} "):
                         arg = text[len(token) :].strip()
-                        context.cmd = Cmd(name=item, raw=token, arg=arg)
+                        context.cmd = Cmd(raw=token, arg=arg)
                         return True
             return False
 

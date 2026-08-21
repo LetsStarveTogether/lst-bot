@@ -61,8 +61,8 @@ from .routing import (
     Cmd,
     EventRoute,
     EventRouter,
-    Permission,
     Rule,
+    admin_permission,
 )
 
 __all__ = [
@@ -117,7 +117,6 @@ __all__ = [
     "MsgSegmentType",
     "MsgTargetTag",
     "NoticeEvent",
-    "Permission",
     "PrivateMessageDeleteNoticeEvent",
     "PrivateMessageEvent",
     "RequestEvent",
@@ -130,4 +129,5 @@ __all__ = [
     "UploadFileTag",
     "UserEvent",
     "Version",
+    "admin_permission",
 ]

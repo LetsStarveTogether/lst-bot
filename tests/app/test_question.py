@@ -77,7 +77,7 @@ async def test_question_handler_replies_with_agent_output() -> None:
     event = private_message_event("/问 巨鹿什么时候来？")
 
     reply = await ask_dst_question(
-        Cmd(name="问", raw="/问", arg="巨鹿什么时候来？"),
+        Cmd(raw="/问", arg="巨鹿什么时候来？"),
         event,
         gateway.connection,
         Agent(TestModel(custom_output_text="答案")),

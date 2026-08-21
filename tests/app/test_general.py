@@ -64,7 +64,7 @@ async def test_search_player_filters_active_rooms() -> None:
         room_data(row_id="3", name="Beta", players="WX-78"),
     ]
     reply = await search_player(
-        Cmd(name="搜索玩家", raw="/搜索玩家", arg="Wendy"),
+        Cmd(raw="/搜索玩家", arg="Wendy"),
         client,
     )
 
