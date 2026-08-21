@@ -43,23 +43,10 @@ def _write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
         temp_path = Path(temp.name)
     try:
         with closing(sqlite3.connect(temp_path)) as db, db:
-            db.executescript(
-                "CREATE TABLE sentence ("
-                "id INTEGER PRIMARY KEY,"
-                "uuid TEXT NOT NULL UNIQUE,"
-                "payload TEXT NOT NULL"
-                ");",
-            )
+            db.execute("CREATE TABLE sentence (payload TEXT NOT NULL)")
             db.executemany(
-                "INSERT INTO sentence (id, uuid, payload) VALUES (?, ?, ?)",
-                (
-                    (
-                        item.id,
-                        str(item.uuid),
-                        item.model_dump_json(by_alias=True),
-                    )
-                    for item in sentences
-                ),
+                "INSERT INTO sentence (payload) VALUES (?)",
+                ((item.model_dump_json(by_alias=True),) for item in sentences),
             )
         temp_path.replace(cache_path)
     finally:
@@ -73,7 +60,8 @@ async def write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
 def _read_cached_hitokoto(cache_path: Path) -> Hitokoto:
     with closing(_open_read_only(cache_path)) as db:
         row = db.execute(
-            "SELECT payload FROM sentence ORDER BY RANDOM() LIMIT 1"
+            "SELECT payload FROM sentence LIMIT 1 OFFSET "
+            "abs(random()) % max((SELECT count(*) FROM sentence), 1)"
         ).fetchone()
     if row is None:
         msg = "hitokoto cache has no matching sentences"

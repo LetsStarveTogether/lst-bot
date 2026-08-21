@@ -23,12 +23,12 @@ def version(number: int, version_type: VersionType) -> Version:
     )
 
 
-async def test_hitokoto_uses_cached_client() -> None:
+async def test_hitokoto_uses_client() -> None:
     client = Mock(spec_set=HitokotoClient)
     client.get_hitokoto.return_value = "今日一言"
 
     assert await hitokoto(client) == "今日一言"
-    client.get_hitokoto.assert_awaited_once_with(use_cache=True)
+    client.get_hitokoto.assert_awaited_once_with()
 
 
 async def test_versions_selects_latest_available_channels() -> None:

@@ -12,7 +12,7 @@ router = EventRouter()
 
 @router.on_cmd("一言")
 async def hitokoto(hc: Injected[HitokotoClient]) -> str:
-    return str(await hc.get_hitokoto(use_cache=True))
+    return str(await hc.get_hitokoto())
 
 
 @router.on_cmd("最新版本")
@@ -41,7 +41,7 @@ async def report(
     conn: Injected[Connection],
     settings: Injected[Settings],
 ) -> None:
-    hitokoto = str(await hc.get_hitokoto(use_cache=True))
+    hitokoto = str(await hc.get_hitokoto())
     rooms = await get_host_rooms(
         kc,
         settings.klei_host_id,

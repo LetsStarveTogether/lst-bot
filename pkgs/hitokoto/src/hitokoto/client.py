@@ -4,7 +4,6 @@ from logging import getLogger
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
-from weakref import WeakValueDictionary
 
 from pydantic import AnyUrl, BaseModel, Field, TypeAdapter, UrlConstraints
 from urllib3_future import AsyncPoolManager
@@ -21,7 +20,6 @@ _HITOKOTO_BUNDLE = TypeAdapter(
 _HTTPS_URL = TypeAdapter(
     Annotated[AnyUrl, UrlConstraints(allowed_schemes=["https"], host_required=True)]
 )
-_CACHE_LOCKS: WeakValueDictionary[Path, Lock] = WeakValueDictionary()
 logger = getLogger(__name__)
 
 
@@ -38,44 +36,51 @@ class HitokotoClient:
     def __init__(
         self,
         *,
-        url: str = "https://v1.hitokoto.cn/",
         bundle_url: str = "https://sentences-bundle.hitokoto.cn/",
         http_pool: AsyncPoolManager,
         cache_path: str | Path = Path(".cache/hitokoto.db"),
     ) -> None:
-        self.url = str(_HTTPS_URL.validate_python(url))
-        self.bundle_url = str(_HTTPS_URL.validate_python(bundle_url))
+        parsed_url = urlsplit(str(_HTTPS_URL.validate_python(bundle_url)))
+        self.bundle_url = parsed_url._replace(
+            path=f"{parsed_url.path.rstrip('/')}/",
+            query="",
+            fragment="",
+        ).geturl()
         self.http_pool = http_pool
         self.cache_path = Path(cache_path)
-        self._cache_lock = _CACHE_LOCKS.setdefault(self.cache_path.resolve(), Lock())
+        self._cache_lock = Lock()
 
-    async def get_hitokoto(
-        self,
-        *,
-        use_cache: bool = False,
-    ) -> Hitokoto:
-        if use_cache:
-            await self.ensure_cache()
-            return await read_cached_hitokoto(self.cache_path)
+    async def get_hitokoto(self) -> Hitokoto:
+        try:
+            await self._ensure_cache()
+        except Exception as error:
+            try:
+                hitokoto = await read_cached_hitokoto(self.cache_path)
+            except Exception:
+                raise error from None
+            logger.warning(
+                "use stale Hitokoto cache after refresh failure: %s",
+                self.cache_path,
+                exc_info=True,
+            )
+            return hitokoto
+        return await read_cached_hitokoto(self.cache_path)
 
-        return Hitokoto.model_validate_json(await self._get(self.url))
-
-    async def ensure_cache(self) -> None:
+    async def _ensure_cache(self) -> None:
         if await is_cache_valid(self.cache_path):
             return
         async with self._cache_lock:
             if await is_cache_valid(self.cache_path):
                 return
             logger.info("refresh Hitokoto cache: %s", self.cache_path)
-            base_url = _bundle_base_url(self.bundle_url)
             version = _BundleVersion.model_validate_json(
-                await self._get(f"{base_url}version.json"),
+                await self._get(f"{self.bundle_url}version.json"),
             )
             async with TaskGroup() as group:
                 tasks = [
                     group.create_task(
                         self._get(
-                            f"{base_url}{item.path.removeprefix('./').lstrip('/')}",
+                            f"{self.bundle_url}{item.path.removeprefix('./').lstrip('/')}",
                         ),
                     )
                     for item in version.sentences
@@ -105,12 +110,3 @@ class HitokotoClient:
                 msg = f"Hitokoto request failed: HTTP {response.status}"
                 raise HTTPError(msg)
             return await response.data
-
-
-def _bundle_base_url(url: str) -> str:
-    parsed = urlsplit(url)
-    return parsed._replace(
-        path=f"{parsed.path.rstrip('/')}/",
-        query="",
-        fragment="",
-    ).geturl()

@@ -1,7 +1,5 @@
-from datetime import datetime
 from textwrap import wrap
 from typing import Annotated, override
-from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -9,21 +7,12 @@ QUOTE_WIDTH = 12
 QUOTE_SPACE = "\u3000"
 QUOTE_CORNERS = "┌┐└┘"
 SOURCE_QUOTES = "《》"
-NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
 
 class Hitokoto(BaseModel):
-    id: NonNegativeInt
-    uuid: UUID
     hitokoto: str
-    type: Annotated[str, Field(strict=True, pattern=r"^[a-l]$")]
     from_: Annotated[str, Field(alias="from")]
     from_who: str | None
-    creator: str
-    creator_uid: NonNegativeInt
-    reviewer: NonNegativeInt
-    commit_from: str
-    created_at: datetime
 
     @override
     def __str__(self) -> str:
