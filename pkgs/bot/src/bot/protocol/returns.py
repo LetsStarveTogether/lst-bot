@@ -21,30 +21,6 @@ class ReturnAction:
     reason: str = ""
     remark: str = ""
 
-    def __str__(self) -> str:
-        if self.kind == "message" and self.msg is not None:
-            text = " ".join(self.msg.text.split())
-            if text:
-                return f'message "{text}"'
-            count = len(self.msg)
-            return f"message {count} segments" if count else "message -"
-
-        if self.kind == "call" and self.action_call is not None:
-            text = f"call:{self.action_call}"
-            if self.self_ is not None:
-                text = f"{text} @ {self.self_}"
-            return text
-
-        if self.kind == "request":
-            decision = "approve" if self.approve else "reject"
-            reason = self.reason or self.remark
-            if not reason:
-                return f"request:{decision}"
-            reason = " ".join(reason.split())
-            return f"request:{decision} {reason}"
-
-        return self.kind
-
     @classmethod
     def message(cls, message: MsgInput) -> ReturnAction:
         return cls(kind="message", msg=Msg.from_input(message))

@@ -508,7 +508,3 @@ class ActionCall(Model):
             else _DEFAULT_ACTION_PARAMS
         )
         return adapter.validate_python(value)
-
-    def __str__(self) -> str:
-        params = str(self.params)
-        return self.action if params == "-" else f"{self.action} {params}"
