@@ -1,5 +1,7 @@
 from datetime import timedelta
+from logging import ERROR, getLogger
 from typing import Never
+from unittest.mock import Mock, call
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -16,7 +18,7 @@ from pydantic_ai.models.test import TestModel
 from urllib3_future import AsyncPoolManager
 
 from lst_bot.agent import mcp_http_client
-from lst_bot.main import build_bot, run
+from lst_bot.main import build_bot, main, run
 from lst_bot.settings import Settings
 
 
@@ -42,6 +44,24 @@ async def test_run_closes_model_client_when_agent_build_fails(
 async def test_mcp_client_refuses_redirects_that_could_leak_api_key() -> None:
     async with mcp_http_client(None, follow_redirects=True) as client:
         assert client.follow_redirects is False
+
+
+def test_main_never_lowers_dependency_log_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger = Mock()
+    monkeypatch.setattr("lst_bot.main.Settings", lambda: Mock(log_level=ERROR))
+    monkeypatch.setattr("lst_bot.main.logging.basicConfig", Mock())
+    monkeypatch.setattr(
+        "lst_bot.main.logging.getLogger",
+        lambda name=None: logger if name else getLogger(),
+    )
+    monkeypatch.setattr("lst_bot.main.run", lambda _: None)
+    monkeypatch.setattr("lst_bot.main.asyncio.run", lambda _: None)
+
+    main()
+
+    assert logger.setLevel.call_args_list == [call(ERROR)] * 5
 
 
 def test_build_bot_registers_runtime_settings() -> None:

@@ -125,6 +125,6 @@ async def run(settings: Settings) -> None:
 def main() -> None:
     settings = Settings()
     logging.basicConfig(level=settings.log_level, force=True)
-    for name in ("httpcore", "urllib3_future", "websockets", "mcp"):
-        logging.getLogger(name).setLevel(logging.INFO)
+    for name in ("httpcore", "urllib3_future", "websockets", "mcp", "fastmcp"):
+        logging.getLogger(name).setLevel(max(settings.log_level, logging.INFO))
     asyncio.run(run(settings))
