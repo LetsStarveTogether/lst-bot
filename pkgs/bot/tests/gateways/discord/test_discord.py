@@ -1693,3 +1693,45 @@ async def test_unauthorized_owned_client_still_closes(
 
     assert len(pool.requests) == 1
     assert pool.cleared is True
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["close", "start"])
+async def test_owned_client_retries_failed_close(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    restart: bool,
+) -> None:
+    class FlakyPool(Pool):
+        clear_calls = 0
+
+        async def clear(self) -> None:
+            self.clear_calls += 1
+            if self.clear_calls == 1:
+                msg = "clear failed"
+                raise RuntimeError(msg)
+            await super().clear()
+
+    old_pool = FlakyPool()
+    new_pool = Pool()
+    monkeypatch.setattr(
+        discord_module,
+        "AsyncPoolManager",
+        lambda: new_pool if old_pool.cleared else old_pool,
+    )
+    rest = discord_module.DiscordRestClient(
+        CREDENTIAL,
+        base_url="https://discord.example/api/v10",
+    )
+
+    with pytest.raises(RuntimeError, match="clear failed"):
+        await rest.close()
+    assert not rest._closed
+
+    await (rest.start() if restart else rest.close())
+
+    assert old_pool.clear_calls == 2
+    assert rest._closed is not restart
+    if restart:
+        assert rest.http_pool is new_pool
+        await rest.close()
+        assert new_pool.cleared

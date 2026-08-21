@@ -892,8 +892,8 @@ class DiscordRestClient:
             await gather(*(completed.wait() for completed in pending))
             if self._owns_http_pool:
                 await self.http_pool.clear()
-        finally:
             self._closed = True
+        finally:
             self._route_buckets.clear()
             self._rate_buckets.clear()
             self._next_bucket_prune_at = 0.0
@@ -907,7 +907,9 @@ class DiscordRestClient:
     async def start(self) -> None:
         async with self._rest_lifecycle_lock:
             if not self._closed:
-                return
+                if self._accepting_requests:
+                    return
+                await self._finish_close(tuple(self._inflight_requests))
             if self._owns_http_pool:
                 self.http_pool = AsyncPoolManager()
             self._closed = False
