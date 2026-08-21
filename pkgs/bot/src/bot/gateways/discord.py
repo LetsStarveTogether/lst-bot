@@ -798,7 +798,14 @@ class DiscordRestClient:
         self,
         request: DiscordRequest,
     ) -> DiscordPayload | DiscordBytes | DiscordNoContent:
-        lane = self._rate_lane(request)
+        lane: Literal["authless", "bot", "interaction"] = (
+            "interaction"
+            if request.method == "POST"
+            and _INTERACTION_CALLBACK_PATH.fullmatch(request.path)
+            else "bot"
+            if request.auth
+            else "authless"
+        )
         for attempt in range(_MAX_REST_ATTEMPTS):
             while True:
                 route, major, bucket = self._rate_bucket(request)
@@ -882,8 +889,7 @@ class DiscordRestClient:
 
     async def _finish_close(self, pending: tuple[AsyncEvent, ...]) -> None:
         try:
-            for completed in pending:
-                await completed.wait()
+            await gather(*(completed.wait() for completed in pending))
             if self._owns_http_pool:
                 await self.http_pool.clear()
         finally:
@@ -1003,12 +1009,10 @@ class DiscordRestClient:
             delay = ready_at - get_running_loop().time()
             if delay <= 0:
                 return
-            try:
+            with suppress(TimeoutError):
                 async with timeout(delay):
                     await self._rate_limit_interrupt.wait()
-            except TimeoutError:
-                continue
-            return
+                    return
 
     async def _wait_for_global_limit(
         self,
@@ -1031,22 +1035,10 @@ class DiscordRestClient:
                 if delay <= 0:
                     send_times.append(now)
                     return
-            try:
+            with suppress(TimeoutError):
                 async with timeout(delay):
                     await self._rate_limit_interrupt.wait()
-            except TimeoutError:
-                continue
-            return
-
-    @staticmethod
-    def _rate_lane(
-        request: DiscordRequest,
-    ) -> Literal["authless", "bot", "interaction"]:
-        if request.method == "POST" and _INTERACTION_CALLBACK_PATH.fullmatch(
-            request.path
-        ):
-            return "interaction"
-        return "bot" if request.auth else "authless"
+                    return
 
     async def _request(
         self,
@@ -2379,9 +2371,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         return _ReconnectError(f"Discord Gateway disconnected (close code {code})")
 
     async def _send_message(self, params: dict[str, object]) -> DiscordMessage:
-        message = params.pop("message")
-        if not isinstance(message, Msg):
-            message = Msg.model_validate(message)
+        message = Msg.model_validate(params.pop("message"))
         detail_type = TypeAdapter(Literal["private", "channel"]).validate_python(
             params.pop("detail_type")
         )

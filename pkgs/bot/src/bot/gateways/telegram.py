@@ -368,10 +368,8 @@ class TelegramGateway(Gateway, TelegramRestClient):
                 *sorted(_NATIVE_ACTIONS),
             ])
         if common_action == Action.GET_STATUS:
-            task = self._task
-            online = task is not None and not task.done()
             return Status(
-                good=online,
+                good=self._task is not None and not self._task.done(),
                 bots=[BotStatus(self_=self._self, online=self._online)],
             )
         if common_action == Action.GET_VERSION:
@@ -617,9 +615,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         }
 
     async def _send_message(self, params: dict[str, object]) -> BaseModel:
-        message = params.pop("message")
-        if not isinstance(message, Msg):
-            message = Msg.model_validate(message)
+        message = Msg.model_validate(params.pop("message"))
         guest_query_id = params.pop("telegram_guest_query_id", None)
         if guest_query_id is not None:
             return await self._answer_guest_message(guest_query_id, message)
@@ -732,13 +728,13 @@ def _telegram_message(message: TelegramMessage) -> Msg:
     return Msg.model_validate(segments)
 
 
-def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements] - segment conversion is clearest as one flat pass
+def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements] - segment conversion is clearest as one flat pass
     chat_id: object,
     message: Msg,
     extra: Mapping[str, object],
 ) -> list[tuple[str, dict[str, object]]]:
     text_parts: list[str] = []
-    resources: list[tuple[str, str, object]] = []
+    resources: list[tuple[str, dict[str, object]]] = []
     reply: int | None = None
     html = False
     media_methods: dict[str | MsgSegmentType, tuple[str, str]] = {
@@ -765,7 +761,9 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             raise TypeError(msg)
         elif segment.type in media_methods:
             method, field = media_methods[segment.type]
-            resources.append((method, field, cast(object, segment.data).file_id))  # ty: ignore[unresolved-attribute]
+            resources.append(
+                (method, {field: cast(object, segment.data).file_id})  # ty: ignore[unresolved-attribute]
+            )
         elif isinstance(segment, LocationSegment):
             location = TelegramLocation(
                 latitude=segment.data.latitude,
@@ -774,20 +772,21 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             if segment.data.title or segment.data.content:
                 resources.append((
                     "sendVenue",
-                    "venue",
-                    (
-                        location.latitude,
-                        location.longitude,
-                        segment.data.title,
-                        segment.data.content,
-                    ),
+                    {
+                        "latitude": location.latitude,
+                        "longitude": location.longitude,
+                        "title": segment.data.title,
+                        "address": segment.data.content,
+                    },
                 ))
-                continue
-            resources.append((
-                "sendLocation",
-                "location",
-                (location.latitude, location.longitude),
-            ))
+            else:
+                resources.append((
+                    "sendLocation",
+                    {
+                        "latitude": location.latitude,
+                        "longitude": location.longitude,
+                    },
+                ))
         elif isinstance(segment, ReplySegment):
             if reply is not None:
                 msg = "Telegram messages accept at most one reply segment"
@@ -820,7 +819,8 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
         text
         and len(text) <= _MAX_MEDIA_CAPTION_LENGTH
         and resources
-        and resources[0][1] not in {"sticker", "video_note", "location", "venue"}
+        and resources[0][0]
+        not in {"sendSticker", "sendVideoNote", "sendLocation", "sendVenue"}
     )
     if text and not caption_used:
         calls.append(("sendMessage", {**common, "text": text}))
@@ -828,25 +828,10 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             common.pop("reply_parameters", None)
         common.pop("parse_mode", None)
 
-    for index, (method, field, value) in enumerate(resources):
-        params = dict(common)
+    for index, (method, resource) in enumerate(resources):
+        params = {**common, **resource}
         if index and not keep_reply_context:
             params.pop("reply_parameters", None)
-        if field == "location":
-            latitude, longitude = cast(tuple[object, object], value)
-            params.update(latitude=latitude, longitude=longitude)
-        elif field == "venue":
-            latitude, longitude, title, address = cast(
-                tuple[object, object, object, object], value
-            )
-            params.update(
-                latitude=latitude,
-                longitude=longitude,
-                title=title,
-                address=address,
-            )
-        else:
-            params[field] = value
         if caption_used and index == 0:
             params["caption"] = text
         elif html:
