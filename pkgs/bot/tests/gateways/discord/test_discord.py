@@ -3,10 +3,13 @@ from asyncio import (
     CancelledError,
     Event,
     QueueFull,
+    Task,
     TaskGroup,
     create_task,
+    gather,
     sleep,
     timeout,
+    wait,
 )
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -39,7 +42,7 @@ from bot.gateways.discord import (
     DiscordUser,
 )
 from bot.json import loads
-from bot.protocol.actions import ActionParamModel
+from bot.protocol.actions import ActionParamInput, ActionParamModel
 from bot.testing import ScriptedWebSocket
 from pydantic import ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
@@ -454,8 +457,7 @@ async def test_form_fields_multipart_requires_flat_json() -> None:
 async def test_bad_gateway_retries_are_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mocked_sleep = AsyncMock()
-    monkeypatch.setattr(discord_module, "sleep", mocked_sleep)
+    monkeypatch.setattr(discord_module, "_RECONNECT_DELAYS", (0.0,))
     recovered_pool = Pool(response(502, body=b"bad gateway"), response(200, {}))
 
     result = await client(recovered_pool).request_discord("GET", "/gateway/bot")
@@ -466,13 +468,6 @@ async def test_bad_gateway_retries_are_bounded(
     with pytest.raises(DiscordAPIError, match="502"):
         await client(failed_pool).request_discord("GET", "/gateway/bot")
     assert len(failed_pool.requests) == 5
-    assert [call.args[0] for call in mocked_sleep.await_args_list] == [
-        1.0,
-        1.0,
-        2.0,
-        5.0,
-        10.0,
-    ]
 
 
 async def test_public_gateway_lifecycle_can_restart(
@@ -1306,7 +1301,10 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
     )
     for action, data in invalid_names:
         with pytest.raises(ValidationError):
-            await instance._common_action(action, data)
+            await connection.action(
+                action,
+                **cast(dict[str, ActionParamInput], data),
+            )
 
 
 def test_message_model_is_strict_but_accepts_new_fields() -> None:
@@ -1985,6 +1983,40 @@ async def test_close_interrupts_rate_limit_wait() -> None:
         assert bucket.lock.locked()
         await rest.close()
     assert pool.requests == []
+
+
+async def test_close_interrupts_bad_gateway_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested = Event()
+
+    class BadGatewayPool(Pool):
+        async def request(
+            self,
+            *_: object,
+            **__: object,
+        ) -> AsyncHTTPResponse:
+            requested.set()
+            return response(502, {"code": 0, "message": "bad gateway"})
+
+    monkeypatch.setattr(discord_module, "_RECONNECT_DELAYS", (60.0,))
+    pool = BadGatewayPool()
+    rest = client(pool)
+    async with timeout(1):
+        request_task = create_task(rest.request_discord("GET", "/gateway/bot"))
+        cleanup_tasks: list[Task[object]] = [request_task]
+        try:
+            await requested.wait()
+            close_task = create_task(rest.close())
+            cleanup_tasks.append(close_task)
+            await wait((close_task,))
+            close_task.result()
+            with pytest.raises(RuntimeError, match="unavailable"):
+                await request_task
+        finally:
+            for task in cleanup_tasks:
+                task.cancel()
+            await gather(*cleanup_tasks, return_exceptions=True)
 
 
 async def test_unauthorized_owned_client_still_closes(

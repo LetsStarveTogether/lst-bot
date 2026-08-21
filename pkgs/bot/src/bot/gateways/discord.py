@@ -858,9 +858,10 @@ class DiscordRestClient:
                 raise self._api_error(response.status, payload)
             if response.status == HTTPStatus.BAD_GATEWAY:
                 if attempt < _MAX_REST_ATTEMPTS - 1:
-                    await sleep(
-                        _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
-                    )
+                    delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
+                    with suppress(TimeoutError):
+                        async with timeout(delay):
+                            await self._rate_limit_interrupt.wait()
                     continue
                 raise self._api_error(response.status, payload)
             if response.status == HTTPStatus.NO_CONTENT:
