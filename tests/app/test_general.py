@@ -9,7 +9,7 @@ from klei import (
     Version,
     VersionType,
 )
-from support import room_data
+from support import lobby_data, room_data
 
 from lst_bot.general import hitokoto, report, versions
 from lst_bot.settings import Settings
@@ -57,11 +57,11 @@ async def test_report_uses_injected_settings_for_room_and_message_targets() -> N
     hitokoto.get_hitokoto.return_value = "今日一言"
     klei = Mock(spec_set=KleiClient)
     klei.get_lobby_data.return_value = [
-        room_data(row_id="1", host="wanted", connected=1),
-        room_data(row_id="2", host="other", connected=1),
-        room_data(row_id="3", host="wanted", connected=0),
+        lobby_data(row_id="1", host="wanted", connected=1),
+        lobby_data(row_id="2", host="other", connected=1),
+        lobby_data(row_id="3", host="wanted", connected=0),
     ]
-    klei.get_room_data.return_value = [room_data(row_id="1")]
+    klei.get_room_data.return_value = [room_data()]
     gateway = RecordingGateway(bot)
     settings = Settings(_env_file=None, klei_host_id="wanted", report_group_id="group")
 
@@ -70,7 +70,7 @@ async def test_report_uses_injected_settings_for_room_and_message_targets() -> N
     room_data_call = klei.get_room_data.await_args
     assert room_data_call is not None
     room_refs = list(room_data_call.args[0])
-    assert room_refs == [("1", room_data().region)]
+    assert room_refs == [("1", lobby_data().region)]
     action = gateway.actions[0].model_dump(mode="json")
     assert action["params"]["group_id"] == "group"
     assert action["params"]["message"][0]["data"]["text"].startswith("今日一言")

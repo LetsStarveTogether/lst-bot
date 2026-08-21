@@ -6,7 +6,7 @@ from bot import Bot, Cmd
 from bot.testing import private_message_event, recording_gateway
 from klei import KleiClient, Platform, RoomData
 from lst import LstClient
-from support import room_data
+from support import lobby_data, room_data
 
 from lst_bot.rooms import (
     format_lobby_data,
@@ -66,8 +66,8 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     settings = Settings(_env_file=None, klei_host_id="wanted")
     client = Mock(spec_set=KleiClient)
     client.get_lobby_data.return_value = [
-        room_data(row_id="1", host="wanted"),
-        room_data(row_id="2", host="other"),
+        lobby_data(row_id="1", host="wanted"),
+        lobby_data(row_id="2", host="other"),
     ]
     client.get_room_data.return_value = [room_data(name="Alpha")]
     reply = await rooms(client, settings)

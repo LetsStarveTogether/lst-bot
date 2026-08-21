@@ -81,7 +81,11 @@ class RecordingPool:
         url: str,
         **kwargs: Any,
     ) -> Any:
-        call: dict[str, object] = {"method": method, "url": url}
+        call: dict[str, object] = {
+            "method": method,
+            "url": url,
+            "redirect": kwargs.get("redirect"),
+        }
         if (json := kwargs.get("json")) is not None:
             call["json"] = json
         self.calls.append(call)
@@ -117,48 +121,28 @@ class BlockingPool(RecordingPool):
             self.active -= 1
 
 
-def lobby_row(
-    row_id: str = "row-1",
-    *,
-    name: str = "DST cluster",
-) -> dict[str, JsonValue]:
+def lobby_row(row_id: str = "row-1") -> dict[str, JsonValue]:
     return {
         "__rowId": row_id,
-        "__addr": "127.0.0.1",
-        "name": name,
-        "port": 10999,
         "host": "host-ku",
         "connected": 3,
-        "maxconnections": 6,
-        "v": 736959,
-        "allownewplayers": True,
-        "clanonly": False,
-        "clienthosted": False,
-        "dedicated": True,
-        "fo": False,
-        "lanonly": False,
-        "mods": True,
-        "password": False,
-        "pvp": False,
-        "serverpaused": False,
         "platform": 1,
-        "session": "session-id",
-        "guid": "guid",
-        "intent": "social",
-        "steamroom": "steam-room",
-        "secondaries": {"1": {"id": "1", "port": 11000, "__addr": "127.0.0.2"}},
+        "secondaries": {"1": {"id": "1"}},
     }
 
 
-def room_row(
-    row_id: str = "row-1", *, name: str = "DST cluster"
-) -> dict[str, JsonValue]:
+def room_row(name: str = "DST cluster") -> dict[str, JsonValue]:
     return {
-        **lobby_row(row_id, name=name),
+        "__addr": "127.0.0.1",
+        "name": name,
+        "port": 10999,
+        "connected": 3,
+        "maxconnections": 6,
+        "password": False,
+        "serverpaused": False,
+        "season": "autumn",
+        "data": "day=12",
         "tick": 12_345,
-        "clientmodsoff": False,
-        "nat": 1,
-        "desc": "A room",
     }
 
 
@@ -198,6 +182,7 @@ async def test_client_reads_only_consumed_version_fields() -> None:
         {
             "method": "GET",
             "url": VERSION_URL,
+            "redirect": True,
         }
     ]
 
@@ -222,16 +207,30 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     rooms = await value.get_room_data(((lobbies[0].row_id, region),))
 
     assert len(lobbies) == 1
-    assert lobbies[0].region == region
-    assert lobbies[0].platform is Platform.Steam
-    assert lobbies[0].season == "mild"
+    assert lobbies[0].model_dump() == {
+        "row_id": "row-1",
+        "host": "host-ku",
+        "connected": 3,
+        "region": region,
+    }
     assert len(rooms) == 1
-    assert rooms[0].tick == 12_345
+    assert set(rooms[0].model_dump()) == {
+        "name",
+        "addr",
+        "port",
+        "connected",
+        "maxconnections",
+        "password",
+        "serverpaused",
+        "season",
+        "data",
+    }
     assert pool.calls[1]["json"] == {
         "__gameId": "DontStarveTogether",
         "__token": "test-token",
         "query": {"__rowId": "row-1"},
     }
+    assert pool.calls[1]["redirect"] is False
 
 
 async def test_non_success_http_status_fails_before_parsing_body() -> None:
@@ -273,6 +272,31 @@ async def test_request_has_wall_clock_timeout(stage: str) -> None:
 )
 def test_client_limits_are_strict_positive_finite(kwargs: Any) -> None:
     with pytest.raises(ValidationError):
+        KleiClient(
+            SecretStr("token"),
+            http_pool=cast("AsyncPoolManager", RecordingPool({})),
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"room_url": "http://rooms.example.test/{region}/lobby/read"},
+        {"room_url": "https:///lobby/{region}/read"},
+        {"room_url": "https://user@rooms.example.test/{region}/lobby/read"},
+        {"room_url": "https://rooms.example.test/{region}/lobby/read#fragment"},
+        {"room_url": " https://rooms.example.test/{region}/lobby/read"},
+        {"lobby_url": "https://lobby.example.test/{region}.json.gz"},
+        {
+            "lobby_url": "https://lobby.example.test/"
+            "{region.__class__}-{platform}.json.gz"
+        },
+        {"version_url": "https://forum.example.test/{region}"},
+    ],
+)
+def test_client_rejects_unsafe_url_templates(kwargs: Any) -> None:
+    with pytest.raises(ValueError, match="Klei URL"):
         KleiClient(
             SecretStr("token"),
             http_pool=cast("AsyncPoolManager", RecordingPool({})),
@@ -325,31 +349,25 @@ async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
     assert len(pool.calls) == 4
 
 
-def test_response_envelope_and_lobby_bounds_are_validated() -> None:
+def test_response_envelope_and_consumed_fields_are_validated() -> None:
     assert KleiDataResponse[LobbyData].model_validate_json("{}").rows == []
 
     internal = LobbyData.model_validate_json(
-        jsonlib.dumps(lobby_row() | {"platform": 19}),
+        jsonlib.dumps(lobby_row() | {"platform": True}),
         context={"region": "us-east-1"},
     )
-    assert internal.platform.value == 19
+    assert internal.model_dump() == {
+        "row_id": "row-1",
+        "host": "host-ku",
+        "connected": 3,
+        "region": "us-east-1",
+    }
 
     for changes in (
         {"__rowId": ""},
-        {"port": 0},
-        {"port": 65536},
+        {"host": 1},
         {"connected": -1},
-        {"maxconnections": -1},
-        {"connected": 7},
-        {"v": "736959"},
-        {"v": -1},
-        {"allownewplayers": 1},
-        {"__addr": True},
-        {"__addr": 2130706433},
-        {"platform": True},
-        {"secondaries": {"1": {"id": "1", "port": 0}}},
-        {"secondaries": {"1": {"id": "1", "__addr": True}}},
-        {"secondaries": {"1": {"id": "1", "__addr": 2130706433}}},
+        {"connected": "3"},
     ):
         with pytest.raises(ValidationError):
             LobbyData.model_validate_json(
@@ -357,9 +375,27 @@ def test_response_envelope_and_lobby_bounds_are_validated() -> None:
                 context={"region": "us-east-1"},
             )
 
-    for changes in ({"tick": "12345"}, {"clientmodsoff": 0}, {"nat": "1"}):
+    with pytest.raises(ValidationError):
+        LobbyData.model_validate_json(
+            jsonlib.dumps(lobby_row()), context={"region": "invalid"}
+        )
+
+    for changes in (
+        {"name": 1},
+        {"__addr": True},
+        {"__addr": 2130706433},
+        {"port": 0},
+        {"port": 65536},
+        {"port": "10999"},
+        {"maxconnections": -1},
+        {"maxconnections": "6"},
+        {"connected": 7},
+        {"password": 0},
+        {"serverpaused": 0},
+        {"season": 1},
+        {"data": False},
+    ):
         with pytest.raises(ValidationError):
             RoomData.model_validate_json(
                 jsonlib.dumps(room_row() | changes),
-                context={"region": "us-east-1"},
             )
