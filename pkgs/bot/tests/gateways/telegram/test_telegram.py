@@ -5,7 +5,8 @@ from typing import cast
 
 import orjson
 import pytest
-from bot import Bot, BotSelf, Status
+from bot import Bot, BotSelf, Msg, Status
+from bot.gateways import telegram as telegram_module
 from bot.gateways import telegram_api as telegram_api_module
 from bot.gateways.telegram import TelegramGateway
 from bot.gateways.telegram_api import (
@@ -205,6 +206,21 @@ def test_protocol_manifest_and_strict_models() -> None:
             "error_code": 400,
             "description": "bad",
         })
+
+
+@pytest.mark.parametrize(
+    ("length", "methods"),
+    [(1024, ["sendPhoto"]), (1025, ["sendMessage", "sendPhoto"])],
+)
+def test_media_caption_limit(length: int, methods: list[str]) -> None:
+    text = "x" * length
+    message = Msg.from_input([
+        {"type": "text", "data": {"text": text}},
+        {"type": "image", "data": {"file_id": "photo"}},
+    ])
+    calls = telegram_module._message_calls("42", message, {})  # ruff: ignore[private-member-access]
+    assert [method for method, _ in calls] == methods
+    assert calls[-1][1].get("caption") == (text if length == 1024 else None)
 
 
 @pytest.mark.parametrize(

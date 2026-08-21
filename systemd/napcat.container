@@ -1,7 +1,5 @@
 [Unit]
 Description=Podman container for napcat
-After=network-online.target
-Requires=network-online.target
 
 [Container]
 AutoUpdate=registry

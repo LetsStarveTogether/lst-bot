@@ -1,7 +1,7 @@
 [Unit]
 Description=lst-bot
 After=network-online.target
-Requires=network-online.target network-pre.target
+Wants=network-online.target
 
 [Service]
 WorkingDirectory=/srv/lst-bot

@@ -707,9 +707,16 @@ async def test_gateway_native_limits_and_intent_boundaries(
         opcode=4,
         data=voice,
     )
-    assert [orjson.loads(commands.sent.get_nowait()) for _ in range(2)] == [
+    channel_info = {"guild_id": "1", "fields": ["status"] * 3}
+    await connection.action(
+        "discord.gateway",
+        opcode=43,
+        data=channel_info,
+    )
+    assert [orjson.loads(commands.sent.get_nowait()) for _ in range(3)] == [
         {"op": 3, "d": presence},
         {"op": 4, "d": voice},
+        {"op": 43, "d": channel_info},
     ]
 
 

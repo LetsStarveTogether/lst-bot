@@ -73,6 +73,7 @@ logger = Logger(__name__)
 
 _RETRY_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0)
 _MAX_GUEST_REPLY_LENGTH = 4096
+_MAX_MEDIA_CAPTION_LENGTH = 1024
 _POLL_TIMEOUT_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
 _MESSAGE_ID_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
 _NATIVE_ACTIONS = TELEGRAM_METHODS - {"getUpdates", "setWebhook"}
@@ -804,6 +805,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
     calls: list[tuple[str, dict[str, object]]] = []
     caption_used = bool(
         text
+        and len(text) <= _MAX_MEDIA_CAPTION_LENGTH
         and resources
         and resources[0][1] not in {"sticker", "video_note", "location"}
     )

@@ -1272,17 +1272,7 @@ class DiscordRequestSoundboardSounds(DiscordRequestModel):
 
 class DiscordRequestChannelInfo(DiscordRequestModel):
     guild_id: Snowflake
-    fields: Annotated[
-        list[Literal["status", "voice_start_time"]],
-        Field(min_length=1, max_length=2),
-    ]
-
-    @model_validator(mode="after")
-    def unique_fields(self) -> Self:
-        if len(set(self.fields)) != len(self.fields):
-            msg = "Discord channel-info fields must be unique"
-            raise ValueError(msg)
-        return self
+    fields: list[Literal["status", "voice_start_time"]]
 
 
 _GATEWAY_COMMAND_MODELS: dict[DiscordOpcode, type[DiscordRequestModel]] = {
