@@ -24,6 +24,7 @@ from bot.gateways.telegram_api import (
     TelegramUser,
     TelegramVenue,
 )
+from bot.protocol.actions import ActionParamModel
 from bot.protocol.enums import Action
 from bot.protocol.events import (
     GroupMessageEvent,
@@ -809,6 +810,9 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
             await gateway.connection_for(
                 BotSelf(platform="telegram", user_id="other")
             ).send_msg("hello", user_id="42")
+        foreign = make_gateway().connection_for(self_)
+        with pytest.raises(LookupError, match="unknown bot self"):
+            await gateway.request_action(foreign, Action.GET_STATUS, ActionParamModel())
     finally:
         await gateway.close()
 

@@ -613,7 +613,7 @@ async def test_message_actions_require_an_online_gateway() -> None:
 async def test_actions_reject_wrong_or_foreign_bot_connections() -> None:
     gateway = _gateway(FakePool())
     wrong_self = gateway.connection_for(BotSelf(platform="qq", user_id="wrong"))
-    foreign = _gateway(FakePool()).connection_for(gateway._self)  # ruff: ignore[private-member-access]
+    foreign = _gateway(FakePool()).connection_for(BotSelf(platform="qq", user_id="app"))
 
     for connection in (wrong_self, foreign):
         with pytest.raises(ValueError, match="wrong BotSelf"):
@@ -1254,6 +1254,7 @@ async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> No
 
     supported = await connection.action(Action.GET_SUPPORTED_ACTIONS)
     assert Action.DELETE_MESSAGE.value not in supported.root  # ty: ignore[unresolved-attribute]
+    assert QQAction.RECALL_DM_MESSAGE.value in supported.root  # ty: ignore[unresolved-attribute]
     with pytest.raises(LookupError, match="does not support"):
         await connection.action(Action.DELETE_MESSAGE, message_id="message")
     response = await connection.action(
