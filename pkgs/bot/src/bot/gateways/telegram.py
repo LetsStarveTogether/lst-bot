@@ -67,6 +67,7 @@ from .telegram_api import (
     TelegramUpdate,
     TelegramUpload,
     TelegramUser,
+    TelegramUserID,
 )
 
 logger = Logger(__name__)
@@ -76,6 +77,7 @@ _MAX_GUEST_REPLY_LENGTH = 4096
 _MAX_MEDIA_CAPTION_LENGTH = 1024
 _POLL_TIMEOUT_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
 _MESSAGE_ID_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
+_USER_ID_ADAPTER = TypeAdapter(TelegramUserID)
 _NATIVE_ACTIONS = TELEGRAM_METHODS - {"getUpdates", "setWebhook"}
 _GROUP_METHODS = {
     Action.GET_GROUP_INFO: "getChat",
@@ -126,22 +128,18 @@ class TelegramConnection(Connection):
             msg = "Telegram direct-message replies require direct_messages_topic_id"
             raise ValueError(msg)
         ephemeral_message_id = getattr(event, "telegram_ephemeral_message_id", None)
-        receiver_user_id = getattr(event, "telegram_receiver_user_id", None)
         if ephemeral_message_id is not None and getattr(
             event, "telegram_chat_type", None
         ) not in {"group", "supergroup"}:
             msg = "Telegram ephemeral replies require a group or supergroup"
             raise ValueError(msg)
-        if (
-            isinstance(ephemeral_message_id, int)
-            and not isinstance(ephemeral_message_id, bool)
-            and isinstance(receiver_user_id, int)
-            and not isinstance(receiver_user_id, bool)
+        if isinstance(ephemeral_message_id, int) and not isinstance(
+            ephemeral_message_id, bool
         ):
-            params["receiver_user_id"] = receiver_user_id
+            params["receiver_user_id"] = _user_id(event.user_id)
             params["reply_parameters"] = {"ephemeral_message_id": ephemeral_message_id}
         elif ephemeral_message_id is not None:
-            msg = "Telegram ephemeral replies require receiver_user_id"
+            msg = "Telegram ephemeral replies require a valid ephemeral_message_id"
             raise ValueError(msg)
         guest_query_id = getattr(event, "telegram_guest_query_id", None)
         if isinstance(guest_query_id, str):
@@ -403,7 +401,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
                     "deleteEphemeralMessage",
                     {
                         "chat_id": chat_id,
-                        "receiver_user_id": _message_id(receiver_user_id),
+                        "receiver_user_id": _user_id(receiver_user_id),
                         "ephemeral_message_id": _message_id(ephemeral_message_id),
                         **data,
                     },
@@ -435,7 +433,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
             )
             chat_id = _pop_chat_id(data)
             if member_id is not None:
-                data["user_id"] = _message_id(member_id)
+                data["user_id"] = _user_id(member_id)
             elif common_action == Action.SET_GROUP_NAME:
                 data["title"] = data.pop("group_name")
             return await self.call(method, {"chat_id": chat_id, **data})
@@ -535,8 +533,11 @@ class TelegramGateway(Gateway, TelegramRestClient):
 
     def _event_from_update(self, update: TelegramUpdate) -> Event:
         event_type, payload = update.payload or ("raw_update", None)
+        notice_type = event_type
         if isinstance(payload, TelegramMessage):
-            return self._message_event(update, event_type, payload)
+            if payload.service_type is None:
+                return self._message_event(update, event_type, payload)
+            notice_type = payload.service_type
         if isinstance(payload, TelegramChatJoinRequest):
             return GroupRequestEvent.model_validate({
                 **self._event_fields(update, event_type, float(payload.date)),
@@ -549,7 +550,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
             })
         return NoticeEvent.model_validate({
             **self._event_fields(update, event_type, _payload_time(payload)),
-            "detail_type": f"telegram.{event_type}",
+            "detail_type": f"telegram.{notice_type}",
             "sub_type": "",
         })
 
@@ -585,15 +586,13 @@ class TelegramGateway(Gateway, TelegramRestClient):
             ),
             "telegram_ephemeral_message_id": message.ephemeral_message_id,
             "telegram_receiver_user_id": (
-                message.from_.id
-                if message.ephemeral_message_id is not None
-                and message.from_ is not None
-                else None
+                message.receiver_user.id if message.receiver_user is not None else None
             ),
             "telegram_guest_query_id": message.guest_query_id,
         }
         if message.chat.type == "private":
             return PrivateMessageEvent.model_validate(fields)
+        # Telegram channels are flat chats; do not invent a guild ID.
         return GroupMessageEvent.model_validate({
             **fields,
             "group_id": str(message.chat.id),
@@ -718,14 +717,16 @@ def _telegram_message(message: TelegramMessage) -> Msg:
         for file, segment_type in media
         if file is not None
     )
-    if message.location is not None:
+    venue = message.venue
+    location = venue.location if venue is not None else message.location
+    if location is not None:
         segments.append({
             "type": MsgSegmentType.LOCATION,
             "data": {
-                "latitude": message.location.latitude,
-                "longitude": message.location.longitude,
-                "title": "",
-                "content": "",
+                "latitude": location.latitude,
+                "longitude": location.longitude,
+                "title": venue.title if venue is not None else "",
+                "content": venue.address if venue is not None else "",
             },
         })
     return Msg.model_validate(segments)
@@ -757,7 +758,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             if not html:
                 text_parts = [escape(part) for part in text_parts]
                 html = True
-            user_id = _message_id(segment.data.user_id)
+            user_id = _user_id(segment.data.user_id)
             text_parts.append(f'<a href="tg://user?id={user_id}">{user_id}</a>')
         elif isinstance(segment, MentionAllSegment):
             msg = "Telegram does not support mention-all"
@@ -770,6 +771,18 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
                 latitude=segment.data.latitude,
                 longitude=segment.data.longitude,
             )
+            if segment.data.title or segment.data.content:
+                resources.append((
+                    "sendVenue",
+                    "venue",
+                    (
+                        location.latitude,
+                        location.longitude,
+                        segment.data.title,
+                        segment.data.content,
+                    ),
+                ))
+                continue
             resources.append((
                 "sendLocation",
                 "location",
@@ -807,7 +820,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
         text
         and len(text) <= _MAX_MEDIA_CAPTION_LENGTH
         and resources
-        and resources[0][1] not in {"sticker", "video_note", "location"}
+        and resources[0][1] not in {"sticker", "video_note", "location", "venue"}
     )
     if text and not caption_used:
         calls.append(("sendMessage", {**common, "text": text}))
@@ -822,6 +835,16 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
         if field == "location":
             latitude, longitude = cast(tuple[object, object], value)
             params.update(latitude=latitude, longitude=longitude)
+        elif field == "venue":
+            latitude, longitude, title, address = cast(
+                tuple[object, object, object, object], value
+            )
+            params.update(
+                latitude=latitude,
+                longitude=longitude,
+                title=title,
+                address=address,
+            )
         else:
             params[field] = value
         if caption_used and index == 0:
@@ -836,10 +859,18 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
 
 
 def _message_id(value: object) -> int:
+    return _validate_id(value, _MESSAGE_ID_ADAPTER)
+
+
+def _user_id(value: object) -> int:
+    return _validate_id(value, _USER_ID_ADAPTER)
+
+
+def _validate_id(value: object, adapter: TypeAdapter[int]) -> int:
     if isinstance(value, str):
         with suppress(ValueError):
             value = int(value)
-    return _MESSAGE_ID_ADAPTER.validate_python(value)
+    return adapter.validate_python(value)
 
 
 def _pop_chat_id(params: dict[str, object]) -> object:
@@ -867,9 +898,3 @@ def _pop_chat_id(params: dict[str, object]) -> object:
         msg = "Telegram action requires a valid chat target"
         raise ValueError(msg)
     return value
-
-
-__all__ = [
-    "TelegramConnection",
-    "TelegramGateway",
-]

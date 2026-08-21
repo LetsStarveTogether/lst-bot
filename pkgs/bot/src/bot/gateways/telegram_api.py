@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 import orjson
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -106,9 +107,55 @@ TELEGRAM_UPDATE_TYPES = tuple(
     """.split()  # ruff: ignore[split-static-string] - compact official manifest
 )
 
-type TelegramID = Annotated[StrictInt, Field(ge=-(2**63), le=2**63 - 1)]
-type NonNegativeInt = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
-type PositiveInt = Annotated[StrictInt, Field(gt=0, le=2**63 - 1)]
+TELEGRAM_SERVICE_MESSAGE_TYPES = tuple(
+    """
+    new_chat_members left_chat_member chat_owner_left chat_owner_changed
+    new_chat_title new_chat_photo delete_chat_photo group_chat_created
+    supergroup_chat_created channel_chat_created message_auto_delete_timer_changed
+    migrate_to_chat_id migrate_from_chat_id pinned_message successful_payment
+    refunded_payment users_shared chat_shared gift unique_gift gift_upgrade_sent
+    connected_website write_access_allowed proximity_alert_triggered boost_added
+    chat_background_set checklist_tasks_done checklist_tasks_added
+    community_chat_added community_chat_removed direct_message_price_changed
+    forum_topic_created forum_topic_edited forum_topic_closed forum_topic_reopened
+    general_forum_topic_hidden general_forum_topic_unhidden giveaway_created
+    giveaway_completed managed_bot_created paid_message_price_changed
+    poll_option_added poll_option_deleted suggested_post_approved
+    suggested_post_approval_failed suggested_post_declined suggested_post_paid
+    suggested_post_refunded video_chat_scheduled video_chat_started video_chat_ended
+    video_chat_participants_invited web_app_data
+    """.split()  # ruff: ignore[split-static-string] - compact official manifest
+)
+
+_MAX_INT32 = 2**31 - 1
+_MAX_INT64 = 2**63 - 1
+_MAX_TELEGRAM_USER_ID = 0xFF_FFFF_FFFF
+_MIN_TELEGRAM_CHAT_ID = -4_000_000_000_000
+
+
+def _nonzero_id(value: int) -> int:
+    if value == 0:
+        msg = "Telegram chat IDs cannot be zero"
+        raise ValueError(msg)
+    return value
+
+
+type TelegramChatID = Annotated[
+    StrictInt,
+    Field(ge=_MIN_TELEGRAM_CHAT_ID, le=_MAX_TELEGRAM_USER_ID),
+    AfterValidator(_nonzero_id),
+]
+type TelegramUserID = Annotated[
+    StrictInt,
+    Field(gt=0, le=_MAX_TELEGRAM_USER_ID),
+]
+type TelegramUpdateOffset = Annotated[
+    StrictInt,
+    Field(ge=-_MAX_INT32 - 1, le=_MAX_INT32),
+]
+type TelegramUpdateID = Annotated[StrictInt, Field(gt=0, le=_MAX_INT32)]
+type NonNegativeInt = Annotated[StrictInt, Field(ge=0, le=_MAX_INT64)]
+type PositiveInt = Annotated[StrictInt, Field(gt=0, le=_MAX_INT64)]
 type PositiveSeconds = Annotated[
     StrictInt | StrictFloat,
     Field(gt=0, allow_inf_nan=False),
@@ -121,6 +168,8 @@ type Longitude = Annotated[
     StrictInt | StrictFloat,
     Field(ge=-180, le=180, allow_inf_nan=False),
 ]
+type Heading = Annotated[StrictInt, Field(ge=1, le=360)]
+type ProximityAlertRadius = Annotated[StrictInt, Field(ge=1, le=100_000)]
 type TelegramFileData = Annotated[
     StrictBytes,
     PlainSerializer(
@@ -176,7 +225,7 @@ _STRICT_CONFIG = ConfigDict(
 _PARAMS_ADAPTER = TypeAdapter(TelegramParams, config=_STRICT_CONFIG)
 _FILES_ADAPTER = TypeAdapter(TelegramFiles, config=_STRICT_CONFIG)
 _REQUEST_TIMEOUT_ADAPTER = TypeAdapter(PositiveSeconds, config=_STRICT_CONFIG)
-_OFFSET_ADAPTER = TypeAdapter(TelegramID | None, config=_STRICT_CONFIG)
+_OFFSET_ADAPTER = TypeAdapter(TelegramUpdateOffset | None, config=_STRICT_CONFIG)
 _POLL_TIMEOUT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _NON_NEGATIVE_INT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _POSITIVE_INT_ADAPTER = TypeAdapter(PositiveInt, config=_STRICT_CONFIG)
@@ -186,7 +235,7 @@ _RAW_UPDATES_ADAPTER = TypeAdapter(list[TelegramObject], config=_STRICT_CONFIG)
 
 
 class TelegramUser(Model):
-    id: TelegramID
+    id: TelegramUserID
     is_bot: StrictBool
     first_name: StrictStr
     last_name: StrictStr | None = None
@@ -207,7 +256,7 @@ class TelegramUser(Model):
 
 
 class TelegramChat(Model):
-    id: TelegramID
+    id: TelegramChatID
     type: Literal["private", "group", "supergroup", "channel"]
     title: StrictStr | None = None
     username: StrictStr | None = None
@@ -215,6 +264,28 @@ class TelegramChat(Model):
     last_name: StrictStr | None = None
     is_forum: Literal[True] | None = None
     is_direct_messages: Literal[True] | None = None
+
+    @model_validator(mode="after")
+    def id_matches_type(self) -> Self:
+        if self.is_direct_messages and self.type != "supergroup":
+            msg = "Telegram direct-message chats must be supergroups"
+            raise ValueError(msg)
+        ranges = {
+            "private": ((1, _MAX_TELEGRAM_USER_ID),),
+            "group": ((-999_999_999_999, -1),),
+            "supergroup": (
+                (-1_997_852_516_352, -1_000_000_000_001),
+                (_MIN_TELEGRAM_CHAT_ID, -2_002_147_483_649),
+            ),
+            "channel": (
+                (-1_997_852_516_352, -1_000_000_000_001),
+                (_MIN_TELEGRAM_CHAT_ID, -2_002_147_483_649),
+            ),
+        }[self.type]
+        if not any(start <= self.id <= end for start, end in ranges):
+            msg = f"Telegram {self.type} chat ID is outside its official range"
+            raise ValueError(msg)
+        return self
 
 
 class TelegramDirectMessagesTopic(Model):
@@ -245,8 +316,41 @@ class TelegramLocation(Model):
         | None
     ) = None
     live_period: NonNegativeInt | None = None
-    heading: NonNegativeInt | None = None
-    proximity_alert_radius: NonNegativeInt | None = None
+    heading: Heading | None = None
+    proximity_alert_radius: ProximityAlertRadius | None = None
+
+    @model_validator(mode="after")
+    def live_fields_require_live_period(self) -> Self:
+        if self.live_period is None and (
+            self.heading is not None or self.proximity_alert_radius is not None
+        ):
+            msg = "Telegram live-location fields require live_period"
+            raise ValueError(msg)
+        return self
+
+
+class TelegramVenue(Model):
+    location: TelegramLocation
+    title: StrictStr
+    address: StrictStr
+    foursquare_id: StrictStr | None = None
+    foursquare_type: StrictStr | None = None
+    google_place_id: StrictStr | None = None
+    google_place_type: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def location_is_not_live(self) -> Self:
+        if any(
+            value is not None
+            for value in (
+                self.location.live_period,
+                self.location.heading,
+                self.location.proximity_alert_radius,
+            )
+        ):
+            msg = "Telegram venue locations cannot be live"
+            raise ValueError(msg)
+        return self
 
 
 class TelegramMessageEntity(Model):
@@ -295,9 +399,21 @@ class TelegramMessage(Model):
     voice: TelegramFile | None = None
     caption: StrictStr | None = None
     caption_entities: list[TelegramMessageEntity] | None = None
+    venue: TelegramVenue | None = None
     location: TelegramLocation | None = None
     new_chat_members: list[TelegramUser] | None = None
     left_chat_member: TelegramUser | None = None
+
+    @property
+    def service_type(self) -> str | None:
+        return next(
+            (
+                name
+                for name in TELEGRAM_SERVICE_MESSAGE_TYPES
+                if getattr(self, name, None) is not None
+            ),
+            None,
+        )
 
 
 class TelegramInaccessibleMessage(Model):
@@ -438,7 +554,7 @@ class TelegramChatMemberUpdated(Model):
 class TelegramChatJoinRequest(Model):
     chat: TelegramChat
     from_: TelegramUser = Field(alias="from")
-    user_chat_id: TelegramID
+    user_chat_id: TelegramUserID
     date: PositiveInt
     bio: StrictStr | None = None
     invite_link: JsonValue = None
@@ -446,7 +562,7 @@ class TelegramChatJoinRequest(Model):
 
 
 class TelegramUpdate(Model):
-    update_id: NonNegativeInt
+    update_id: TelegramUpdateID
     message: TelegramMessage | None = None
     edited_message: TelegramMessage | None = None
     channel_post: TelegramMessage | None = None
@@ -511,7 +627,7 @@ class TelegramWebhookInfo(Model):
 
 
 class TelegramResponseParameters(Model):
-    migrate_to_chat_id: TelegramID | None = None
+    migrate_to_chat_id: TelegramChatID | None = None
     retry_after: NonNegativeInt | None = None
 
 
@@ -984,6 +1100,3 @@ async def _read_download(
 def _raise_file_too_large(max_bytes: int) -> Never:
     msg = f"Telegram file exceeds the {max_bytes}-byte download limit"
     raise TelegramFileTooLargeError(msg)
-
-
-__all__ = [name for name in globals() if name.startswith("Telegram")]

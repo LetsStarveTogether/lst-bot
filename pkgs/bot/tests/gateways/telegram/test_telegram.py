@@ -11,6 +11,7 @@ from bot.gateways import telegram_api as telegram_api_module
 from bot.gateways.telegram import TelegramGateway
 from bot.gateways.telegram_api import (
     TelegramAPIError,
+    TelegramChat,
     TelegramDownloadedFile,
     TelegramEnvelope,
     TelegramFileTooLargeError,
@@ -22,6 +23,7 @@ from bot.gateways.telegram_api import (
     TelegramUpdate,
     TelegramUpload,
     TelegramUser,
+    TelegramVenue,
 )
 from bot.protocol.enums import Action
 from bot.protocol.events import (
@@ -36,6 +38,7 @@ from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
 CREDENTIAL = "opaque-token"
+SUPERGROUP_ID = -1_000_000_000_001
 
 
 def response(payload: JsonValue, status: int = 200) -> AsyncHTTPResponse:
@@ -113,7 +116,11 @@ def message_update(update_id: int, text: str = "hello") -> TelegramUpdate:
             "message_id": 0,
             "date": 1,
             "from": {"id": 42, "is_bot": False, "first_name": "User"},
-            "chat": {"id": -100, "type": "supergroup", "title": "Group"},
+            "chat": {
+                "id": SUPERGROUP_ID,
+                "type": "supergroup",
+                "title": "Group",
+            },
             "text": text,
         },
     })
@@ -153,6 +160,47 @@ def test_strict_models() -> None:
     with pytest.raises(ValidationError):
         TelegramLocation(latitude=91, longitude=0)
     with pytest.raises(ValidationError):
+        TelegramLocation(latitude=0, longitude=0, heading=0)
+    with pytest.raises(ValidationError):
+        TelegramLocation(latitude=0, longitude=0, heading=361)
+    with pytest.raises(ValidationError):
+        TelegramLocation(
+            latitude=0, longitude=0, live_period=60, proximity_alert_radius=0
+        )
+    with pytest.raises(ValidationError, match="live_period"):
+        TelegramLocation(latitude=0, longitude=0, heading=1)
+    with pytest.raises(ValidationError, match="cannot be live"):
+        TelegramVenue.model_validate({
+            "location": {"latitude": 0, "longitude": 0, "live_period": 60},
+            "title": "Place",
+            "address": "Address",
+        })
+    with pytest.raises(ValidationError):
+        TelegramUser(id=-1, is_bot=False, first_name="User")
+    for chat in (
+        TelegramChat(id=0xFF_FFFF_FFFF, type="private"),
+        TelegramChat(id=-999_999_999_999, type="group"),
+        TelegramChat(id=SUPERGROUP_ID, type="supergroup"),
+        TelegramChat(id=-4_000_000_000_000, type="channel"),
+    ):
+        assert chat.id
+    for chat_id, chat_type in (
+        (0, "private"),
+        (0x1_00_0000_0000, "private"),
+        (-1, "private"),
+        (1, "group"),
+        (-100, "supergroup"),
+        (-2_000_000_000_000, "channel"),
+    ):
+        with pytest.raises(ValidationError):
+            TelegramChat.model_validate({"id": chat_id, "type": chat_type})
+    with pytest.raises(ValidationError, match="must be supergroups"):
+        TelegramChat(id=1, type="private", is_direct_messages=True)
+    assert TelegramUpdate(update_id=2**31 - 1).update_id == 2**31 - 1
+    for update_id in (0, 2**31):
+        with pytest.raises(ValidationError):
+            TelegramUpdate(update_id=update_id)
+    with pytest.raises(ValidationError):
         TelegramUpdate.model_validate({"update_id": 6, "poll": True})
     with pytest.raises(ValidationError):
         TelegramUpdate.model_validate({
@@ -190,6 +238,66 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
     assert calls[-1][1].get("caption") == (text if length == 1024 else None)
 
 
+def test_location_and_venue_conversion() -> None:
+    update = TelegramUpdate.model_validate({
+        "update_id": 1,
+        "message": {
+            "message_id": 1,
+            "date": 1,
+            "from": {"id": 42, "is_bot": False, "first_name": "User"},
+            "chat": {"id": 42, "type": "private", "first_name": "User"},
+            "venue": {
+                "location": {"latitude": 1.25, "longitude": 2.5},
+                "title": "Place",
+                "address": "Address",
+            },
+        },
+    })
+    assert update.message is not None
+    venue = telegram_module._telegram_message(update.message)  # ruff: ignore[private-member-access]
+    assert venue.model_dump(mode="json") == [
+        {
+            "type": "location",
+            "data": {
+                "latitude": 1.25,
+                "longitude": 2.5,
+                "title": "Place",
+                "content": "Address",
+            },
+        }
+    ]
+    assert telegram_module._message_calls("42", venue, {}) == [  # ruff: ignore[private-member-access]
+        (
+            "sendVenue",
+            {
+                "chat_id": "42",
+                "latitude": 1.25,
+                "longitude": 2.5,
+                "title": "Place",
+                "address": "Address",
+            },
+        )
+    ]
+
+    location = Msg.from_input([
+        {
+            "type": "location",
+            "data": {
+                "latitude": 1.25,
+                "longitude": 2.5,
+                "title": "",
+                "content": "",
+            },
+        }
+    ])
+    assert telegram_module._message_calls("42", location, {}) == [  # ruff: ignore[private-member-access]
+        (
+            "sendLocation",
+            {"chat_id": "42", "latitude": 1.25, "longitude": 2.5},
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "token",
     ["", "a b", "a/b", "a?b", "a%b", "a#b", "a\\b", "a\0b"],
@@ -218,14 +326,19 @@ def test_base_url_is_strict_https(base_url: str) -> None:
 
 
 async def test_rest_boundaries_and_get_updates_parameters() -> None:
-    pool = Pool({
-        "ok": True,
-        "result": [
-            message_update(7).raw,
-            {"update_id": 8},
-            {"update_id": 9, "future_update": {"value": 1}},
-        ],
-    })
+    pool = Pool(
+        {
+            "ok": True,
+            "result": [
+                message_update(7).raw,
+                {"update_id": 8},
+                {"update_id": 9, "future_update": {"value": 1}},
+            ],
+        },
+        {"ok": True, "result": []},
+        {"ok": True, "result": []},
+        {"ok": True, "result": []},
+    )
     rest = client(pool)
     updates = await rest.get_updates(offset=7, poll_timeout=30)
     assert isinstance(updates[0], TelegramUpdate)
@@ -240,6 +353,14 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
     } <= set(cast(list[str], params["allowed_updates"]))
     assert pool.requests[0][2]["retries"] is False
     assert cast(float, pool.requests[0][2]["timeout"]) > 30
+    assert await rest.get_updates(offset=-1, poll_timeout=0) == []
+    assert cast(dict[str, object], pool.requests[1][2]["json"])["offset"] == -1
+    for offset in (-(2**31), 2**31 - 1):
+        assert await rest.get_updates(offset=offset, poll_timeout=0) == []
+        assert cast(dict[str, object], pool.requests[-1][2]["json"])["offset"] == offset
+    for offset in (-(2**31) - 1, 2**31):
+        with pytest.raises(ValidationError):
+            await rest.get_updates(offset=offset, poll_timeout=0)
 
     with pytest.raises(ValueError, match="invalid Telegram method parameters"):
         await rest.call_json("getMe", cast(Mapping[str, object], []))
@@ -588,7 +709,7 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
         assert native.root == []
         await connection.action(
             Action.GET_GROUP_MEMBER_INFO,
-            group_id="-100",
+            group_id=str(SUPERGROUP_ID),
             user_id="42",
         )
         assert [
@@ -596,7 +717,10 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
             for _, url, kwargs in pool.requests[-2:]
         ] == [
             ("getMyCommands", {}),
-            ("getChatMember", {"chat_id": "-100", "user_id": 42}),
+            (
+                "getChatMember",
+                {"chat_id": str(SUPERGROUP_ID), "user_id": 42},
+            ),
         ]
         with pytest.raises(LookupError, match="unknown bot self"):
             await gateway.connection_for(
@@ -774,6 +898,53 @@ async def test_cancelled_close_finishes_gateway_cleanup() -> None:
     assert not gateway._polling_reserved  # ruff: ignore[private-member-access] - lifecycle invariant
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (
+            "new_chat_members",
+            [{"id": 43, "is_bot": False, "first_name": "New member"}],
+        ),
+        (
+            "left_chat_member",
+            {"id": 43, "is_bot": False, "first_name": "Former member"},
+        ),
+        ("new_chat_title", "Renamed"),
+        ("community_chat_removed", {}),
+    ],
+)
+def test_service_messages_are_not_empty_messages(
+    field: str,
+    value: JsonValue,
+) -> None:
+    gateway = make_gateway()
+    gateway._self = BotSelf(  # ruff: ignore[private-member-access] - event conversion boundary
+        platform="telegram", user_id="123"
+    )
+    event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+        TelegramUpdate.model_validate({
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "date": 123,
+                "from": {"id": 42, "is_bot": False, "first_name": "User"},
+                "chat": {
+                    "id": SUPERGROUP_ID,
+                    "type": "supergroup",
+                    "title": "Group",
+                },
+                field: value,
+            },
+        })
+    )
+    assert isinstance(event, NoticeEvent)
+    assert event.detail_type == f"telegram.{field}"
+    assert event.time == 123
+    raw = (event.model_extra or {})["telegram_raw"]
+    assert isinstance(raw, dict)
+    assert raw["message"][field] == value
+
+
 async def test_message_reply_contexts_use_their_official_routes() -> None:
     pool = Pool(
         *({"ok": True, "result": True} for _ in range(6)),
@@ -814,20 +985,20 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
                 "date": 1,
                 "from": {"id": 42, "is_bot": False, "first_name": "User"},
                 "chat": {
-                    "id": 100,
-                    "type": "private",
-                    "first_name": "User",
+                    "id": SUPERGROUP_ID,
+                    "type": "supergroup",
+                    "title": "Direct messages",
                     "is_direct_messages": True,
                 },
                 "text": "incoming",
             },
         })
     )
-    assert isinstance(direct_event, MessageEvent)
+    assert isinstance(direct_event, GroupMessageEvent)
     await connection.execute_message_action(direct_event, "reply")
     direct_params = pool.requests[-1][2]["json"]
     assert direct_params == {
-        "chat_id": 100,
+        "chat_id": SUPERGROUP_ID,
         "direct_messages_topic_id": 60,
         "text": "reply",
     }
@@ -845,12 +1016,18 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
                 "ephemeral_message_id": 70,
                 "date": 1,
                 "from": {"id": 42, "is_bot": False, "first_name": "User"},
-                "chat": {"id": -100, "type": "supergroup", "title": "Group"},
+                "receiver_user": {"id": 123, "is_bot": True, "first_name": "Bot"},
+                "chat": {
+                    "id": SUPERGROUP_ID,
+                    "type": "supergroup",
+                    "title": "Group",
+                },
                 "text": "incoming",
             },
         })
     )
     assert isinstance(ephemeral_event, MessageEvent)
+    assert (ephemeral_event.model_extra or {})["telegram_receiver_user_id"] == 123
     await connection.execute_message_action(
         ephemeral_event,
         [
@@ -860,7 +1037,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
     )
     for request in pool.requests[-2:]:
         params = cast(dict[str, object], request[2]["json"])
-        assert params["chat_id"] == -100
+        assert params["chat_id"] == SUPERGROUP_ID
         assert params["receiver_user_id"] == 42
         assert params["reply_parameters"] == {"ephemeral_message_id": 70}
 
@@ -872,7 +1049,11 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
                 "guest_query_id": "guest",
                 "date": 1,
                 "from": {"id": 42, "is_bot": False, "first_name": "User"},
-                "chat": {"id": -100, "type": "supergroup", "title": "Group"},
+                "chat": {
+                    "id": SUPERGROUP_ID,
+                    "type": "supergroup",
+                    "title": "Group",
+                },
                 "text": "incoming",
             },
         })
@@ -897,13 +1078,13 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
     await connection.action(
         Action.DELETE_MESSAGE,
         message_id="0",
-        group_id="-100",
+        group_id=str(SUPERGROUP_ID),
         ephemeral_message_id=70,
         receiver_user_id=42,
     )
     assert pool.requests[-1][1].endswith("/deleteEphemeralMessage")
     assert pool.requests[-1][2]["json"] == {
-        "chat_id": "-100",
+        "chat_id": str(SUPERGROUP_ID),
         "receiver_user_id": 42,
         "ephemeral_message_id": 70,
     }
@@ -911,14 +1092,14 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         await connection.action(
             Action.DELETE_MESSAGE,
             message_id="1",
-            group_id="-100",
+            group_id=str(SUPERGROUP_ID),
             receiver_user_id=42,
         )
     with pytest.raises(ValueError, match="cannot be deleted"):
         await connection.action(
             Action.DELETE_MESSAGE,
             message_id="0",
-            group_id="-100",
+            group_id=str(SUPERGROUP_ID),
         )
 
 
@@ -932,7 +1113,11 @@ async def test_join_request_query_uses_query_response_endpoint() -> None:
         TelegramUpdate.model_validate({
             "update_id": 5,
             "chat_join_request": {
-                "chat": {"id": -100, "type": "supergroup", "title": "Group"},
+                "chat": {
+                    "id": SUPERGROUP_ID,
+                    "type": "supergroup",
+                    "title": "Group",
+                },
                 "from": {"id": 42, "is_bot": False, "first_name": "User"},
                 "user_chat_id": 42,
                 "date": 1,
@@ -1070,7 +1255,7 @@ def test_offset_advances_only_after_enqueue(
             [reply_update, message_update(11)]
         )
     assert gateway._offset == 11  # ruff: ignore[private-member-access] - direct invariant check
-    assert events[0].group_id == "-100"
+    assert events[0].group_id == str(SUPERGROUP_ID)
     extra = events[0].model_extra or {}
     assert extra["reply_alt_message"] == "previous"
     raw = extra["telegram_raw"]
