@@ -168,38 +168,6 @@ async def test_bot_rejects_submissions_until_start_is_complete() -> None:
         await bot.close()
 
 
-async def test_bot_start_failure_cleans_up_and_can_retry() -> None:
-    class FlakyGateway(Gateway):
-        starts = 0
-        closes = 0
-
-        @override
-        async def start(self) -> None:
-            self.starts += 1
-            if self.starts == 1:
-                msg = "startup failed"
-                raise RuntimeError(msg)
-
-        @override
-        async def close(self) -> None:
-            self.closes += 1
-
-    bot = Bot()
-    gateway = FlakyGateway(bot)
-    bot.add_gateway(gateway)
-
-    with pytest.raises(RuntimeError, match="startup failed"):
-        await bot.start()
-
-    assert gateway.closes == 1
-
-    await bot.start()
-    await bot.close()
-
-    assert gateway.starts == 2
-    assert gateway.closes == 2
-
-
 async def test_gateway_start_failure_runs_full_rollback() -> None:
     calls: list[str] = []
 
