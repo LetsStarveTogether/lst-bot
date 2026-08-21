@@ -2,9 +2,8 @@ from asyncio import Semaphore, TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
 from itertools import product
-from typing import Annotated, Self
+from typing import Annotated
 
-from logbook import Logger
 from pydantic import (
     AfterValidator,
     ConfigDict,
@@ -25,7 +24,6 @@ from .models import (
     _parse_versions,
 )
 
-logger = Logger(__name__)
 _DEFAULT_REGIONS: tuple[Region, ...] = (
     "us-east-1",
     "eu-central-1",
@@ -60,39 +58,26 @@ class KleiClient:
         self,
         access_token: SecretStr,
         *,
+        http_pool: AsyncPoolManager,
         version_url: str = "https://forums.kleientertainment.com/game-updates/dst/",
         lobby_url: str = "https://lobby-v2-cdn.klei.com/{region}-{platform}.json.gz",
         room_url: str = "https://lobby-v2-{region}.klei.com/lobby/read",
         lobby_concurrency: int = 8,
         room_concurrency: int = 24,
         http_timeout: float = 30.0,
-        http_pool: AsyncPoolManager | None = None,
     ) -> None:
         self.access_token = access_token
         self.version_url = version_url
         self.lobby_url = lobby_url
         self.room_url = room_url
         self.http_timeout = _POSITIVE_FLOAT.validate_python(http_timeout)
-        self._owns_http_pool = http_pool is None
-        self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
+        self.http_pool = http_pool
         self._lobby_slots = Semaphore(_POSITIVE_INT.validate_python(lobby_concurrency))
         self._room_slots = Semaphore(_POSITIVE_INT.validate_python(room_concurrency))
 
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.close()
-
-    async def close(self) -> None:
-        if self._owns_http_pool:
-            await self.http_pool.clear()
-
     async def get_latest_versions(self) -> list[Version]:
         body = await self._request(HTTPMethod.GET, self.version_url)
-        versions = _parse_versions(body.decode())
-        logger.info("Klei versions loaded: {count} rows", count=len(versions))
-        return versions
+        return _parse_versions(body.decode())
 
     async def get_lobby_data(
         self,
@@ -101,37 +86,23 @@ class KleiClient:
     ) -> list[LobbyData]:
         region_values = _REGIONS.validate_python(tuple(regions))
         platform_values = _PLATFORMS.validate_python(tuple(platforms))
-        logger.info(
-            "load Klei lobbies: {region_count}x{platform_count}",
-            region_count=len(region_values),
-            platform_count=len(platform_values),
-        )
         async with TaskGroup() as tg:
             tasks = [
                 tg.create_task(self._get_single_lobby(region, platform))
                 for region, platform in product(region_values, platform_values)
             ]
-        lobbies = [row for task in tasks for row in task.result()]
-        logger.info("Klei lobbies loaded: {count} rows", count=len(lobbies))
-        return lobbies
+        return [row for task in tasks for row in task.result()]
 
     async def get_room_data(
         self,
-        rooms: Iterable[tuple[str, Region]] | None = None,
+        rooms: Iterable[tuple[str, Region]],
     ) -> list[RoomData]:
-        if rooms is None:
-            lobby_data_list = await self.get_lobby_data()
-            rooms = ((data.row_id, data.region) for data in lobby_data_list)
-
         room_values = _ROOMS.validate_python(tuple(rooms))
-        logger.info("load Klei rooms: {count}", count=len(room_values))
         async with TaskGroup() as tg:
             tasks = [
                 tg.create_task(self._get_single_room(*room)) for room in room_values
             ]
-        room_data = [result for task in tasks if (result := task.result()) is not None]
-        logger.info("Klei rooms loaded: {count} rows", count=len(room_data))
-        return room_data
+        return [result for task in tasks if (result := task.result()) is not None]
 
     async def _get_single_lobby(
         self,

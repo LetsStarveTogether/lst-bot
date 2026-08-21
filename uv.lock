@@ -693,7 +693,6 @@ name = "klei"
 version = "0.0.0"
 source = { editable = "pkgs/klei" }
 dependencies = [
-    { name = "logbook" },
     { name = "pydantic" },
     { name = "selectolax" },
     { name = "urllib3-future" },
@@ -701,7 +700,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "logbook", specifier = ">=1.9.2" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "selectolax", specifier = ">=0.4.10" },
     { name = "urllib3-future", specifier = ">=2.21.902" },

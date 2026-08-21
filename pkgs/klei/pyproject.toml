@@ -5,7 +5,6 @@ description = "Klei data clients for lst-bot."
 license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
-    "logbook>=1.9.2",
     "pydantic>=2.13.4",
     "selectolax>=0.4.10",
     "urllib3-future>=2.21.902",

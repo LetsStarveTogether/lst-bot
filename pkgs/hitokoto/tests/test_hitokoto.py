@@ -32,7 +32,6 @@ class RecordingPool(AsyncPoolManager):
     def __init__(self, routes: Mapping[str, object]) -> None:
         self.routes = routes
         self.calls: list[dict[str, object]] = []
-        self.cleared = False
 
     @override
     async def request(
@@ -59,10 +58,6 @@ class RecordingPool(AsyncPoolManager):
             return result
         payload = result if isinstance(result, bytes) else dumps(result).encode()
         return AsyncHTTPResponse(body=payload, status=200)
-
-    @override
-    async def clear(self) -> None:
-        self.cleared = True
 
 
 class PendingBodyResponse:
@@ -147,15 +142,13 @@ async def test_client_requests_api_with_optional_type_filters(
     pool = RecordingPool({API_URL: hitokoto_payload()})
     client = HitokotoClient(url=API_URL, http_pool=pool)
 
-    async with client:
-        result = await client.get_hitokoto(types)
+    result = await client.get_hitokoto(types)
 
     expected_call: dict[str, object] = {"method": "GET", "url": API_URL}
     if expected_fields is not None:
         expected_call["fields"] = expected_fields
     assert result.hitokoto == "hello"
     assert pool.calls == [expected_call]
-    assert pool.cleared is False
 
 
 async def test_client_strictly_validates_type_filters() -> None:
@@ -163,16 +156,6 @@ async def test_client_strictly_validates_type_filters() -> None:
 
     with pytest.raises(ValidationError):
         await client.get_hitokoto(("a",))  # ty: ignore[invalid-argument-type]
-
-
-async def test_client_closes_owned_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    pool = RecordingPool({API_URL: hitokoto_payload()})
-    monkeypatch.setattr(client_module, "AsyncPoolManager", lambda: pool)
-
-    async with HitokotoClient(url=API_URL) as client:
-        await client.get_hitokoto()
-
-    assert pool.cleared is True
 
 
 async def test_client_rejects_error_status_without_reading_body(
@@ -206,7 +189,6 @@ async def test_client_applies_wall_clock_timeout_to_all_io(
 
     if isinstance(route, PendingBodyResponse):
         assert route.body_accessed is True
-    assert pool.cleared is False
 
 
 async def test_concurrent_clients_download_cache_once(tmp_path: Path) -> None:

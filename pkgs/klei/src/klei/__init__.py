@@ -1,5 +1,5 @@
 from .client import KleiClient
-from .enums import Platform, Region, Season, VersionType
+from .enums import Platform, Region, VersionType
 from .models import LobbyData, RoomData, Secondary, Version
 
 __all__ = [
@@ -8,7 +8,6 @@ __all__ = [
     "Platform",
     "Region",
     "RoomData",
-    "Season",
     "Secondary",
     "Version",
     "VersionType",

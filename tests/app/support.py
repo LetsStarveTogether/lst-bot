@@ -1,6 +1,6 @@
 from typing import Any
 
-from klei import RoomData, Season
+from klei import RoomData
 
 
 def room_data(**overrides: object) -> RoomData:
@@ -15,7 +15,7 @@ def room_data(**overrides: object) -> RoomData:
         "password": False,
         "serverpaused": False,
         "region": "ap-east-1",
-        "season": Season.AUTUMN,
+        "season": "autumn",
         "data": "day=12",
         **overrides,
     }

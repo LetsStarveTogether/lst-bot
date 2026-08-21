@@ -2,7 +2,7 @@ from asyncio import Lock, TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated
 from urllib.parse import urlsplit
 from weakref import WeakValueDictionary
 
@@ -42,25 +42,14 @@ class HitokotoClient:
         *,
         url: str = "https://v1.hitokoto.cn/",
         bundle_url: str = "https://sentences-bundle.hitokoto.cn/",
-        http_pool: AsyncPoolManager | None = None,
+        http_pool: AsyncPoolManager,
         cache_path: str | Path = Path(".cache/hitokoto.db"),
     ) -> None:
         self.url = url
         self.bundle_url = bundle_url
-        self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
-        self._owns_http_pool = http_pool is None
+        self.http_pool = http_pool
         self.cache_path = Path(cache_path)
         self._cache_lock = _CACHE_LOCKS.setdefault(self.cache_path.resolve(), Lock())
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.close()
-
-    async def close(self) -> None:
-        if self._owns_http_pool:
-            await self.http_pool.clear()
 
     async def get_hitokoto(
         self,

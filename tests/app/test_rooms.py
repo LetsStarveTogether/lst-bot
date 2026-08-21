@@ -91,15 +91,25 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
 @pytest.mark.parametrize(
     ("command", "method_name", "expected_args", "expected_reply"),
     [
-        ("/房间存档 1,3-4", "save_rooms", ([1, 3, 4],), "已存档 [1, 3, 4]"),
+        (
+            "/房间存档 1,3-4",
+            "send_console_command",
+            ([1, 3, 4], "c_save()"),
+            "已存档 [1, 3, 4]",
+        ),
         (
             "/房间回档 1,3-4 2",
-            "rollback_rooms",
-            ([1, 3, 4], 2),
+            "send_console_command",
+            ([1, 3, 4], "c_rollback(2)"),
             "已回档 2 天 [1, 3, 4]",
         ),
         ("/房间重启 1,3-4", "restart_rooms", ([1, 3, 4],), "已重启 [1, 3, 4]"),
-        ("/房间重置 1,3-4", "regenerate_rooms", ([1, 3, 4],), "已重置 [1, 3, 4]"),
+        (
+            "/房间重置 1,3-4",
+            "send_console_command",
+            ([1, 3, 4], "c_regenerateworld()"),
+            "已重置 [1, 3, 4]",
+        ),
     ],
     ids=("save", "rollback", "restart", "regenerate"),
 )
@@ -140,5 +150,5 @@ async def test_room_admin_command_rejects_non_admin() -> None:
         )
 
     assert results == []
-    client.save_rooms.assert_not_called()
+    client.send_console_command.assert_not_called()
     assert gateway.actions == []

@@ -2,7 +2,7 @@ import re
 from operator import attrgetter
 
 from bot import Cmd, EventRouter, Injected, Permission
-from klei import KleiClient, Platform, RoomData, Season
+from klei import KleiClient, Platform, RoomData
 from logbook import Logger
 from lst import LstClient
 
@@ -22,10 +22,10 @@ def format_lobby_data(data: RoomData, *, verbose: bool = False) -> str:
 
     player_count = f"{data.connected}/{data.maxconnections}"
     season = {
-        Season.AUTUMN: "秋",
-        Season.WINTER: "冬",
-        Season.SPRING: "春",
-        Season.SUMMER: "夏",
+        "autumn": "秋",
+        "winter": "冬",
+        "spring": "春",
+        "summer": "夏",
     }.get(data.season, "")
     day = ""
     if data.data and (match := DAY_PATTERN.search(data.data)):
@@ -101,7 +101,7 @@ def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     except ValueError:
         return f"用法：{cmd.raw} 1,2,4-6"
 
-    lc.save_rooms(room_ids)
+    lc.send_console_command(room_ids, "c_save()")
     return f"已存档 {room_ids}"
 
 
@@ -114,7 +114,7 @@ def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     except ValueError:
         return f"用法：{cmd.raw} 1,2,4-6 2"
 
-    lc.rollback_rooms(room_ids, days)
+    lc.send_console_command(room_ids, f"c_rollback({days})")
     return f"已回档 {days} 天 {room_ids}"
 
 
@@ -144,5 +144,5 @@ def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     except ValueError:
         return f"用法：{cmd.raw} 1,2,4-6"
 
-    lc.regenerate_rooms(room_ids)
+    lc.send_console_command(room_ids, "c_regenerateworld()")
     return f"已重置 {room_ids}"

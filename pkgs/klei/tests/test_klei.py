@@ -4,9 +4,7 @@ from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast, override
-from unittest.mock import Mock
 
-import klei.client as client_module
 import pytest
 from klei import (
     KleiClient,
@@ -77,7 +75,6 @@ class RecordingPool:
         self.routes = routes
         self.calls: list[dict[str, object]] = []
         self.responses: list[Response] = []
-        self.cleared = False
 
     async def request(
         self,
@@ -97,9 +94,6 @@ class RecordingPool:
         response = Response(reply.body, reply.status, reply.body_release)
         self.responses.append(response)
         return response
-
-    async def clear(self) -> None:
-        self.cleared = True
 
 
 class BlockingPool(RecordingPool):
@@ -266,21 +260,6 @@ async def test_request_has_wall_clock_timeout(stage: str) -> None:
             await client(pool, http_timeout=0.01).get_latest_versions()
 
 
-async def test_client_clears_only_its_own_pool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    borrowed = RecordingPool({})
-    async with client(borrowed):
-        pass
-    assert borrowed.cleared is False
-
-    owned = RecordingPool({})
-    monkeypatch.setattr(client_module, "AsyncPoolManager", Mock(return_value=owned))
-    async with KleiClient(SecretStr("token")):
-        pass
-    assert owned.cleared is True
-
-
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -295,7 +274,11 @@ async def test_client_clears_only_its_own_pool(
 )
 def test_client_limits_are_strict_positive_finite(kwargs: Any) -> None:
     with pytest.raises(ValidationError):
-        KleiClient(SecretStr("token"), **kwargs)
+        KleiClient(
+            SecretStr("token"),
+            http_pool=cast("AsyncPoolManager", RecordingPool({})),
+            **kwargs,
+        )
 
 
 async def test_client_strictly_validates_platform_filters() -> None:
@@ -320,7 +303,8 @@ async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
     }
     pool = BlockingPool(routes, limit=2)
 
-    async with client(pool, lobby_concurrency=2) as value, TaskGroup() as tasks:
+    value = client(pool, lobby_concurrency=2)
+    async with TaskGroup() as tasks:
         first = tasks.create_task(
             value.get_lobby_data(
                 regions=regions[:2],

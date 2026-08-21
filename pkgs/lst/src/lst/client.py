@@ -30,9 +30,6 @@ class LstClient:
             self._systemd_manager = manager.Manager
         return self._systemd_manager
 
-    def service_name(self, room_id: int) -> bytes:
-        return self.service_template_name + b"@" + str(room_id).encode() + b".service"
-
     def send_console_command(self, room_ids: Iterable[int], command: str) -> None:
         room_values = tuple(room_ids)
         logger.info(
@@ -47,15 +44,6 @@ class LstClient:
                 logger.debug("write DST console command : {path}", path=console_path)
             console_path.write_text(payload, encoding="utf-8")
 
-    def save_rooms(self, room_ids: Iterable[int]) -> None:
-        self.send_console_command(room_ids, "c_save()")
-
-    def rollback_rooms(self, room_ids: Iterable[int], days: int) -> None:
-        self.send_console_command(room_ids, f"c_rollback({days})")
-
-    def regenerate_rooms(self, room_ids: Iterable[int]) -> None:
-        self.send_console_command(room_ids, "c_regenerateworld()")
-
     def restart_rooms(self, room_ids: Iterable[int]) -> None:
         systemd_manager = self.systemd_manager
         room_values = tuple(room_ids)
@@ -64,7 +52,7 @@ class LstClient:
             rooms=",".join(str(room_id) for room_id in room_values),
         )
         for room_id in room_values:
-            unit = self.service_name(room_id)
+            unit = self.service_template_name + f"@{room_id}.service".encode()
             if __debug__:
                 logger.debug("restart DST systemd unit : {unit}", unit=unit)
             systemd_manager.RestartUnit(unit, self.systemd_mode)

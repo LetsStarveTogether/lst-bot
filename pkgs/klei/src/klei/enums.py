@@ -21,13 +21,6 @@ type Region = Annotated[
 ]
 
 
-class Season(StrEnum):
-    AUTUMN = "autumn"
-    WINTER = "winter"
-    SPRING = "spring"
-    SUMMER = "summer"
-
-
 class VersionType(StrEnum):
     RELEASE = "Release"
     TEST = "Test"
