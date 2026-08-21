@@ -113,7 +113,10 @@ class CronJob:
             self,
             connection or gateway or "-",
         )
-        self._running = create_task(self._run_handler(gateway, connection))
+        self._running = create_task(
+            self._run_handler(gateway, connection),
+            eager_start=False,
+        )
 
     async def _run_handler(
         self,
@@ -189,6 +192,10 @@ class CronScheduler:
         self_: BotSelf | None = None,
         gateway: type[Gateway] | None = None,
     ) -> Callable:
+        if gateway is not None and self_ is None:
+            msg = "Scheduled gateway targets require self"
+            raise ValueError(msg)
+
         def decorator(handler: Callable) -> Callable:
             if not croniter.is_valid(expr, strict=True):
                 msg = f"Invalid cron expression: {expr}"

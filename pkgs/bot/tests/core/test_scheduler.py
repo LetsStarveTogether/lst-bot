@@ -1,4 +1,13 @@
-from asyncio import Event, Queue, Task, create_task, timeout, wait_for
+from asyncio import (
+    Event,
+    Queue,
+    Task,
+    create_task,
+    eager_task_factory,
+    get_running_loop,
+    timeout,
+    wait_for,
+)
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -71,11 +80,13 @@ def test_on_cron_registers_validated_jobs_in_the_public_view() -> None:
         bot.scheduler = CronScheduler(bot)  # ty: ignore[invalid-assignment]
 
 
-def test_on_cron_rejects_invalid_cron_expression() -> None:
+def test_on_cron_rejects_invalid_configuration() -> None:
     bot = Bot()
 
     with pytest.raises(ValueError, match="Invalid cron expression"):
         bot.scheduler.on_cron("0 0 31 2 *")(lambda: None)
+    with pytest.raises(ValueError, match="require self"):
+        bot.scheduler.on_cron("* * * * *", gateway=RecordingGateway)
 
 
 async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> None:
@@ -167,8 +178,11 @@ async def test_cron_handler_cannot_close_its_bot() -> None:
         background = create_task(close_later())
         rejected.set()
 
-    await bot.start()
+    loop = get_running_loop()
+    task_factory = loop.get_task_factory()
+    loop.set_task_factory(eager_task_factory)
     try:
+        await bot.start()
         await sleep.advance()
         await wait_for(rejected.wait(), timeout=1)
         handler_task = bot.scheduler.jobs[0]._running  # ruff: ignore[private-member-access]
@@ -178,6 +192,7 @@ async def test_cron_handler_cannot_close_its_bot() -> None:
         release.set()
         await wait_for(background, timeout=1)
     finally:
+        loop.set_task_factory(task_factory)
         release.set()
         await bot.close()
 
