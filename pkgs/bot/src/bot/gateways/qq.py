@@ -23,7 +23,6 @@ from pydantic import (
     AfterValidator,
     AwareDatetime,
     BaseModel,
-    BeforeValidator,
     Field,
     JsonValue,
     RootModel,
@@ -39,7 +38,7 @@ from urllib3_future import AsyncPoolManager
 
 from bot.core import Bot
 from bot.protocol.actions import ActionParamInput, ActionParamModel
-from bot.protocol.base import Model
+from bot.protocol.base import Model, StrictIntLiteral
 from bot.protocol.common import BotSelf, BotStatus, Status, Version
 from bot.protocol.enums import Action, MsgSegmentType
 from bot.protocol.events import (
@@ -172,13 +171,6 @@ class QQIntent(IntFlag, boundary=STRICT):
     PUBLIC_GUILD_MESSAGES = 1 << 30
 
 
-def _strict_opcode(value: object) -> object:
-    if isinstance(value, bool) or not isinstance(value, int):
-        msg = "QQ Gateway opcode must be an integer"
-        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error] - Pydantic turns this into ValidationError.
-    return value
-
-
 _COMMON_ACTION_MAP = {
     Action.GET_SELF_INFO: QQAction.GET_BOT,
     Action.GET_GROUP_INFO: QQAction.GET_GROUP_INFO,
@@ -229,7 +221,7 @@ class QQArkData(Model):
 class QQMessageElement(Model):
     msg_idx: StrictStr | None = None
     author: QQUser | None = None
-    message_type: Literal[0, 3, 101, 102, 103] | None = None
+    message_type: StrictIntLiteral[Literal[0, 3, 101, 102, 103]] | None = None
     content: StrictStr | None = None
     attachments: list[QQAttachment] = Field(default_factory=list)
     ark_data: QQArkData | None = None
@@ -241,7 +233,7 @@ class QQC2CMessage(Model):
     author: QQUser
     content: StrictStr
     timestamp: AwareDatetime
-    message_type: Literal[0, 3, 101, 102, 103] | None = None
+    message_type: StrictIntLiteral[Literal[0, 3, 101, 102, 103]] | None = None
     message_scene: QQMessageScene | None = None
     attachments: list[QQAttachment] = Field(default_factory=list)
     ark_data: QQArkData | None = None
@@ -296,7 +288,7 @@ class QQGroupMember(Model):
 class QQSubscribeResult(Model):
     template_id: StrictInt
     custom_template_id: StrictStr
-    op: Literal[1, 2]
+    op: StrictIntLiteral[Literal[1, 2]]
     subscribe_id: StrictStr
     subscribe_ts: NonNegativeInt
     update_ts: NonNegativeInt
@@ -354,9 +346,9 @@ class QQInteractionData(Model):
 
 class QQInteraction(Model):
     id: StrictStr
-    type: Literal[11, 12, 13, 14, 15, 16, 18, 19, 20]
+    type: StrictIntLiteral[Literal[11, 12, 13, 14, 15, 16, 18, 19, 20]]
     scene: Literal["c2c", "group", "guild"]
-    chat_type: Literal[0, 1, 2] | None = None
+    chat_type: StrictIntLiteral[Literal[0, 1, 2]] | None = None
     timestamp: AwareDatetime
     guild_id: StrictStr | None = None
     channel_id: StrictStr | None = None
@@ -416,7 +408,7 @@ _EVENT_DATA_MODELS: dict[str, type[Model]] = {
 
 class QQGatewayPayload(Model):
     id: StrictStr | None = None
-    op: Annotated[QQOpcode, BeforeValidator(_strict_opcode)]
+    op: StrictIntLiteral[QQOpcode]
     d: JsonValue = None
     s: NonNegativeInt | None = None
     t: StrictStr | None = None
@@ -424,10 +416,7 @@ class QQGatewayPayload(Model):
 
 class QQDispatch(Model):
     id: StrictStr | None = None
-    op: Annotated[
-        Literal[QQOpcode.DISPATCH],
-        BeforeValidator(_strict_opcode),
-    ] = QQOpcode.DISPATCH
+    op: StrictIntLiteral[Literal[QQOpcode.DISPATCH]] = QQOpcode.DISPATCH
     d: QQEventData
     s: NonNegativeInt
     t: StrictStr
@@ -465,7 +454,7 @@ class QQIdentifyData(qq_api.QQRequest):
 
 
 class QQIdentify(qq_api.QQRequest):
-    op: Literal[QQOpcode.IDENTIFY] = QQOpcode.IDENTIFY
+    op: StrictIntLiteral[Literal[QQOpcode.IDENTIFY]] = QQOpcode.IDENTIFY
     d: QQIdentifyData
 
 
@@ -476,12 +465,12 @@ class QQResumeData(qq_api.QQRequest):
 
 
 class QQResume(qq_api.QQRequest):
-    op: Literal[QQOpcode.RESUME] = QQOpcode.RESUME
+    op: StrictIntLiteral[Literal[QQOpcode.RESUME]] = QQOpcode.RESUME
     d: QQResumeData
 
 
 class QQHeartbeat(qq_api.QQRequest):
-    op: Literal[QQOpcode.HEARTBEAT] = QQOpcode.HEARTBEAT
+    op: StrictIntLiteral[Literal[QQOpcode.HEARTBEAT]] = QQOpcode.HEARTBEAT
     d: NonNegativeInt | None
 
 

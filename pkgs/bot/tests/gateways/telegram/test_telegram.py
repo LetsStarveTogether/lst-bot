@@ -14,8 +14,10 @@ from bot.gateways.telegram_api import (
     TelegramDirectMessagesTopic,
     TelegramDownloadedFile,
     TelegramEnvelope,
+    TelegramFile,
     TelegramFileTooLargeError,
     TelegramLocation,
+    TelegramMessageEntity,
     TelegramPollAnswer,
     TelegramResponseParameters,
     TelegramRestClient,
@@ -195,6 +197,30 @@ def test_strict_models() -> None:
             "error_code": 400,
             "description": "bad",
         })
+
+
+def test_current_telegram_model_boundaries() -> None:
+    maximum_id = 2**52 - 1
+    user = {"id": maximum_id, "is_bot": False, "first_name": "User"}
+    with pytest.raises(ValidationError):
+        TelegramUser.model_validate(user | {"is_premium": 1})
+
+    file = {"file_id": "file", "file_unique_id": "unique"}
+    assert TelegramFile.model_validate(file | {"file_size": maximum_id}).file_size == (
+        maximum_id
+    )
+    with pytest.raises(ValidationError):
+        TelegramFile.model_validate(file | {"file_size": maximum_id + 1})
+
+    entity = {"type": "date_time", "offset": 0, "length": 1, "unix_time": 1}
+    assert (
+        TelegramMessageEntity.model_validate(
+            entity | {"date_time_format": "wDT"}
+        ).date_time_format
+        == "wDT"
+    )
+    with pytest.raises(ValidationError):
+        TelegramMessageEntity.model_validate(entity | {"date_time_format": "rw"})
 
 
 @pytest.mark.parametrize(

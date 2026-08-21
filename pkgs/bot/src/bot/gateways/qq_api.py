@@ -37,7 +37,7 @@ from urllib3_future.filepost import encode_multipart_formdata
 
 from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
-from bot.protocol.base import Model
+from bot.protocol.base import Model, StrictIntLiteral
 
 from .base import header_value, run_while_open, validate_https_base_url
 
@@ -161,8 +161,8 @@ class QQChannel(Model):
     position: Annotated[StrictInt, Field(ge=0)] | None = None
     parent_id: StrictStr | None = None
     owner_id: StrictStr | None = None
-    private_type: Literal[0, 1, 2] | None = None
-    speak_permission: Literal[0, 1, 2] | None = None
+    private_type: StrictIntLiteral[Literal[0, 1, 2]] | None = None
+    speak_permission: StrictIntLiteral[Literal[0, 1, 2]] | None = None
     application_id: StrictStr | None = None
     permissions: StrictStr | None = None
 
@@ -203,13 +203,13 @@ class QQShareLink(Model):
 
 class QQChannelCreateRequest(QQGuildParams):
     name: Annotated[StrictStr, Field(min_length=1)]
-    type: Literal[0, 2, 4, 10005, 10006, 10007]
-    sub_type: Literal[0, 1, 2, 3] = 0
+    type: StrictIntLiteral[Literal[0, 2, 4, 10005, 10006, 10007]]
+    sub_type: StrictIntLiteral[Literal[0, 1, 2, 3]] = 0
     position: StrictInt | None = None
     parent_id: QQID | None = None
-    private_type: Literal[0, 1, 2] | None = None
+    private_type: StrictIntLiteral[Literal[0, 1, 2]] | None = None
     private_user_ids: list[QQID] | None = None
-    speak_permission: Literal[0, 1, 2] | None = None
+    speak_permission: StrictIntLiteral[Literal[0, 1, 2]] | None = None
     application_id: QQID | None = None
 
 
@@ -217,8 +217,8 @@ class QQChannelUpdateRequest(QQChannelParams):
     name: Annotated[StrictStr, Field(min_length=1)] | None = None
     position: StrictInt | None = None
     parent_id: QQID | None = None
-    private_type: Literal[0, 1, 2] | None = None
-    speak_permission: Literal[0, 1, 2] | None = None
+    private_type: StrictIntLiteral[Literal[0, 1, 2]] | None = None
+    speak_permission: StrictIntLiteral[Literal[0, 1, 2]] | None = None
 
     @model_validator(mode="after")
     def has_change(self) -> Self:
@@ -230,7 +230,7 @@ class QQChannelUpdateRequest(QQChannelParams):
 
 class QQInteractionAckRequest(QQRequest):
     interaction_id: QQID
-    code: Literal[0, 1, 2, 3, 4, 5] = 0
+    code: StrictIntLiteral[Literal[0, 1, 2, 3, 4, 5]] = 0
 
 
 class QQMarkdownParams(QQRequest):
@@ -256,7 +256,7 @@ class QQMarkdown(QQRequest):
 
 
 class QQKeyboardPermission(QQRequest):
-    type: Literal[0, 1, 2, 3]
+    type: StrictIntLiteral[Literal[0, 1, 2, 3]]
     specify_user_ids: Annotated[list[QQID], Field(min_length=1)] | None = None
     specify_role_ids: Annotated[list[QQID], Field(min_length=1)] | None = None
 
@@ -274,7 +274,7 @@ class QQKeyboardPermission(QQRequest):
 
 
 class QQKeyboardAction(QQRequest):
-    type: Literal[0, 1, 2]
+    type: StrictIntLiteral[Literal[0, 1, 2]]
     permission: QQKeyboardPermission
     data: StrictStr
     reply: StrictBool | None = None
@@ -287,7 +287,7 @@ class QQKeyboardAction(QQRequest):
 class QQKeyboardRenderData(QQRequest):
     label: StrictStr
     visited_label: StrictStr | None = None
-    style: Literal[0, 1, 2, 3]
+    style: StrictIntLiteral[Literal[0, 1, 2, 3]]
 
 
 class QQKeyboardButton(QQRequest):
@@ -327,7 +327,7 @@ class QQMessageReference(QQRequest):
 
 
 class QQInputNotify(QQRequest):
-    input_type: Literal[1]
+    input_type: StrictIntLiteral[Literal[1]]
     input_second: Annotated[StrictInt, Field(ge=1, le=60)]
 
 
@@ -381,7 +381,7 @@ def _validate_message_payload(
 
 
 class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
-    msg_type: Literal[0, 2, 7] = 0
+    msg_type: StrictIntLiteral[Literal[0, 2, 7]] = 0
 
     @model_validator(mode="after")
     def payload_matches_type(self) -> Self:
@@ -397,7 +397,7 @@ class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
 
 
 class QQSendC2CMessageRequest(QQUserParams, QQMessageRequestBase):
-    msg_type: Literal[0, 2, 6, 7] = 0
+    msg_type: StrictIntLiteral[Literal[0, 2, 6, 7]] = 0
     input_notify: QQInputNotify | None = None
 
     @model_validator(mode="after")
@@ -533,7 +533,7 @@ class QQDirectMessage(Model):
 
 class QQStreamMessageRequest(QQUserParams, QQReplySourceFields):
     input_mode: Literal["append", "replace"] = "append"
-    input_state: Literal[1, 10]
+    input_state: StrictIntLiteral[Literal[1, 10]]
     index: Annotated[StrictInt, Field(ge=0)]
     content_type: Literal["text", "markdown"]
     content_raw: StrictStr
@@ -551,7 +551,7 @@ class QQStreamMessageRequest(QQUserParams, QQReplySourceFields):
 
 
 class QQFileUploadFields(QQRequest):
-    file_type: Literal[1, 2, 3, 4] | None = None
+    file_type: StrictIntLiteral[Literal[1, 2, 3, 4]] | None = None
     srv_send_msg: StrictBool = False
     url: AnyHttpUrl | None = None
     file_name: StrictStr | None = None
@@ -585,7 +585,7 @@ class QQFileInfo(Model):
 
 
 class QQFilePrepareFields(QQRequest):
-    file_type: Literal[1, 2, 3, 4]
+    file_type: StrictIntLiteral[Literal[1, 2, 3, 4]]
     file_size: QQByteSize
     file_name: Annotated[StrictStr, Field(min_length=1)]
     md5: Annotated[StrictStr, Field(pattern=r"^[0-9a-fA-F]{32}$")]
@@ -1081,7 +1081,9 @@ class QQRoleMemberList(Model):
 
 class QQDeleteMemberRequest(QQMemberParams):
     add_blacklist: StrictBool | None = None
-    delete_history_msg_days: Literal[-1, 0, 3, 7, 15, 30] | None = None
+    delete_history_msg_days: StrictIntLiteral[Literal[-1, 0, 3, 7, 15, 30]] | None = (
+        None
+    )
 
 
 class QQRole(Model):
@@ -1102,7 +1104,7 @@ class QQGuildRoles(Model):
 class QQRoleFields(QQRequest):
     name: Annotated[StrictStr, Field(min_length=1)] | None = None
     color: Annotated[StrictInt, Field(ge=0, le=0xFFFFFFFF)] | None = None
-    hoist: Literal[0, 1] | None = None
+    hoist: StrictIntLiteral[Literal[0, 1]] | None = None
 
     @model_validator(mode="after")
     def has_role_field(self) -> Self:
@@ -1175,7 +1177,7 @@ class QQChannelPermissions(Model):
 class QQEmojiParams(QQRequest):
     channel_id: QQID
     message_id: QQID
-    emoji_type: Literal[1, 2]
+    emoji_type: StrictIntLiteral[Literal[1, 2]]
     emoji_id: QQID
 
 
@@ -1287,7 +1289,7 @@ class QQScheduleList(RootModel[list[QQSchedule]]):
 class QQAudioControlRequest(QQChannelParams):
     audio_url: AnyHttpUrl | None = None
     text: StrictStr | None = None
-    status: Literal[0, 1, 2, 3]
+    status: StrictIntLiteral[Literal[0, 1, 2, 3]]
 
     @model_validator(mode="after")
     def audio_for_start(self) -> Self:
@@ -1333,7 +1335,7 @@ class QQAPIPermissionDemand(Model):
 class QQForumCreateRequest(QQChannelParams):
     title: StrictStr
     content: StrictStr
-    format: Literal[1, 2, 3, 4]
+    format: StrictIntLiteral[Literal[1, 2, 3, 4]]
 
 
 class QQForumThreadParams(QQChannelParams):
@@ -1356,7 +1358,7 @@ class QQForumThread(Model):
 
 class QQForumThreadList(Model):
     threads: list[QQForumThread]
-    is_finish: Literal[0, 1]
+    is_finish: StrictIntLiteral[Literal[0, 1]]
 
 
 class QQForumThreadDetail(Model):
@@ -1388,7 +1390,7 @@ class QQRecommendChannelResult(Model):
 class QQGuildAnnounceRequest(QQGuildParams):
     channel_id: QQID | None = None
     message_id: StrictStr | None = None
-    announces_type: Literal[0, 1] = 0
+    announces_type: StrictIntLiteral[Literal[0, 1]] = 0
     recommend_channels: (
         Annotated[list[QQRecommendChannel], Field(min_length=1, max_length=3)] | None
     ) = None
@@ -1417,7 +1419,7 @@ class QQAnnounce(Model):
     guild_id: QQID
     channel_id: QQID
     message_id: StrictStr
-    announces_type: Literal[0, 1]
+    announces_type: StrictIntLiteral[Literal[0, 1]]
     recommend_channels: list[QQRecommendChannelResult]
 
 
@@ -2013,7 +2015,7 @@ class QQAccessToken(Model):
 
 
 class QQAsyncResult(Model):
-    status: Literal[201, 202]
+    status: StrictIntLiteral[Literal[201, 202]]
     err_code: StrictInt = Field(validation_alias=AliasChoices("err_code", "code"))
     message: StrictStr
     trace_id: StrictStr | None = None

@@ -1,11 +1,14 @@
 from collections.abc import Mapping
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     JsonValue,
+    StrictBool,
+    StrictInt,
     TypeAdapter,
     model_validator,
 )
@@ -14,6 +17,11 @@ _JSON_VALUE_ADAPTER = TypeAdapter(
     JsonValue,
     config=ConfigDict(allow_inf_nan=False),
 )
+_STRICT_BOOL = TypeAdapter(StrictBool).validate_python
+_STRICT_INT = TypeAdapter(StrictInt).validate_python
+
+type StrictBoolLiteral[T] = Annotated[T, BeforeValidator(_STRICT_BOOL)]
+type StrictIntLiteral[T] = Annotated[T, BeforeValidator(_STRICT_INT)]
 
 
 def _field_value(value: object, key: str, default: object = None) -> object:

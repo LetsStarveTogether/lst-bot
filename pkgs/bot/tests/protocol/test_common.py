@@ -1,7 +1,22 @@
+from typing import Literal
+
 import pytest
 from bot import BotSelf, BotStatus, Status, Version
-from bot.protocol.base import Model
-from pydantic import ValidationError
+from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
+from pydantic import TypeAdapter, ValidationError
+
+
+def test_strict_literal_aliases_reject_numeric_coercion() -> None:
+    assert TypeAdapter(StrictBoolLiteral[Literal[True]]).validate_python(True) is True
+    assert TypeAdapter(StrictIntLiteral[Literal[1]]).validate_python(1) == 1
+
+    for adapter, value in (
+        (TypeAdapter(StrictBoolLiteral[Literal[True]]), 1),
+        (TypeAdapter(StrictIntLiteral[Literal[1]]), True),
+        (TypeAdapter(StrictIntLiteral[Literal[1]]), 1.0),
+    ):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(value)
 
 
 @pytest.mark.parametrize(

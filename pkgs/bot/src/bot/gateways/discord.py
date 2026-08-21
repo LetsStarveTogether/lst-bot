@@ -58,7 +58,7 @@ from urllib3_future.exceptions import HTTPError
 from bot.core import Bot
 from bot.json import dumpb, loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel, WireBytes
-from bot.protocol.base import Model
+from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 from bot.protocol.common import BotSelf, BotStatus, Status, Version
 from bot.protocol.enums import Action, MsgSegmentType
 from bot.protocol.events import (
@@ -238,7 +238,7 @@ class DiscordAttachment(Model):
 
 
 class DiscordMessageReference(Model):
-    type: Literal[0, 1] | None = None
+    type: StrictIntLiteral[Literal[0, 1]] | None = None
     message_id: Snowflake | None = None
     channel_id: Snowflake | None = None
     guild_id: Snowflake | None = None
@@ -293,7 +293,7 @@ class DiscordPartialMessage(Model):
 
 class DiscordPermissionOverwrite(Model):
     id: Snowflake
-    type: Literal[0, 1]
+    type: StrictIntLiteral[Literal[0, 1]]
     allow: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
     deny: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
 
@@ -390,14 +390,14 @@ class DiscordInteraction(Model):
     member: DiscordMember | None = None
     user: DiscordUser | None = None
     token: Annotated[StrictStr, Field(min_length=1, repr=False)]
-    version: Literal[1]
+    version: StrictIntLiteral[Literal[1]]
     message: DiscordMessage | None = None
     app_permissions: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
     locale: StrictStr | None = None
     guild_locale: StrictStr | None = None
     entitlements: list[dict[StrictStr, JsonValue]]
     authorizing_integration_owners: dict[Literal["0", "1"], Snowflake | Literal["0"]]
-    context: Literal[0, 1, 2] | None = None
+    context: StrictIntLiteral[Literal[0, 1, 2]] | None = None
     attachment_size_limit: NonNegativeInt
 
     @model_validator(mode="after")
@@ -425,7 +425,7 @@ class DiscordApplication(Model):
 
 class DiscordUnavailableGuild(Model):
     id: Snowflake
-    unavailable: Literal[True]
+    unavailable: StrictBoolLiteral[Literal[True]]
 
 
 def _valid_shard(value: tuple[int, int]) -> tuple[int, int]:
@@ -442,7 +442,7 @@ type DiscordShard = Annotated[
 
 
 class DiscordReady(Model):
-    v: Literal[10]
+    v: StrictIntLiteral[Literal[10]]
     user: DiscordUser
     guilds: list[DiscordUnavailableGuild]
     session_id: Annotated[StrictStr, Field(min_length=1)]
@@ -1260,7 +1260,7 @@ class DiscordHelloData(Model):
 
 class DiscordActivity(DiscordRequestModel):
     name: StrictStr
-    type: Literal[0, 1, 2, 3, 4, 5]
+    type: StrictIntLiteral[Literal[0, 1, 2, 3, 4, 5]]
     url: StrictStr | None = None
     state: StrictStr | None = None
 
@@ -1295,7 +1295,7 @@ class DiscordRequestGuildMemberRateLimitMetadata(Model):
 
 
 class DiscordRateLimited(Model):
-    opcode: Literal[8]
+    opcode: StrictIntLiteral[Literal[8]]
     retry_after: Annotated[StrictFloat, Field(ge=0)]
     meta: DiscordRequestGuildMemberRateLimitMetadata
 
@@ -1342,7 +1342,7 @@ _GATEWAY_COMMAND_MODELS: dict[DiscordOpcode, type[DiscordRequestModel]] = {
 
 
 class DiscordGatewayCommand(DiscordRequestModel):
-    opcode: Literal[3, 4, 8, 31, 43]
+    opcode: StrictIntLiteral[Literal[3, 4, 8, 31, 43]]
     data: JsonValue = Field(repr=False)
 
     def payload(self) -> tuple[dict[str, JsonValue], DiscordRequestModel]:

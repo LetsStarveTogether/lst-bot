@@ -118,6 +118,11 @@ def test_strict_boundaries_and_secret_repr() -> None:
     }
     assert DiscordReady.model_validate(ready).guilds[0].id == "2"
     with pytest.raises(ValidationError):
+        DiscordReady.model_validate({
+            **ready,
+            "guilds": [{"id": "2", "unavailable": 1}],
+        })
+    with pytest.raises(ValidationError):
         DiscordReady.model_validate({**ready, "guilds": [{"id": "2"}]})
     with pytest.raises(ValidationError):
         DiscordReady.model_validate({**ready, "shard": [1, 1]})

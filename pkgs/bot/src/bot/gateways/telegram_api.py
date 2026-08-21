@@ -32,7 +32,7 @@ from urllib3_future.filepost import encode_multipart_formdata
 
 from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
-from bot.protocol.base import Model
+from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
 from .base import run_while_open, validate_https_base_url
 
@@ -230,8 +230,8 @@ class TelegramUser(Model):
     last_name: StrictStr | None = None
     username: StrictStr | None = None
     language_code: StrictStr | None = None
-    is_premium: Literal[True] | None = None
-    added_to_attachment_menu: Literal[True] | None = None
+    is_premium: StrictBoolLiteral[Literal[True]] | None = None
+    added_to_attachment_menu: StrictBoolLiteral[Literal[True]] | None = None
     can_join_groups: StrictBool | None = None
     can_read_all_group_messages: StrictBool | None = None
     supports_guest_queries: StrictBool | None = None
@@ -251,8 +251,8 @@ class TelegramChat(Model):
     username: StrictStr | None = None
     first_name: StrictStr | None = None
     last_name: StrictStr | None = None
-    is_forum: Literal[True] | None = None
-    is_direct_messages: Literal[True] | None = None
+    is_forum: StrictBoolLiteral[Literal[True]] | None = None
+    is_direct_messages: StrictBoolLiteral[Literal[True]] | None = None
 
 
 class TelegramDirectMessagesTopic(Model):
@@ -263,7 +263,7 @@ class TelegramDirectMessagesTopic(Model):
 class TelegramFile(Model):
     file_id: StrictStr
     file_unique_id: StrictStr
-    file_size: NonNegativeInt | None = None
+    file_size: Annotated[StrictInt, Field(ge=0, le=_MAX_TELEGRAM_ID)] | None = None
     width: NonNegativeInt | None = None
     height: NonNegativeInt | None = None
     duration: NonNegativeInt | None = None
@@ -322,6 +322,9 @@ class TelegramMessageEntity(Model):
     language: StrictStr | None = None
     custom_emoji_id: StrictStr | None = None
     unix_time: StrictInt | None = None
+    date_time_format: (
+        Annotated[StrictStr, Field(pattern=r"^(?:r|w?[dD]?[tT]?)$")] | None
+    ) = None
 
     @model_validator(mode="after")
     def text_mention_user(self) -> Self:
@@ -379,7 +382,7 @@ class TelegramMessage(Model):
 class TelegramInaccessibleMessage(Model):
     chat: TelegramChat
     message_id: NonNegativeInt
-    date: Literal[0]
+    date: StrictIntLiteral[Literal[0]]
 
 
 class TelegramCallbackQuery(Model):

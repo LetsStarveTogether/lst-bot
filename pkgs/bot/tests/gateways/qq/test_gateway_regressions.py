@@ -114,6 +114,7 @@ async def test_dispatch_envelope_and_control_frames_remain_strict() -> None:
     }
 
     for payload in (
+        {"op": True, "d": None},
         {"op": 0, "t": "C2C_MESSAGE_CREATE", "d": valid_message},
         {"op": 0, "s": 1, "d": valid_message},
         {"op": 0, "s": 1, "t": "READY", "d": {}},
