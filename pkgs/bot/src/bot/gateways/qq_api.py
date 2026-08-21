@@ -2082,7 +2082,7 @@ class QQRestClient:
         self.app_id = credential.app_id
         self.client_secret = SecretStr(credential.client_secret)
         self.base_url = str(parsed_url).rstrip("/")
-        self.http_pool = http_pool or AsyncPoolManager()
+        self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
         self._owns_http_pool = http_pool is None
         self._token: SecretStr | None = None
         self._token_expires_at = 0.0
@@ -2273,9 +2273,11 @@ class QQRestClient:
 
     async def start(self) -> None:
         async with self._rest_lifecycle_lock:
-            if not self._closed:
+            if not self._closed and not self._closed_event.is_set():
                 return
             if self._owns_http_pool:
+                if not self._closed:
+                    await self.http_pool.clear()
                 self.http_pool = AsyncPoolManager()
             self._token_lock = Lock()
             self._closed_event = Event()
@@ -2329,6 +2331,7 @@ class QQRestClient:
             url,
             headers=headers,
             json=json,
+            retries=False,
             timeout=_HTTP_TIMEOUT,
         )
         return response, await response.data

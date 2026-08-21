@@ -45,6 +45,11 @@ class GatedResponse:
         return self.body
 
 
+def test_falsey_external_pool_is_preserved() -> None:
+    pool: list[object] = []
+    assert client(pool).http_pool is pool
+
+
 @pytest.mark.parametrize(
     ("permission_type", "subjects"),
     [
@@ -482,15 +487,17 @@ async def test_close_rejects_an_inflight_action_result_across_restart(
     assert calls == 4
 
 
-async def test_failed_pool_cleanup_leaves_close_retryable(
+async def test_start_recovers_from_failed_pool_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = Pool(response(200, {"access_token": "token", "expires_in": 7200}))
+    pool = Pool()
+    replacement = Pool(response(200, {"access_token": "token", "expires_in": 7200}))
     clear = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None])
     monkeypatch.setattr(pool, "clear", clear, raising=False)
+    pools = [pool, replacement]
 
     def pool_factory() -> AsyncPoolManager:
-        return cast(AsyncPoolManager, pool)
+        return cast(AsyncPoolManager, pools.pop(0))
 
     monkeypatch.setattr(qq_api, "AsyncPoolManager", pool_factory)
     rest = QQRestClient("app", "secret", base_url="https://qq.example")
@@ -500,10 +507,9 @@ async def test_failed_pool_cleanup_leaves_close_retryable(
     with pytest.raises(RuntimeError, match="closed"):
         await rest.access_token()
 
-    await rest.close()
+    await rest.start()
     assert clear.await_count == 2
-    with pytest.raises(RuntimeError, match="closed"):
-        await rest.access_token()
+    assert await rest.access_token() == "token"
 
 
 async def test_start_waits_for_close_before_replacing_owned_pool(

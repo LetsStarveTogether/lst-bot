@@ -185,6 +185,8 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
         "msg_id": "source-message",
         "msg_type": 0,
     }
+    for _, _, kwargs in pool.requests:
+        assert kwargs["retries"] is False
     for _, _, kwargs in pool.requests[1:]:
         assert kwargs["headers"] == {
             "Authorization": "QQBot token",
