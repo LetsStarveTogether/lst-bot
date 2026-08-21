@@ -2,7 +2,7 @@ from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, ti
 from http import HTTPStatus
 from math import inf, nan
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from bot import (
     Bot,
     BotSelf,
     Connection,
+    Gateway,
     Injected,
     PrivateMessageEvent,
 )
@@ -475,10 +476,13 @@ async def test_forward_websocket_waits_until_bot_start_completes() -> None:
     )
     bot.add_gateway(gateway)
 
-    @bot.on_start
-    async def pause_startup() -> None:
-        startup_paused.set()
-        await continue_startup.wait()
+    class BlockingGateway(Gateway):
+        @override
+        async def start(self) -> None:
+            startup_paused.set()
+            await continue_startup.wait()
+
+    bot.add_gateway(BlockingGateway(bot))
 
     @bot.on_msg(block=True)
     def collect() -> None:

@@ -2,13 +2,9 @@ from asyncio import CancelledError, Event, create_task, gather, timeout
 from typing import override
 
 import pytest
-from bot import Bot, Gateway, Injected
+from bot import Bot, Gateway
 from bot.testing import RecordingGateway, private_message_event
 from diwire import Container
-
-
-class LifecycleService:
-    value = "ready"
 
 
 class CountingGateway(Gateway):
@@ -22,25 +18,6 @@ class CountingGateway(Gateway):
     @override
     async def close(self) -> None:
         self.closes += 1
-
-
-async def test_lifecycle_hooks_use_dependency_injection() -> None:
-    bot = Bot()
-    bot.container.add_instance(LifecycleService(), provides=LifecycleService)
-    seen: list[str] = []
-
-    @bot.on_start
-    def start(service: Injected[LifecycleService]) -> None:
-        seen.append(f"startup:{service.value}")
-
-    @bot.on_close
-    def stop(active_bot: Injected[Bot]) -> None:
-        seen.append(f"close:{active_bot.cmd_prefixes[0]}")
-
-    await bot.start()
-    await bot.close()
-
-    assert seen == ["startup:ready", "close:/"]
 
 
 def test_bot_accepts_supplied_container() -> None:
@@ -68,11 +45,15 @@ def test_add_gateway_rejects_a_foreign_owner() -> None:
 
 
 async def test_bot_async_context_runs_lifecycle_and_closes_gateways() -> None:
-    class ClosingGateway(RecordingGateway):
+    class LifecycleGateway(RecordingGateway):
         @override
         def __init__(self, bot: Bot, seen: list[str]) -> None:
             super().__init__(bot)
             self.seen = seen
+
+        @override
+        async def start(self) -> None:
+            self.seen.append("start")
 
         @override
         async def close(self) -> None:
@@ -80,36 +61,19 @@ async def test_bot_async_context_runs_lifecycle_and_closes_gateways() -> None:
 
     bot = Bot()
     seen: list[str] = []
-    bot.add_gateway(ClosingGateway(bot, seen))
-
-    @bot.on_start
-    def start_hook() -> None:
-        seen.append("startup")
-
-    @bot.on_close
-    def close() -> None:
-        seen.append("close hook")
+    bot.add_gateway(LifecycleGateway(bot, seen))
 
     async with bot as active:
         assert active is bot
         seen.append("body")
 
-    assert seen == ["startup", "body", "close hook", "close"]
+    assert seen == ["start", "body", "close"]
 
 
 async def test_bot_lifecycle_is_concurrently_idempotent_and_restartable() -> None:
     bot = Bot()
     gateway = CountingGateway(bot)
     bot.add_gateway(gateway)
-    hooks = {"start": 0, "close": 0}
-
-    @bot.on_start
-    def start_hook() -> None:
-        hooks["start"] += 1
-
-    @bot.on_close
-    def close_hook() -> None:
-        hooks["close"] += 1
 
     async with timeout(1):
         await gather(bot.start(), bot.start(), bot.start())
@@ -119,7 +83,6 @@ async def test_bot_lifecycle_is_concurrently_idempotent_and_restartable() -> Non
 
     assert gateway.starts == 2
     assert gateway.closes == 2
-    assert hooks == {"start": 2, "close": 2}
 
 
 async def test_bot_close_waits_for_start_and_leaves_bot_restartable() -> None:
@@ -245,17 +208,22 @@ async def test_bot_start_failure_cleans_up_and_can_retry() -> None:
     assert gateway.closes == 2
 
 
-async def test_bot_start_hook_failure_runs_full_rollback() -> None:
+async def test_gateway_start_failure_runs_full_rollback() -> None:
     calls: list[str] = []
 
     class OrderedGateway(Gateway):
-        def __init__(self, bot: Bot, name: str) -> None:
+        def __init__(self, bot: Bot, name: str, *, fail_once: bool = False) -> None:
             super().__init__(bot)
             self.name = name
+            self.fail_once = fail_once
 
         @override
         async def start(self) -> None:
             calls.append(f"start:{self.name}")
+            if self.fail_once:
+                self.fail_once = False
+                msg = "gateway failed"
+                raise RuntimeError(msg)
 
         @override
         async def close(self) -> None:
@@ -263,30 +231,14 @@ async def test_bot_start_hook_failure_runs_full_rollback() -> None:
 
     bot = Bot()
     bot.add_gateway(OrderedGateway(bot, "first"))
-    bot.add_gateway(OrderedGateway(bot, "second"))
-    fail = True
+    bot.add_gateway(OrderedGateway(bot, "second", fail_once=True))
 
-    @bot.on_start
-    def start_hook() -> None:
-        nonlocal fail
-        calls.append("start hook")
-        if fail:
-            fail = False
-            msg = "hook failed"
-            raise RuntimeError(msg)
-
-    @bot.on_close
-    def close_hook() -> None:
-        calls.append("close hook")
-
-    with pytest.raises(RuntimeError, match="hook failed"):
+    with pytest.raises(RuntimeError, match="gateway failed"):
         await bot.start()
 
     expected = [
         "start:first",
         "start:second",
-        "start hook",
-        "close hook",
         "close:second",
         "close:first",
     ]
@@ -299,35 +251,42 @@ async def test_bot_start_hook_failure_runs_full_rollback() -> None:
     assert calls == expected
 
 
-async def test_lifecycle_hooks_reject_same_task_reentry() -> None:
+async def test_gateways_cannot_reenter_bot_lifecycle() -> None:
     async with timeout(1):
-        startup_bot = Bot()
 
-        @startup_bot.on_start
-        async def recursive_start() -> None:
-            await startup_bot.start()
+        class RecursiveStartGateway(Gateway):
+            @override
+            async def start(self) -> None:
+                await self.bot.start()
+
+        startup_bot = Bot()
+        startup_bot.add_gateway(RecursiveStartGateway(startup_bot))
 
         with pytest.raises(RuntimeError, match="cannot be re-entered"):
             await startup_bot.start()
 
-        child_bot = Bot()
+        class RecursiveChildStartGateway(Gateway):
+            @override
+            async def start(self) -> None:
+                await create_task(self.bot.start())
 
-        @child_bot.on_start
-        async def recursive_child_start() -> None:
-            await create_task(child_bot.start())
+        child_bot = Bot()
+        child_bot.add_gateway(RecursiveChildStartGateway(child_bot))
 
         with pytest.raises(RuntimeError, match="cannot be re-entered"):
             await child_bot.start()
 
-        closing_bot = Bot()
-        first_close = True
+        class RecursiveCloseGateway(Gateway):
+            closes = 0
 
-        @closing_bot.on_close
-        async def recursive_close() -> None:
-            nonlocal first_close
-            if first_close:
-                first_close = False
-                await closing_bot.close()
+            @override
+            async def close(self) -> None:
+                self.closes += 1
+                if self.closes == 1:
+                    await self.bot.close()
+
+        closing_bot = Bot()
+        closing_bot.add_gateway(RecursiveCloseGateway(closing_bot))
 
         await closing_bot.start()
         with pytest.raises(RuntimeError, match="cannot be re-entered"):
@@ -335,16 +294,16 @@ async def test_lifecycle_hooks_reject_same_task_reentry() -> None:
         await closing_bot.close()
 
 
-async def test_gateway_registration_freezes_before_start_hooks() -> None:
+async def test_gateway_registration_freezes_after_startup_begins() -> None:
     bot = Bot()
     late_gateway = CountingGateway(bot)
 
-    @bot.on_start
-    def add_late_gateway() -> None:
-        bot.add_gateway(late_gateway)
-
-    with pytest.raises(RuntimeError, match="after bot startup begins"):
-        await bot.start()
+    await bot.start()
+    try:
+        with pytest.raises(RuntimeError, match="after bot startup begins"):
+            bot.add_gateway(late_gateway)
+    finally:
+        await bot.close()
 
     assert late_gateway.starts == 0
     assert late_gateway.closes == 0
@@ -353,57 +312,36 @@ async def test_gateway_registration_freezes_before_start_hooks() -> None:
 async def test_failed_close_runs_every_cleanup_and_can_be_retried() -> None:
     calls: list[str] = []
 
-    class FlakyGateway(Gateway):
-        closes = 0
+    class ClosingGateway(Gateway):
+        def __init__(self, bot: Bot, name: str, *, fail_once: bool = False) -> None:
+            super().__init__(bot)
+            self.name = name
+            self.fail_once = fail_once
 
         @override
         async def close(self) -> None:
-            self.closes += 1
-            calls.append("gateway")
-            if self.closes == 1:
+            calls.append(self.name)
+            if self.fail_once:
+                self.fail_once = False
                 msg = "gateway close failed"
                 raise RuntimeError(msg)
 
     bot = Bot()
-    gateway = FlakyGateway(bot)
-    bot.add_gateway(gateway)
-    hook_attempts = 0
-
-    @bot.on_close
-    def flaky_hook() -> None:
-        nonlocal hook_attempts
-        hook_attempts += 1
-        calls.append("flaky hook")
-        if hook_attempts == 1:
-            msg = "hook close failed"
-            raise RuntimeError(msg)
-
-    @bot.on_close
-    def later_hook() -> None:
-        calls.append("later hook")
+    bot.add_gateway(ClosingGateway(bot, "later"))
+    bot.add_gateway(ClosingGateway(bot, "flaky", fail_once=True))
 
     await bot.start()
-    with pytest.raises(ExceptionGroup, match="Bot cleanup failed") as raised:
+    with pytest.raises(RuntimeError, match="gateway close failed"):
         await bot.close()
 
-    assert [str(error) for error in raised.value.exceptions] == [
-        "hook close failed",
-        "gateway close failed",
-    ]
-    assert calls == ["flaky hook", "later hook", "gateway"]
+    assert calls == ["flaky", "later"]
 
     with pytest.raises(RuntimeError, match="shutdown is incomplete"):
         await bot.start()
 
     await bot.close()
 
-    assert calls == [
-        "flaky hook",
-        "later hook",
-        "gateway",
-        "flaky hook",
-        "gateway",
-    ]
+    assert calls == ["flaky", "later", "flaky"]
 
 
 async def test_failed_start_rollback_must_finish_before_retry() -> None:
@@ -523,10 +461,6 @@ async def test_cancelled_close_retries_interrupted_dispatcher_cleanup() -> None:
                 cleanup_cancelled.set()
                 await cleanup_release.wait()
 
-    @bot.on_close
-    def close_hook() -> None:
-        calls.append("hook")
-
     try:
         async with timeout(1):
             await bot.start()
@@ -545,11 +479,11 @@ async def test_cancelled_close_retries_interrupted_dispatcher_cleanup() -> None:
             with pytest.raises(CancelledError):
                 await close_task
 
-            assert calls == ["hook", "gateway"]
+            assert calls == ["gateway"]
 
             await bot.close()
 
-            assert calls == ["hook", "gateway"]
+            assert calls == ["gateway"]
             with pytest.raises(CancelledError):
                 await dispatch_task
     finally:

@@ -18,7 +18,6 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import timedelta, tzinfo
-from functools import partial
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Self
 
@@ -125,8 +124,6 @@ class Bot(EventRouter):
         self.container.add_instance(self, provides=Bot)
         self._gateways: list[Gateway] = []
         register_context_providers(self.container)
-        self._start_hooks: list[Callable] = []
-        self._close_hooks: list[Callable] = []
         self._recent_connection: tuple[Gateway, BotSelf] | None = None
         self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
@@ -215,14 +212,6 @@ class Bot(EventRouter):
             gateway=gateway,
         )
 
-    def on_start(self, func: Callable) -> Callable:
-        self._start_hooks.append(func)
-        return func
-
-    def on_close(self, func: Callable) -> Callable:
-        self._close_hooks.append(func)
-        return func
-
     async def start(self) -> None:
         self._reject_lifecycle_reentry()
         self._lifecycle_started = True
@@ -263,7 +252,6 @@ class Bot(EventRouter):
                 if not self._pending_cleanup:
                     self._pending_cleanup = self._cleanup_callbacks(
                         self._gateways,
-                        run_close_hooks=True,
                         close_container=True,
                     )
                 failed, errors = await self._run_cleanup(self._pending_cleanup)
@@ -274,19 +262,16 @@ class Bot(EventRouter):
 
     async def _start_once(self) -> None:
         gateways: list[Gateway] = []
-        run_close_hooks = False
-        try:  # ruff: ignore[too-many-statements-in-try-clause] - lifecycle rollback is clearest in one scope
+        try:
             await self._start_dispatcher()
             for gateway in self._gateways:
                 gateways.append(gateway)
                 await gateway.start()
-            run_close_hooks = True
-            await self._run_hooks(self._start_hooks)
+            self.container.compile()
             self._scheduler.start()
         except BaseException as startup_error:
             callbacks = self._cleanup_callbacks(
                 gateways,
-                run_close_hooks=run_close_hooks,
                 close_container=False,
             )
             failed, cleanup_errors = await self._run_cleanup(callbacks)
@@ -299,24 +284,19 @@ class Bot(EventRouter):
 
     def _reject_lifecycle_reentry(self) -> None:
         if _CURRENT_LIFECYCLE.get() is self and self._lifecycle_lock.locked():
-            msg = "Bot lifecycle cannot be re-entered from a lifecycle hook"
+            msg = "Bot lifecycle cannot be re-entered"
             raise RuntimeError(msg)
 
     def _cleanup_callbacks(
         self,
         gateways: Iterable[Gateway],
         *,
-        run_close_hooks: bool,
         close_container: bool,
     ) -> list[_CleanupCallback]:
         callbacks: list[_CleanupCallback] = [
             self._scheduler.close,
             self._stop_dispatcher,
         ]
-        if run_close_hooks:
-            callbacks.extend(
-                partial(self._run_hooks, [hook]) for hook in self._close_hooks
-            )
         callbacks.extend(gateway.close for gateway in reversed(tuple(gateways)))
         if close_container:
             callbacks.append(self.container.aclose)
@@ -338,12 +318,6 @@ class Bot(EventRouter):
 
     async def wait_until_running(self) -> None:
         await self._running.wait()
-
-    async def _run_hooks(self, hooks: list[Callable]) -> None:
-        async with request_scope(self.container) as resolver:
-            context = InjectionContext(bot=self)
-            for hook in hooks:
-                await call_with_injection(hook, context, resolver)
 
     def enqueue_event(
         self,

@@ -2,10 +2,11 @@ from asyncio import CancelledError, Event, create_task, timeout
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from typing import override
 from zoneinfo import ZoneInfo
 
 import pytest
-from bot import Bot, BotSelf
+from bot import Bot, BotSelf, Gateway
 from bot.gateways.discord import DiscordGateway, DiscordIntent
 from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.telegram import TelegramGateway
@@ -39,12 +40,17 @@ async def test_application_starts_services_before_bot_and_closes_bot_first() -> 
     started = Event()
     bot = Bot()
 
-    def bot_started() -> None:
-        events.append("bot:start")
-        started.set()
+    class LifecycleGateway(Gateway):
+        @override
+        async def start(self) -> None:
+            events.append("bot:start")
+            started.set()
 
-    bot.on_start(bot_started)
-    bot.on_close(lambda: events.append("bot:close"))
+        @override
+        async def close(self) -> None:
+            events.append("bot:close")
+
+    bot.add_gateway(LifecycleGateway(bot))
     first = resource("first", events)
     second = resource("second", events)
 
