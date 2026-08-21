@@ -538,7 +538,7 @@ class QQStreamMessageRequest(QQUserParams, QQReplySourceFields):
 
 
 class QQFileUploadFields(QQRequest):
-    file_type: Literal[1, 2, 3, 4]
+    file_type: Literal[1, 2, 3, 4] | None = None
     srv_send_msg: StrictBool = False
     url: AnyHttpUrl | None = None
     file_name: StrictStr | None = None
@@ -548,6 +548,9 @@ class QQFileUploadFields(QQRequest):
     def upload_source(self) -> Self:
         if (self.url is None) == (self.upload_id is None):
             msg = "exactly one of url and upload_id is required"
+            raise ValueError(msg)
+        if self.url is not None and self.file_type is None:
+            msg = "file_type is required for URL uploads"
             raise ValueError(msg)
         return self
 

@@ -163,6 +163,11 @@ def test_rest_request_models_follow_current_qq_contract() -> None:
     assert upload.srv_send_msg is False
     with pytest.raises(ValidationError):
         QQFileUploadFields.model_validate({"url": "https://qq.example/image.png"})
+    merged = QQFileUploadFields(upload_id="upload")
+    assert merged.model_dump(mode="json", exclude_none=True) == {
+        "srv_send_msg": False,
+        "upload_id": "upload",
+    }
 
     first_chunk = {
         "user_openid": "user",
