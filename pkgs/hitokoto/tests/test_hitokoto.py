@@ -13,7 +13,6 @@ import pytest
 from hitokoto import (
     Hitokoto,
     HitokotoClient,
-    HitokotoType,
 )
 from hitokoto.cache import (
     is_cache_valid,
@@ -128,34 +127,14 @@ def test_model_strictly_validates_identifiers_and_parses_official_time() -> None
         Hitokoto.model_validate(payload | {"id": -1})
 
 
-@pytest.mark.parametrize(
-    ("types", "expected_fields"),
-    [
-        (None, None),
-        ((HitokotoType.ANIME, HitokotoType.GAME), [("c", "a"), ("c", "c")]),
-    ],
-)
-async def test_client_requests_api_with_optional_type_filters(
-    types: tuple[HitokotoType, ...] | None,
-    expected_fields: list[tuple[str, str]] | None,
-) -> None:
+async def test_client_requests_api() -> None:
     pool = RecordingPool({API_URL: hitokoto_payload()})
     client = HitokotoClient(url=API_URL, http_pool=pool)
 
-    result = await client.get_hitokoto(types)
+    result = await client.get_hitokoto()
 
-    expected_call: dict[str, object] = {"method": "GET", "url": API_URL}
-    if expected_fields is not None:
-        expected_call["fields"] = expected_fields
     assert result.hitokoto == "hello"
-    assert pool.calls == [expected_call]
-
-
-async def test_client_strictly_validates_type_filters() -> None:
-    client = HitokotoClient(http_pool=RecordingPool({}))
-
-    with pytest.raises(ValidationError):
-        await client.get_hitokoto(("a",))  # ty: ignore[invalid-argument-type]
+    assert pool.calls == [{"method": "GET", "url": API_URL}]
 
 
 async def test_client_rejects_error_status_without_reading_body(
@@ -203,12 +182,7 @@ async def test_concurrent_clients_download_cache_once(tmp_path: Path) -> None:
         for _ in range(8)
     ]
 
-    results = await gather(
-        *(
-            client.get_hitokoto((HitokotoType.ANIME,), use_cache=True)
-            for client in clients
-        )
-    )
+    results = await gather(*(client.get_hitokoto(use_cache=True) for client in clients))
 
     assert {result.hitokoto for result in results} == {"cached hello"}
     assert [call["url"] for call in pool.calls] == [
@@ -224,7 +198,7 @@ async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:
 
     await gather(*(write_cache(cache_path, bundle(value)) for value in values))
 
-    result = await read_cached_hitokoto(cache_path, ())
+    result = await read_cached_hitokoto(cache_path)
     assert result.hitokoto in values
     assert await is_cache_valid(cache_path) is True
     assert list_cache_temps(cache_path) == []
@@ -245,23 +219,17 @@ async def test_duplicate_keys_do_not_replace_the_existing_cache(
     with pytest.raises(sqlite3.IntegrityError):
         await write_cache(cache_path, duplicates)
 
-    assert (await read_cached_hitokoto(cache_path, ())).hitokoto == "existing"
+    assert (await read_cached_hitokoto(cache_path)).hitokoto == "existing"
     assert await is_cache_valid(cache_path) is True
     assert list_cache_temps(cache_path) == []
 
 
-async def test_real_sqlite_cache_filters_types_and_rejects_empty_matches(
-    tmp_path: Path,
-) -> None:
+async def test_real_sqlite_cache_rejects_an_empty_database(tmp_path: Path) -> None:
     cache_path = tmp_path / "hitokoto.db"
-    sentences = bundle(include_game=True)
-    await write_cache(cache_path, sentences)
+    await write_cache(cache_path, ())
 
-    result = await read_cached_hitokoto(cache_path, (HitokotoType.GAME,))
-
-    assert result == sentences[1]
     with pytest.raises(RuntimeError, match="no matching"):
-        await read_cached_hitokoto(cache_path, (HitokotoType.JOKE,))
+        await read_cached_hitokoto(cache_path)
 
 
 async def test_cache_validity_handles_missing_and_current_database(

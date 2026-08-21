@@ -1,3 +1,1 @@
-from .client import LstClient
-
-__all__ = ["LstClient"]
+from .client import LstClient as LstClient

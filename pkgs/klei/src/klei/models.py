@@ -59,11 +59,10 @@ class Version(BaseModel):
             msg = "version row is missing number or date"
             raise ValueError(msg)
 
-        month, day, year = (int(part) for part in date_match.group().split("/"))
         return {
             "number": int(number_match.group()),
             "type": badge.text(strip=True),
-            "date": date(2000 + year, month, day),
+            "date": date.strptime(date_match.group(), "%m/%d/%y"),
         }
 
 

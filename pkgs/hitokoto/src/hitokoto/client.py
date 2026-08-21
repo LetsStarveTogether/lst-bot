@@ -1,5 +1,4 @@
 from asyncio import Lock, TaskGroup, timeout
-from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
 from pathlib import Path
@@ -7,22 +6,17 @@ from typing import Annotated
 from urllib.parse import urlsplit
 from weakref import WeakValueDictionary
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
 from .cache import is_cache_valid, read_cached_hitokoto, write_cache
-from .enums import HitokotoType
 from .models import Hitokoto
 
 HTTP_TIMEOUT_SECONDS = 30.0
 _HITOKOTO_SENTENCES = TypeAdapter(list[Hitokoto])
 _HITOKOTO_BUNDLE = TypeAdapter(
     Annotated[list[Hitokoto], Field(min_length=1)],
-)
-_HITOKOTO_TYPES = TypeAdapter(
-    tuple[HitokotoType, ...],
-    config=ConfigDict(strict=True),
 )
 _CACHE_LOCKS: WeakValueDictionary[Path, Lock] = WeakValueDictionary()
 logger = getLogger(__name__)
@@ -53,16 +47,14 @@ class HitokotoClient:
 
     async def get_hitokoto(
         self,
-        types: Iterable[HitokotoType] | None = None,
+        *,
         use_cache: bool = False,
     ) -> Hitokoto:
-        type_values = _HITOKOTO_TYPES.validate_python(tuple(types or ()))
         if use_cache:
             await self.ensure_cache()
-            return await read_cached_hitokoto(self.cache_path, type_values)
+            return await read_cached_hitokoto(self.cache_path)
 
-        fields = [("c", item.value) for item in type_values] or None
-        return Hitokoto.model_validate_json(await self._get(self.url, fields=fields))
+        return Hitokoto.model_validate_json(await self._get(self.url))
 
     async def ensure_cache(self) -> None:
         if await is_cache_valid(self.cache_path):
@@ -99,14 +91,11 @@ class HitokotoClient:
     async def _get(
         self,
         url: str,
-        *,
-        fields: list[tuple[str, str]] | None = None,
     ) -> bytes:
         async with timeout(HTTP_TIMEOUT_SECONDS):
             response = await self.http_pool.request(
                 HTTPMethod.GET,
                 url,
-                fields=fields,
             )
             if response.status != HTTPStatus.OK:
                 msg = f"Hitokoto request failed: HTTP {response.status}"

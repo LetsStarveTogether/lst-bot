@@ -6,7 +6,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from time import time
 
-from .enums import HitokotoType
 from .models import Hitokoto
 
 
@@ -48,18 +47,15 @@ def _write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
                 "CREATE TABLE sentence ("
                 "id INTEGER PRIMARY KEY,"
                 "uuid TEXT NOT NULL UNIQUE,"
-                "type TEXT NOT NULL,"
                 "payload TEXT NOT NULL"
-                ");"
-                "CREATE INDEX idx_sentence_type ON sentence(type);",
+                ");",
             )
             db.executemany(
-                "INSERT INTO sentence (id, uuid, type, payload) VALUES (?, ?, ?, ?)",
+                "INSERT INTO sentence (id, uuid, payload) VALUES (?, ?, ?)",
                 (
                     (
                         item.id,
                         str(item.uuid),
-                        item.type.value,
                         item.model_dump_json(by_alias=True),
                     )
                     for item in sentences
@@ -74,26 +70,16 @@ async def write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
     await to_thread(_write_cache, cache_path, sentences)
 
 
-def _read_cached_hitokoto(
-    cache_path: Path,
-    types: tuple[HitokotoType, ...],
-) -> Hitokoto:
-    query = "SELECT payload FROM sentence"
-    params = tuple(item.value for item in types)
-    placeholders = ", ".join("?" for _ in params)
-    query += f" WHERE type IN ({placeholders})" if params else ""
-    query += " ORDER BY RANDOM() LIMIT 1"
-
+def _read_cached_hitokoto(cache_path: Path) -> Hitokoto:
     with closing(_open_read_only(cache_path)) as db:
-        row = db.execute(query, params).fetchone()
+        row = db.execute(
+            "SELECT payload FROM sentence ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
     if row is None:
         msg = "hitokoto cache has no matching sentences"
         raise RuntimeError(msg)
     return Hitokoto.model_validate_json(row[0])
 
 
-async def read_cached_hitokoto(
-    cache_path: Path,
-    types: tuple[HitokotoType, ...],
-) -> Hitokoto:
-    return await to_thread(_read_cached_hitokoto, cache_path, types)
+async def read_cached_hitokoto(cache_path: Path) -> Hitokoto:
+    return await to_thread(_read_cached_hitokoto, cache_path)

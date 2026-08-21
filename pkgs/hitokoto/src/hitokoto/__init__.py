@@ -1,9 +1,2 @@
-from .client import HitokotoClient
-from .enums import HitokotoType
-from .models import Hitokoto
-
-__all__ = [
-    "Hitokoto",
-    "HitokotoClient",
-    "HitokotoType",
-]
+from .client import HitokotoClient as HitokotoClient
+from .models import Hitokoto as Hitokoto

@@ -11,7 +11,6 @@ from klei import (
     LobbyData,
     Platform,
     RoomData,
-    Secondary,
     VersionType,
 )
 from klei.models import KleiDataResponse
@@ -347,6 +346,7 @@ def test_response_envelope_and_lobby_bounds_are_validated() -> None:
         {"__addr": True},
         {"__addr": 2130706433},
         {"platform": True},
+        {"secondaries": {"1": {"id": "1", "port": 0}}},
         {"secondaries": {"1": {"id": "1", "__addr": True}}},
         {"secondaries": {"1": {"id": "1", "__addr": 2130706433}}},
     ):
@@ -355,9 +355,6 @@ def test_response_envelope_and_lobby_bounds_are_validated() -> None:
                 jsonlib.dumps(lobby_row() | changes),
                 context={"region": "us-east-1"},
             )
-
-    with pytest.raises(ValidationError):
-        Secondary.model_validate({"id": "secondary", "port": 0})
 
     for changes in ({"tick": "12345"}, {"clientmodsoff": 0}, {"nat": "1"}):
         with pytest.raises(ValidationError):

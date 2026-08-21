@@ -5,8 +5,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from .enums import HitokotoType
-
 QUOTE_WIDTH = 12
 QUOTE_SPACE = "\u3000"
 QUOTE_CORNERS = "┌┐└┘"
@@ -18,7 +16,7 @@ class Hitokoto(BaseModel):
     id: NonNegativeInt
     uuid: UUID
     hitokoto: str
-    type: HitokotoType
+    type: Annotated[str, Field(strict=True, pattern=r"^[a-l]$")]
     from_: Annotated[str, Field(alias="from")]
     from_who: str | None
     creator: str
