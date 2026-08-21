@@ -5,6 +5,7 @@ from asyncio import (
     Task,
     TaskGroup,
     create_task,
+    sleep,
     timeout,
 )
 from contextvars import ContextVar
@@ -13,6 +14,9 @@ from typing import override
 
 import pytest
 from bot import Bot, BotSelf, Injected, PrivateMessageEvent
+from bot.core.bot import (
+    _CURRENT_DISPATCHER,  # ruff: ignore[import-private-name] - lifetime regression
+)
 from bot.testing import RecordingGateway, private_message_event
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
@@ -199,11 +203,15 @@ async def test_queued_event_uses_its_admission_deadline() -> None:
             try:
                 await started.wait()
                 bot.dispatch_timeout = timedelta(0)
-                bot.enqueue_event(gateway.connection, event("expired"))
+                expired = create_task(
+                    bot.dispatch(gateway.connection, event("expired"))
+                )
+                await sleep(0)
                 bot.dispatch_timeout = None
             finally:
                 release.set()
                 await running
+            await expired
             await bot.dispatch(gateway.connection, event("after"))
 
     assert not expired_ran
@@ -215,6 +223,7 @@ async def test_dispatch_context_expires_with_its_handler() -> None:
     release = Event()
     background: Task[None] | None = None
     seen: list[str] = []
+    owner_counts: list[int] = []
 
     async def dispatch_later() -> None:
         await release.wait()
@@ -229,6 +238,7 @@ async def test_dispatch_context_expires_with_its_handler() -> None:
             background = create_task(dispatch_later())
         else:
             seen.append(message.id)
+            owner_counts.append(len(_CURRENT_DISPATCHER.get()))
 
     async with bot:
         await bot.dispatch(gateway.connection, event("outer"))
@@ -237,6 +247,7 @@ async def test_dispatch_context_expires_with_its_handler() -> None:
         await background
 
     assert seen == ["child"]
+    assert owner_counts == [1]
 
 
 async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
