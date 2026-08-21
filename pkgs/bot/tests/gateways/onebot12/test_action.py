@@ -6,7 +6,7 @@ from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from bot import ActionResponse, ApiStatus, Bot
+from bot import Action, ActionResponse, ApiStatus, Bot, Msg
 from bot.gateways.onebot12 import HttpAction, OneBot12Gateway, ReverseWebSocket
 from urllib3_future import AsyncPoolManager
 
@@ -18,7 +18,7 @@ AUTH = "test-value"
 ACTION_RESPONSE = ActionResponse.ok().model_dump(mode="json")
 
 
-async def test_http_action_preserves_wire_envelope_self_and_null() -> None:
+async def test_http_action_preserves_wire_envelope_defaults_and_null() -> None:
     async with ActionServer(ACTION_RESPONSE) as server:
         url = f"{server.base_url}/action?source=test"
         bot = Bot()
@@ -30,23 +30,38 @@ async def test_http_action_preserves_wire_envelope_self_and_null() -> None:
         bot.add_gateway(gateway)
 
         async with bot:
+            connection = gateway.connection_for(SELF)
             response = cast(
                 ActionResponse,
-                await gateway.connection_for(SELF).action(
+                await connection.action(
                     "vendor.test",
                     optional=None,
                 ),
             )
+            await connection.action(
+                Action.SEND_MESSAGE,
+                user_id="42",
+                message=Msg.reply("message-1"),
+            )
 
     assert response.status == ApiStatus.OK
     assert response.data is None
-    assert len(server.requests) == 1
-    request = server.requests[0]
+    assert len(server.requests) == 2
+    request, message_request = server.requests
     assert request.path == "/action?source=test"
     assert request.headers["Authorization"] == "Bearer test-value"
     assert request.json == {
         "action": "vendor.test",
         "params": {"optional": None},
+        "self": {"platform": "qq", "user_id": "10000"},
+    }
+    assert message_request.json == {
+        "action": "send_message",
+        "params": {
+            "detail_type": "private",
+            "message": [{"type": "reply", "data": {"message_id": "message-1"}}],
+            "user_id": "42",
+        },
         "self": {"platform": "qq", "user_id": "10000"},
     }
 

@@ -500,6 +500,13 @@ class ActionCall(Model):
         value: object,
         info: ValidationInfo,
     ) -> ActionParamModel:
+        if (
+            info.data.get("action") == Action.SEND_MESSAGE
+            and isinstance(value, Mapping)
+            and "detail_type" not in value
+            and (detail_type := _send_msg_params_tag(value)) != MsgTargetTag.EXTENSION
+        ):
+            value = {**value, "detail_type": detail_type}
         return _ACTION_PARAM_ADAPTERS.get(
             info.data.get("action"),
             _DEFAULT_ACTION_PARAMS,

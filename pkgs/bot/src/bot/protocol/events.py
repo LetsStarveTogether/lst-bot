@@ -296,7 +296,6 @@ _EVENT_MODELS: dict[str | tuple[str, str], type[Event]] = {
     (EventKind.META, EventDetailType.CONNECT): ConnectMetaEvent,
     (EventKind.META, EventDetailType.HEARTBEAT): HeartbeatMetaEvent,
     (EventKind.META, EventDetailType.STATUS_UPDATE): StatusUpdateMetaEvent,
-    EventKind.MESSAGE: MessageEvent,
     EventKind.NOTICE: NoticeEvent,
     EventKind.REQUEST: RequestEvent,
     EventKind.META: MetaEvent,

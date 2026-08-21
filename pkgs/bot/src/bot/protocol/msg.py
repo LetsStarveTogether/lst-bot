@@ -177,9 +177,9 @@ type MsgInput = Msg | MsgSegmentInput | Iterable[MsgSegmentInput] | str | None
 
 def _msg_input_value(value: object) -> object:
     if isinstance(value, Msg):
-        return value.root
+        return value.model_dump()
     if isinstance(value, Model):
-        return [value]
+        return [value.model_dump()]
     if value is None:
         return []
     if isinstance(value, str):

@@ -20,7 +20,6 @@ from bot import (
     GuildMemberDecreaseNoticeEvent,
     GuildMemberIncreaseNoticeEvent,
     HeartbeatMetaEvent,
-    MessageEvent,
     MetaEvent,
     NoticeEvent,
     PrivateMessageDeleteNoticeEvent,
@@ -263,7 +262,7 @@ def test_each_standard_event_variant_round_trips_json(
 @pytest.mark.parametrize(
     ("event_type", "event_class"),
     [
-        pytest.param("message", MessageEvent, id="message"),
+        pytest.param("message", Event, id="message"),
         pytest.param("notice", NoticeEvent, id="notice"),
         pytest.param("request", RequestEvent, id="request"),
         pytest.param("meta", MetaEvent, id="meta-explicit-null-self"),
@@ -274,11 +273,7 @@ def test_event_extension_variants_preserve_json_fields(
     event_class: type[Event],
 ) -> None:
     detail_type = f"vendor.{event_type}"
-    payload = (
-        _message(detail_type)
-        if event_type == "message"
-        else _event(event_type, detail_type)
-    )
+    payload = _event(event_type, detail_type)
     payload["vendor.payload"] = {"nested": [True, None]}
     if event_type == "meta":
         payload["self"] = None
