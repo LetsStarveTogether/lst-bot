@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from logging import getLogger
 
 from bot import (
     Cmd,
@@ -9,10 +10,9 @@ from bot import (
     Msg,
 )
 from bot.protocol.msg import ReplySegment
-from logbook import Logger
 from pydantic_ai import Agent
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 router = EventRouter()
 
 
@@ -51,9 +51,10 @@ async def replied_message_text(conn: Connection, event: MessageEvent) -> str:
         response = await conn.action("get_msg", message_id=message_id)
     except Exception as exc:
         logger.warning(
-            "fetch replied message failed: {message_id} ({error})",
-            message_id=message_id,
-            error=f"{type(exc).__name__}: {exc}",
+            "fetch replied message failed: %s (%s: %s)",
+            message_id,
+            type(exc).__name__,
+            exc,
         )
         return ""
 

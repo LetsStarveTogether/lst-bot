@@ -6,11 +6,11 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
+from logging import getLogger
 from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
-from logbook import Logger
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from .bot import Bot
 
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 type Sleep = Callable[[float], Awaitable[object]]
 type Clock = Callable[[tzinfo], datetime]
@@ -91,43 +91,28 @@ class CronJob:
                 datetime,
                 croniter(self.expr, now).get_next(datetime),
             )
-            if __debug__:
-                logger.debug(
-                    "scheduled job next trigger: {job} @ {next_at}",
-                    job=self,
-                    next_at=next_at,
-                )
+            logger.debug("scheduled job next trigger: %s @ %s", self, next_at)
             await self.sleep(max(0, next_at.timestamp() - now.timestamp()))
             await self._trigger()
 
     async def _trigger(self) -> None:
-        if __debug__:
-            logger.debug("scheduled job trigger: {job}", job=self)
+        logger.debug("scheduled job trigger: %s", self)
         if self._running is not None and not self._running.done():
-            logger.warning(
-                "scheduled job still running: {job}",
-                job=self,
-            )
+            logger.warning("scheduled job still running: %s", self)
             return
 
         try:
             target = self._resolve_target()
-        except Exception as exc:
-            error = str(exc)
-            logger.exception(
-                "Scheduled job failed to resolve target: {job} ({error})",
-                job=self,
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
+        except Exception:
+            logger.exception("Scheduled job failed to resolve target: %s", self)
             return
 
         gateway, connection = target
-        if __debug__:
-            logger.debug(
-                "scheduled job target: {job} @ {target}",
-                job=self,
-                target=connection or gateway or "-",
-            )
+        logger.debug(
+            "scheduled job target: %s @ %s",
+            self,
+            connection or gateway or "-",
+        )
         self._running = create_task(self._run_handler(gateway, connection))
 
     async def _run_handler(
@@ -135,20 +120,14 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
-        if __debug__:
-            logger.debug("scheduled job run: {job}", job=self)
+        logger.debug("scheduled job run: %s", self)
         try:
             with CURRENT_SCHEDULER_BOT.set(self.bot):
                 await self._call_handler(gateway, connection)
-        except Exception as exc:
-            error = str(exc)
-            logger.exception(
-                "Scheduled job failed: {job} ({error})",
-                job=self,
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
+        except Exception:
+            logger.exception("Scheduled job failed: %s", self)
         else:
-            logger.info("scheduled job done: {job}", job=self)
+            logger.info("scheduled job done: %s", self)
 
     async def _call_handler(
         self,

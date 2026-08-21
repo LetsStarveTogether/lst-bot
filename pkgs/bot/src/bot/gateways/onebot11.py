@@ -16,13 +16,13 @@ from dataclasses import dataclass, field
 from hashlib import sha1
 from hmac import compare_digest, new
 from http import HTTPMethod, HTTPStatus
+from logging import getLogger
 from math import isfinite
 from typing import Annotated, Any, Literal, Self, cast, override
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 import orjson
-from logbook import Logger
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -102,7 +102,7 @@ from .base import (
     token_matches,
 )
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 _INTERNAL_ACTIONS = frozenset(Action)
 _ACTION_MAP = {
@@ -640,14 +640,14 @@ class OneBot11Gateway(Gateway):
                     return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
                 except ValidationError as exc:
                     logger.warning(
-                        "reject OneBot 11 HTTP payload ({error})",
-                        error=exc.errors(include_url=False, include_input=False),
+                        "reject OneBot 11 HTTP payload (%s)",
+                        exc.errors(include_url=False, include_input=False),
                     )
                     return text_response(HTTPStatus.BAD_REQUEST, str(exc))
                 except (TypeError, ValueError) as exc:
                     logger.warning(
-                        "reject OneBot 11 HTTP payload ({error})",
-                        error=type(exc).__name__,
+                        "reject OneBot 11 HTTP payload (%s)",
+                        type(exc).__name__,
                     )
                     return text_response(HTTPStatus.BAD_REQUEST, str(exc))
                 quick_operations = collector.values if collector is not None else []
@@ -817,8 +817,8 @@ class OneBot11Gateway(Gateway):
                 header_value(request.headers, "X-Signature"),
             ):
                 logger.warning(
-                    "reject OneBot 11 HTTP webhook signature: {path}",
-                    path=ingress.path,
+                    "reject OneBot 11 HTTP webhook signature: %s",
+                    ingress.path,
                 )
                 return empty_response(HTTPStatus.UNAUTHORIZED)
             try:
@@ -993,11 +993,10 @@ class OneBot11Gateway(Gateway):
             except Exception as exc:
                 if not self._closing:
                     logger.warning(
-                        "OneBot 11 forward WebSocket failed: {url} retry={seconds}s "
-                        "({error})",
-                        url=ingress.url,
-                        seconds=ingress.reconnect_interval,
-                        error=(
+                        "OneBot 11 forward WebSocket failed: %s retry=%ss (%s)",
+                        ingress.url,
+                        ingress.reconnect_interval,
+                        (
                             exc.errors(include_url=False, include_input=False)
                             if isinstance(exc, ValidationError)
                             else type(exc).__name__

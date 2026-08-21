@@ -19,6 +19,7 @@ from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import timedelta, tzinfo
 from functools import partial
+from logging import getLogger
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Self
 
@@ -28,7 +29,6 @@ from diwire import (
     MissingPolicy,
     ResolverProtocol,
 )
-from logbook import Logger
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.actions import ActionCall
@@ -53,7 +53,7 @@ from .scheduler import (
 if TYPE_CHECKING:
     from bot.gateways.base import RobynServer
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 _EVENT_QUEUE_CAPACITY = 64
 _CURRENT_DISPATCHER: ContextVar[Bot | None] = ContextVar(
@@ -209,8 +209,8 @@ class Bot(EventRouter):
                     await self._start_once()
                 except BaseException:
                     logger.exception(
-                        "bot startup failed: gateways={gateway_count}",
-                        gateway_count=len(self._gateways),
+                        "bot startup failed: gateways=%s",
+                        len(self._gateways),
                     )
                     raise
                 self._running.set()
@@ -404,9 +404,8 @@ class Bot(EventRouter):
                     item.result.set_exception(exc)
                 else:
                     logger.exception(
-                        "queued event dispatch failed: {event} ({error})",
-                        event=item.event,
-                        error=type(exc).__name__,
+                        "queued event dispatch failed: %s",
+                        item.event,
                     )
             else:
                 if item.result is not None and not item.result.done():
@@ -435,16 +434,10 @@ class Bot(EventRouter):
         active_gateway = connection.gateway if connection is not None else gateway
 
         logger.info(
-            "dispatch event: {event} via {gateway}",
-            event=event,
-            gateway=active_gateway or "-",
+            "dispatch event: %s via %s",
+            event,
+            active_gateway or "-",
         )
-        if __debug__:
-            logger.trace(
-                "dispatch event : {event!r} {gateway}",
-                event=event,
-                gateway=active_gateway,
-            )
 
         async with request_scope(self.container) as resolver:
             for route in self.routes:
@@ -512,11 +505,11 @@ class Bot(EventRouter):
         gateway = context.gateway
         error = str(exc)
         logger.error(
-            "Dispatch route failed: {route} @ {event} via {gateway} ({error})",
-            route=route,
-            event=event,
-            gateway=gateway or "-",
-            error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
+            "Dispatch route failed: %s @ %s via %s (%s)",
+            route,
+            event,
+            gateway or "-",
+            f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
         )
 
     def _log_dispatch_timeout(
@@ -527,10 +520,10 @@ class Bot(EventRouter):
         event = context.event
         gateway = context.gateway
         logger.warning(
-            "Dispatch route timed out: {route} @ {event} via {gateway}",
-            route=route,
-            event=event,
-            gateway=gateway or "-",
+            "Dispatch route timed out: %s @ %s via %s",
+            route,
+            event,
+            gateway or "-",
         )
 
     async def _execute_return_value(

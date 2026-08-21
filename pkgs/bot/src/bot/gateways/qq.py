@@ -14,10 +14,10 @@ from datetime import datetime
 from enum import STRICT, IntEnum, IntFlag
 from html import escape
 from importlib.metadata import version
+from logging import getLogger
 from time import time
 from typing import Annotated, Literal, cast, override
 
-from logbook import Logger
 from pydantic import (
     AfterValidator,
     AwareDatetime,
@@ -75,7 +75,7 @@ from .qq_api import (
     QQVerifyInfo,
 )
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 _HELLO_TIMEOUT = 30.0
 _RECONNECT_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
@@ -686,18 +686,14 @@ class QQGateway(Gateway, QQRestClient):
                     and str(exc.code) in _NON_RETRYABLE_ACCESS_TOKEN_CODES
                 ):
                     self._clear_session()
-                    logger.exception(
-                        "QQ Gateway stopped: {error}",
-                        error=str(exc),
-                    )
+                    logger.exception("QQ Gateway stopped")
                     return
                 delay = _RECONNECT_DELAYS[
                     min(self._retry_count, len(_RECONNECT_DELAYS) - 1)
                 ]
                 logger.exception(
-                    "QQ Gateway connection failed; retrying in {delay}s: {error}",
-                    delay=delay,
-                    error=str(exc) or type(exc).__name__,
+                    "QQ Gateway connection failed; retrying in %ss",
+                    delay,
                 )
             self._retry_count += 1
             await sleep(delay)
@@ -814,9 +810,9 @@ class QQGateway(Gateway, QQRestClient):
             event = self._raw_event(payload.t, payload.s, payload.id, payload.d)
             sequence = payload.s
             logger.warning(
-                "Invalid QQ {event_type} event preserved as raw notice: {error}",
-                event_type=payload.t,
-                error=exc.errors(include_url=False, include_input=False),
+                "Invalid QQ %s event preserved as raw notice: %s",
+                payload.t,
+                exc.errors(include_url=False, include_input=False),
             )
         else:
             sequence = dispatch.s
@@ -846,10 +842,9 @@ class QQGateway(Gateway, QQRestClient):
                         payload.d,
                     )
                     logger.warning(
-                        "Invalid QQ {event_type} event preserved as raw notice: "
-                        "{error}",
-                        event_type=dispatch.t,
-                        error=(
+                        "Invalid QQ %s event preserved as raw notice: %s",
+                        dispatch.t,
+                        (
                             exc.errors(include_url=False, include_input=False)
                             if isinstance(exc, ValidationError)
                             else str(exc)

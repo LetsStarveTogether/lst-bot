@@ -1,8 +1,8 @@
 from datetime import timedelta
+from logging import DEBUG, INFO
 from pathlib import Path
 
 import pytest
-from logbook import DEBUG, INFO, TRACE
 from pydantic import ValidationError
 
 from lst_bot.settings import Settings
@@ -15,10 +15,10 @@ def test_log_level_accepts_names_and_numbers() -> None:
 
     assert named.log_level == INFO
     assert numeric.log_level == DEBUG
-    assert default.log_level == TRACE
+    assert default.log_level == DEBUG
 
 
-@pytest.mark.parametrize("value", ["verbose", True, 1.5, []])
+@pytest.mark.parametrize("value", ["verbose", "TRACE", 9, True, 1.5, []])
 def test_log_level_rejects_invalid_value(value: object) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, log_level=value)

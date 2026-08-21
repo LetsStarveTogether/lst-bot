@@ -36,7 +36,6 @@ from bot.gateways.discord import (
 )
 from bot.protocol.actions import ActionParamModel
 from bot.testing import ScriptedWebSocket
-from logbook import TestHandler as LogbookTestHandler
 from pydantic import ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
@@ -536,7 +535,9 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
 
 async def test_dispatch_models_commit_only_valid_session_and_rate_state(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("DEBUG", logger="bot")
     instance = gateway()
     events: list[object] = []
     instance.enqueue_event = events.append  # ty: ignore[invalid-assignment]
@@ -587,22 +588,21 @@ async def test_dispatch_models_commit_only_valid_session_and_rate_state(
     assert extra["discord_raw"] is False
 
     marker = f"sensitive-{id(instance)}"
-    with LogbookTestHandler() as handler:
-        await instance._receive_dispatch(
-            DiscordGatewayPayload.model_validate({
-                "op": 0,
-                "s": 7,
-                "t": "INTERACTION_CREATE",
-                "d": {
-                    "id": marker,
-                    "application_id": "11",
-                    "type": 2,
-                    "token": "secret",
-                    "version": 1,
-                },
-            })
-        )
-    assert marker not in "\n".join(record.message for record in handler.records)
+    await instance._receive_dispatch(
+        DiscordGatewayPayload.model_validate({
+            "op": 0,
+            "s": 7,
+            "t": "INTERACTION_CREATE",
+            "d": {
+                "id": marker,
+                "application_id": "11",
+                "type": 2,
+                "token": "secret",
+                "version": 1,
+            },
+        })
+    )
+    assert marker not in caplog.text
 
 
 async def test_gateway_discovery_refetches_and_throttles_identify(

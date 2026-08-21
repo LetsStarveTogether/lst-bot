@@ -6,7 +6,6 @@ from typing import override
 import pytest
 from bot import Bot, Injected, PrivateMessageEvent
 from bot.testing import RecordingGateway, private_message_event
-from logbook import TestHandler as LogbookTestHandler
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
 
@@ -202,7 +201,9 @@ async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
     assert seen == [first, second]
 
 
-async def test_close_from_a_handler_is_rejected() -> None:
+async def test_close_from_a_handler_is_rejected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     gateway = RecordingGateway(bot)
     seen: list[str] = []
@@ -213,15 +214,14 @@ async def test_close_from_a_handler_is_rejected() -> None:
         if message.id == "close":
             await bot.close()
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await bot.dispatch(gateway.connection, event("close"))
-            await bot.dispatch(gateway.connection, event("after"))
+    async with bot:
+        await bot.dispatch(gateway.connection, event("close"))
+        await bot.dispatch(gateway.connection, event("after"))
 
     assert seen == ["close", "after"]
     assert any(
-        "Bot cannot be closed from a dispatch handler" in record.message
-        for record in handler.records
+        "Bot cannot be closed from a dispatch handler" in message
+        for message in caplog.messages
     )
 
 

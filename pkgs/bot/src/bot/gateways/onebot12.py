@@ -14,9 +14,9 @@ from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from http import HTTPMethod, HTTPStatus
+from logging import getLogger
 from typing import Annotated, override
 
-from logbook import Logger
 from pydantic import (
     ConfigDict,
     Field,
@@ -71,7 +71,7 @@ from .base import (
     token_matches,
 )
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 _WS_PAYLOAD_ADAPTER = TypeAdapter(EventPayload | ActionResponse)
 _DATACLASS_CONFIG = ConfigDict(strict=True, validate_default=True)
@@ -393,8 +393,8 @@ class OneBot12Gateway(Gateway):
         async def handle(request: Request) -> Response:
             if not self._authenticate(request):
                 logger.warning(
-                    "reject OneBot 12 HTTP webhook token: {path}",
-                    path=ingress.path,
+                    "reject OneBot 12 HTTP webhook token: %s",
+                    ingress.path,
                 )
                 return empty_response(HTTPStatus.UNAUTHORIZED)
             version = header_value(request.headers, "X-OneBot-Version")
@@ -411,8 +411,8 @@ class OneBot12Gateway(Gateway):
                 payload = EventPayload.model_validate_json(request.body)
             except ValidationError as exc:
                 logger.warning(
-                    "reject OneBot 12 HTTP webhook payload: {error}",
-                    error=exc.errors(include_url=False, include_input=False),
+                    "reject OneBot 12 HTTP webhook payload: %s",
+                    exc.errors(include_url=False, include_input=False),
                 )
                 return empty_response(HTTPStatus.BAD_REQUEST)
             return await self.handle_http(
@@ -585,11 +585,10 @@ class OneBot12Gateway(Gateway):
             except Exception as exc:
                 if not self._closing:
                     logger.warning(
-                        "OneBot 12 forward WebSocket failed: {url} retry={seconds}s "
-                        "({error})",
-                        url=ingress.url,
-                        seconds=ingress.reconnect_interval,
-                        error=(
+                        "OneBot 12 forward WebSocket failed: %s retry=%ss (%s)",
+                        ingress.url,
+                        ingress.reconnect_interval,
+                        (
                             exc.errors(include_url=False, include_input=False)
                             if isinstance(exc, ValidationError)
                             else type(exc).__name__

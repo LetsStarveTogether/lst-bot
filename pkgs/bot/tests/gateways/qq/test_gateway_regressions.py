@@ -13,7 +13,6 @@ from bot.gateways import qq as qq_gateway_module
 from bot.gateways.qq import QQDispatch, QQGatewayPayload
 from bot.gateways.qq_api import QQGatewayInfo, QQNoContent
 from bot.testing import ScriptedWebSocket
-from logbook import TestHandler as LogbookTestHandler
 from pydantic import ValidationError
 
 from .support import gateway as _gateway
@@ -21,7 +20,9 @@ from .support import gateway as _gateway
 
 async def test_malformed_known_event_is_preserved_without_blocking_sequence(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("DEBUG", logger="bot")
     semantically_invalid = {
         "id": "message-without-author",
         "author": {},
@@ -77,15 +78,12 @@ async def test_malformed_known_event_is_preserved_without_blocking_sequence(
     events: list[object] = []
     monkeypatch.setattr(gateway, "enqueue_event", events.append)
 
-    with (
-        LogbookTestHandler() as handler,
-        pytest.raises(ConnectionError, match="requested reconnect"),
-    ):
+    with pytest.raises(ConnectionError, match="requested reconnect"):
         async with timeout(1):
             await gateway._read_websocket(  # ruff: ignore[private-member-access] - protocol regression boundary
                 websocket, "token"
             )
-    assert marker not in "\n".join(record.message for record in handler.records)
+    assert marker not in caplog.text
 
     assert gateway._seq == 3  # ruff: ignore[private-member-access]
     assert isinstance(events[1], NoticeEvent)

@@ -22,6 +22,7 @@ from enum import STRICT, IntEnum, IntFlag
 from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
+from logging import getLogger
 from math import isfinite
 from random import random
 from re import compile as compile_regex
@@ -31,7 +32,6 @@ from typing import Annotated, Literal, Self, cast, override
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import orjson
-from logbook import Logger
 from pydantic import (
     AfterValidator,
     AnyHttpUrl,
@@ -83,7 +83,7 @@ from .base import (
     header_value,
 )
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 DISCORD_API_BASE_URL = "https://discord.com/api/v10"
 _API_TIMEOUT = 30.0
@@ -1811,33 +1811,28 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 websocket = await self._websocket_connector(gateway_url, None)
                 await self._serve_websocket(websocket)
                 return  # ruff: ignore[try-consider-else] - keep success path local.
-            except DiscordGatewayFatalError as exc:
+            except DiscordGatewayFatalError:
                 self._clear_session()
-                logger.exception("Discord Gateway stopped: {error}", error=str(exc))
+                logger.exception("Discord Gateway stopped")
                 return
             except DiscordAPIError as exc:
                 if exc.status == HTTPStatus.UNAUTHORIZED:
                     self._clear_session()
-                    logger.exception(
-                        "Discord Gateway stopped after authentication failure: {error}",
-                        error=str(exc),
-                    )
+                    logger.exception("Discord Gateway authentication failed")
                     return
                 logger.exception(
-                    "Discord Gateway discovery failed; retrying in {delay}s: {error}",
-                    delay=delay,
-                    error=str(exc),
+                    "Discord Gateway discovery failed; retrying in %ss",
+                    delay,
                 )
             except _ReconnectError as exc:
                 if exc.reset_session:
                     self._clear_session()
                 if exc.delay is not None:
                     delay = exc.delay
-            except Exception as exc:
+            except Exception:
                 logger.exception(
-                    "Discord Gateway connection failed; retrying in {delay}s: {error}",
-                    delay=delay,
-                    error=str(exc) or type(exc).__name__,
+                    "Discord Gateway connection failed; retrying in %ss",
+                    delay,
                 )
             self._retry_count += 1
             # The triggering disconnect occupies the first retry-count slot.
@@ -2092,10 +2087,9 @@ class DiscordGateway(Gateway, DiscordRestClient):
                     raise _ReconnectError(msg, reset_session=True) from exc
                 malformed = True
                 logger.warning(
-                    "Invalid Discord {event_type} event preserved as raw notice: "
-                    "{error}",
-                    event_type=event_type,
-                    error=exc.errors(include_url=False, include_input=False),
+                    "Invalid Discord %s event preserved as raw notice: %s",
+                    event_type,
+                    exc.errors(include_url=False, include_input=False),
                 )
         if isinstance(parsed, DiscordRateLimited):
             ready_at = received_at + parsed.retry_after
@@ -2125,9 +2119,9 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 raise _ReconnectError(msg, reset_session=True) from exc
             event = self._raw_event(event_type, sequence, payload.d, raw=True)
             logger.warning(
-                "Invalid Discord {event_type} event preserved as raw notice: {error}",
-                event_type=event_type,
-                error=exc.errors(include_url=False, include_input=False),
+                "Invalid Discord %s event preserved as raw notice: %s",
+                event_type,
+                exc.errors(include_url=False, include_input=False),
             )
         try:
             self.enqueue_event(event)
@@ -2172,10 +2166,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         except Exception as exc:
             if pending.outcome is not None and not pending.outcome.done():
                 pending.outcome.set_exception(exc)
-            logger.exception(
-                "Discord interaction auto-acknowledgement failed: {error}",
-                error=str(exc) or type(exc).__name__,
-            )
+            logger.exception("Discord interaction auto-acknowledgement failed")
         finally:
             if self._interaction_callbacks.get(path) is pending:
                 self._interaction_callbacks.pop(path, None)

@@ -33,7 +33,6 @@ from bot.gateways.onebot11 import (
     WebSocketAction,
 )
 from bot.testing import ScriptedWebSocket
-from logbook import TestHandler as LogbookTestHandler
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import Server
 from websockets.exceptions import InvalidStatus
@@ -612,7 +611,10 @@ async def test_forward_websocket_receives_action_while_waiting_for_events() -> N
     }
 
 
-async def test_forward_websocket_reconnects_after_connect_and_receive_errors() -> None:
+async def test_forward_websocket_reconnects_after_connect_and_receive_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("DEBUG", logger="bot")
     bot = Bot()
     received = Event()
     marker = f"sensitive-{id(bot)}"
@@ -638,13 +640,12 @@ async def test_forward_websocket_reconnects_after_connect_and_receive_errors() -
     )
     bot.add_gateway(gateway)
 
-    with LogbookTestHandler() as handler:
-        async with timeout(1), bot:
-            await received.wait()
-            await broken.closed.wait()
+    async with timeout(1), bot:
+        await received.wait()
+        await broken.closed.wait()
 
     assert connector.await_count == 3
-    assert marker not in "\n".join(record.message for record in handler.records)
+    assert marker not in caplog.text
 
 
 async def test_websocket_queue_overload_closes_connection() -> None:

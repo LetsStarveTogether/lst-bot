@@ -1,16 +1,16 @@
 import re
+from logging import getLogger
 from operator import attrgetter
 
 from bot import Cmd, EventRouter, Injected, Permission
 from klei import KleiClient, Platform, RoomData
-from logbook import Logger
 from lst import LstClient
 
 from .settings import Settings
 
 DAY_PATTERN = re.compile(r"day=(\d+)")
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 router = EventRouter()
 
 
@@ -127,8 +127,8 @@ def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
         lc.restart_rooms(room_ids)
     except Exception:
         logger.exception(
-            "restart DST rooms failed: {rooms}",
-            rooms=",".join(str(item) for item in room_ids),
+            "restart DST rooms failed: %s",
+            ",".join(map(str, room_ids)),
         )
         return f"重启失败：{room_ids}"
     return f"已重启 {room_ids}"

@@ -1,9 +1,11 @@
 from datetime import timedelta
+from logging import DEBUG, getLevelNamesMapping
 from zoneinfo import ZoneInfo
 
-from logbook import DEBUG, NOTSET, TRACE, lookup_level
 from pydantic import Field, SecretStr, StrictInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_LOG_LEVELS = getLevelNamesMapping()
 
 
 class Settings(BaseSettings):
@@ -14,7 +16,7 @@ class Settings(BaseSettings):
     bot_timeout: timedelta | None = Field(default=timedelta(seconds=900), gt=0)
     bot_timezone: ZoneInfo | None = None
 
-    log_level: StrictInt = NOTSET
+    log_level: StrictInt = DEBUG
     http_proxy: str = "http://127.0.0.1:1080"
 
     onebot_self_id: str = ""
@@ -43,14 +45,14 @@ class Settings(BaseSettings):
     @field_validator("log_level", mode="before")
     @classmethod
     def validate_log_level(cls, value: object) -> object:
-        if isinstance(value, bool) or not isinstance(value, int | str):
-            return value
-        try:
-            level = lookup_level(value.upper() if isinstance(value, str) else value)
-        except LookupError:
-            level = lookup_level(int(value))
-
-        if level == NOTSET:
-            level = TRACE if __debug__ else DEBUG
-
-        return level
+        if isinstance(value, str):
+            level = _LOG_LEVELS.get(value.upper())
+            value = int(value) if level is None else level
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value not in _LOG_LEVELS.values()
+        ):
+            msg = "log_level must be a standard Python logging level"
+            raise ValueError(msg)
+        return value

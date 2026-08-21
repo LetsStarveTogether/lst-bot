@@ -15,10 +15,10 @@ from collections.abc import Mapping
 from contextlib import suppress
 from html import escape
 from importlib.metadata import version
+from logging import getLogger
 from time import time
 from typing import Annotated, cast, override
 
-from logbook import Logger
 from pydantic import (
     BaseModel,
     Field,
@@ -70,7 +70,7 @@ from .telegram_api import (
     TelegramUserID,
 )
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 _RETRY_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0)
 _MAX_GUEST_REPLY_LENGTH = 4096
@@ -498,9 +498,8 @@ class TelegramGateway(Gateway, TelegramRestClient):
                         exc.error_code in {401, 403} or exc.status in {401, 403}
                     ):
                         logger.warning(
-                            "Telegram polling stopped after permanent API error "
-                            "{error_code}",
-                            error_code=exc.error_code,
+                            "Telegram polling stopped after permanent API error %s",
+                            exc.error_code,
                         )
                         return
                     delay = _RETRY_DELAYS[min(retries, len(_RETRY_DELAYS) - 1)]
@@ -512,9 +511,9 @@ class TelegramGateway(Gateway, TelegramRestClient):
                         delay = max(delay, float(exc.parameters.retry_after))
                     retries += 1
                     logger.warning(
-                        "Telegram polling failed; retrying in {delay}s: {error}",
-                        delay=delay,
-                        error=type(exc).__name__,
+                        "Telegram polling failed; retrying in %ss: %s",
+                        delay,
+                        type(exc).__name__,
                     )
                     await sleep(delay)
                 else:

@@ -11,13 +11,13 @@ from asyncio import (
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from hmac import compare_digest
+from logging import getLogger
 from types import TracebackType
 from typing import TYPE_CHECKING, Annotated, Never, Protocol, Self
 from urllib.parse import parse_qs
 from uuid import uuid4
 
 import orjson
-from logbook import Logger
 from pydantic import (
     BaseModel,
     Field,
@@ -54,7 +54,7 @@ from bot.protocol.returns import ReturnAction
 if TYPE_CHECKING:
     from bot.core import Bot
 
-logger = Logger(__name__)
+logger = getLogger(__name__)
 
 type AccessToken = SecretStr | str | None
 type NonWhitespaceStr = Annotated[StrictStr, Field(pattern=r"^\S+$")]
@@ -228,9 +228,9 @@ class Connection:
         params_text = str(params)
         action_text = action if params_text == "-" else f"{action} {params_text}"
         logger.info(
-            "execute action: {action} @ {self_}",
-            action=action_text,
-            self_=self.self_,
+            "execute action: %s @ %s",
+            action_text,
+            self.self_,
         )
         response = await self.gateway.request_action(self, action, params)
         response_text = (
@@ -239,10 +239,10 @@ class Connection:
             else type(response).__name__
         )
         logger.info(
-            "action done: {action} @ {self_} = {response}",
-            action=action,
-            self_=self.self_,
-            response=response_text,
+            "action done: %s @ %s = %s",
+            action,
+            self.self_,
+            response_text,
         )
         self._raise_for_failed_action_response(response)
         return response
@@ -366,22 +366,20 @@ class Gateway:
 
     def _mount_server_once(self, server: RobynServer) -> bool:
         if any(mounted is server for mounted in self._mounted_servers):
-            if __debug__:
-                logger.debug(
-                    "gateway already mounted: {gateway}@{server}",
-                    gateway=type(self).__name__,
-                    server=type(server).__name__,
-                )
+            logger.debug(
+                "gateway already mounted: %s@%s",
+                type(self).__name__,
+                type(server).__name__,
+            )
             return False
 
         self.bot.mount_server(server)
         self._mounted_servers.append(server)
-        if __debug__:
-            logger.debug(
-                "mount bot lifecycle hooks: {gateway}@{server}",
-                gateway=type(self).__name__,
-                server=type(server).__name__,
-            )
+        logger.debug(
+            "mount bot lifecycle hooks: %s@%s",
+            type(self).__name__,
+            type(server).__name__,
+        )
         return True
 
 
@@ -410,12 +408,6 @@ class WebSocketActionManager:
             msg = "WebSocket action session is not registered"
             raise LookupError(msg)
         session.selfs.add(self_)
-        if __debug__:
-            logger.trace(
-                "bind WebSocket action session : {session} {bot_self}",
-                session=session,
-                bot_self=self_,
-            )
 
     def unregister(self, session: WebSocketActionSession) -> None:
         self._sessions = [
@@ -444,12 +436,7 @@ class WebSocketActionManager:
         self._pending[echo] = session, future
         try:
             async with timeout(self.timeout):
-                if __debug__:
-                    logger.debug(
-                        "send WebSocket action request: {echo} @ {self_}",
-                        echo=echo,
-                        self_=self_,
-                    )
+                logger.debug("send WebSocket action request: %s @ %s", echo, self_)
                 await session.websocket.send_text(build_payload(echo))
                 return await future
         finally:
@@ -466,40 +453,32 @@ class WebSocketActionManager:
     ) -> bool:
         echo = response.echo
         if echo is None:
-            logger.warning(
-                "WebSocket action response missing echo: {response}",
-                response=response,
-            )
+            logger.warning("WebSocket action response missing echo: %s", response)
             return False
         pending = self._pending.get(echo)
         if pending is None:
             logger.warning(
-                "unmatched WebSocket action response: echo={echo} {response}",
-                echo=echo,
-                response=response,
+                "unmatched WebSocket action response: echo=%s %s",
+                echo,
+                response,
             )
             return False
         pending_session, future = pending
         if pending_session is not session:
             logger.warning(
-                "mismatched WebSocket action response source: echo={echo} {response}",
-                echo=echo,
-                response=response,
+                "mismatched WebSocket action response source: echo=%s %s",
+                echo,
+                response,
             )
             return False
         if future.done():
             return False
         future.set_result(response)
-        if __debug__:
-            logger.debug(
-                "receive WebSocket action response: echo={echo} {response}",
-                echo=echo,
-                response=response,
-            )
-            logger.trace(
-                "receive WebSocket action response payload : {response!r}",
-                response=response,
-            )
+        logger.debug(
+            "receive WebSocket action response: echo=%s %s",
+            echo,
+            response,
+        )
         return True
 
     def fail_all(self) -> None:

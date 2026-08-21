@@ -11,7 +11,6 @@ from bot import (
     Injected,
 )
 from bot.testing import RecordingGateway, recording_gateway
-from logbook import TestHandler as LogbookTestHandler
 
 
 @dataclass(frozen=True)
@@ -176,7 +175,9 @@ async def test_none_target_job_injects_service_without_rewrapping() -> None:
     )
 
 
-async def test_none_target_connection_injection_failure_is_logged() -> None:
+async def test_none_target_connection_injection_failure_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
 
@@ -184,14 +185,13 @@ async def test_none_target_connection_injection_failure_is_logged() -> None:
     def bad(connection: Injected[Connection]) -> None:
         _ = connection
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await sleep.advance()
-            await sleep.next_call()
+    async with bot:
+        await sleep.advance()
+        await sleep.next_call()
 
     assert any(
-        "Scheduled job failed" in record.message and "bad" in record.message
-        for record in handler.records
+        "Scheduled job failed" in message and "bad" in message
+        for message in caplog.messages
     )
 
 
@@ -211,7 +211,9 @@ async def test_fixed_account_uses_the_registered_gateway() -> None:
         assert await wait_for(seen.get(), timeout=1) == "fixed"
 
 
-async def test_fixed_account_logs_gateway_ambiguity() -> None:
+async def test_fixed_account_logs_gateway_ambiguity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     recording_gateway(bot)
@@ -225,17 +227,16 @@ async def test_fixed_account_logs_gateway_ambiguity() -> None:
     def collect(connection: Injected[Connection]) -> None:
         _ = connection
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await sleep.advance()
-            await sleep.next_call()
+    async with bot:
+        await sleep.advance()
+        await sleep.next_call()
 
-    assert any(
-        "failed to resolve target" in record.message for record in handler.records
-    )
+    assert any("failed to resolve target" in message for message in caplog.messages)
 
 
-async def test_overlapping_tick_is_skipped() -> None:
+async def test_overlapping_tick_is_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     started = Event()
@@ -246,18 +247,19 @@ async def test_overlapping_tick_is_skipped() -> None:
         started.set()
         await release.wait()
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await sleep.advance()
-            await wait_for(started.wait(), timeout=1)
-            await sleep.advance()
-            await sleep.next_call()
-            release.set()
+    async with bot:
+        await sleep.advance()
+        await wait_for(started.wait(), timeout=1)
+        await sleep.advance()
+        await sleep.next_call()
+        release.set()
 
-    assert any("still running" in record.message for record in handler.records)
+    assert any("still running" in message for message in caplog.messages)
 
 
-async def test_handler_failure_does_not_block_later_ticks() -> None:
+async def test_handler_failure_does_not_block_later_ticks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     attempts: Queue[int] = Queue()
@@ -272,14 +274,13 @@ async def test_handler_failure_does_not_block_later_ticks() -> None:
             msg = "boom"
             raise RuntimeError(msg)
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await sleep.advance()
-            assert await wait_for(attempts.get(), timeout=1) == 1
-            await sleep.advance()
-            assert await wait_for(attempts.get(), timeout=1) == 2
+    async with bot:
+        await sleep.advance()
+        assert await wait_for(attempts.get(), timeout=1) == 1
+        await sleep.advance()
+        assert await wait_for(attempts.get(), timeout=1) == 2
 
     assert any(
-        "Scheduled job failed" in record.message and "flaky" in record.message
-        for record in handler.records
+        "Scheduled job failed" in message and "flaky" in message
+        for message in caplog.messages
     )

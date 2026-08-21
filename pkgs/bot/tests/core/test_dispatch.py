@@ -21,7 +21,6 @@ from bot import (
 from bot.testing import private_message_event as make_event
 from bot.testing import recording_gateway
 from diwire import Lifetime, Scope
-from logbook import TestHandler as LogbookTestHandler
 
 
 @dataclass(frozen=True)
@@ -69,7 +68,9 @@ async def test_connection_send_msg_builds_standard_action() -> None:
     }
 
 
-async def test_connection_action_failed_response_raises() -> None:
+async def test_connection_action_failed_response_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     gateway.responses["send_message"] = ActionResponse.failed(
@@ -81,15 +82,14 @@ async def test_connection_action_failed_response_raises() -> None:
     async def handle(connection: Injected[Connection]) -> None:
         await connection.send_msg("pong", user_id="42")
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await bot.dispatch(gateway.connection, make_event("ping"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [action.action for action in gateway.actions] == ["send_message"]
     assert any(
-        "Dispatch route" in record.message
-        and "Action failed with retcode 10001: bad target" in record.message
-        for record in handler.records
+        "Dispatch route" in message
+        and "Action failed with retcode 10001: bad target" in message
+        for message in caplog.messages
     )
 
 
@@ -249,32 +249,36 @@ async def test_dispatch_executes_action_returns() -> None:
     ]
 
 
-async def test_dispatch_rejects_unsupported_return_values() -> None:
+async def test_dispatch_rejects_unsupported_return_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     cases = [
         (True, "bool"),
         ({"not": "supported"}, "dict"),
         (make_event("nested", event_id="nested"), "PrivateMessageEvent"),
     ]
     for value, type_name in cases:
+        caplog.clear()
         bot = Bot()
         gateway = recording_gateway(bot)
 
         bot.on_msg(block=True)(lambda value=value: value)
 
-        with LogbookTestHandler() as handler:
-            async with bot:
-                await bot.dispatch(
-                    gateway.connection,
-                    make_event(f"ping-{type_name}"),
-                )
+        async with bot:
+            await bot.dispatch(
+                gateway.connection,
+                make_event(f"ping-{type_name}"),
+            )
 
         assert any(
-            f"Unsupported handler return value: {type_name}" in record.message
-            for record in handler.records
+            f"Unsupported handler return value: {type_name}" in message
+            for message in caplog.messages
         )
 
 
-async def test_dispatch_stops_batch_on_return_execution_error() -> None:
+async def test_dispatch_stops_batch_on_return_execution_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
@@ -286,14 +290,13 @@ async def test_dispatch_stops_batch_on_return_execution_error() -> None:
             Msg.from_input("never"),
         ]
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await bot.dispatch(gateway.connection, make_event("ping"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [action.action for action in gateway.actions] == ["send_message"]
     assert any(
-        "Unsupported handler return value: dict" in record.message
-        for record in handler.records
+        "Unsupported handler return value: dict" in message
+        for message in caplog.messages
     )
 
 
@@ -306,6 +309,7 @@ async def test_dispatch_stops_batch_on_return_execution_error() -> None:
 )
 async def test_dispatch_continues_after_failed_blocking_route(
     error: Exception,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
@@ -319,18 +323,19 @@ async def test_dispatch_continues_after_failed_blocking_route(
     def recover() -> None:
         seen.append("recovered")
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await bot.dispatch(gateway.connection, make_event("anything"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["recovered"]
     assert any(
-        type(error).__name__ in record.message and str(error) in record.message
-        for record in handler.records
+        type(error).__name__ in message and str(error) in message
+        for message in caplog.messages
     )
 
 
-async def test_dispatch_records_rule_and_permission_exceptions() -> None:
+async def test_dispatch_records_rule_and_permission_exceptions(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
@@ -355,15 +360,14 @@ async def test_dispatch_records_rule_and_permission_exceptions() -> None:
     def recover() -> None:
         seen.append("recovered")
 
-    with LogbookTestHandler() as handler:
-        async with bot:
-            await bot.dispatch(gateway.connection, make_event("anything"))
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["recovered"]
     assert [
-        record.message.rsplit("(", 1)[-1].rstrip(")")
-        for record in handler.records
-        if "Dispatch route failed" in record.message
+        message.rsplit("(", 1)[-1].rstrip(")")
+        for message in caplog.messages
+        if "Dispatch route failed" in message
     ] == [
         "ValueError: rule failed",
         "PermissionError: permission failed",
@@ -471,7 +475,9 @@ async def test_dispatch_uses_request_scoped_container_dependencies() -> None:
     )
 
 
-async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers() -> None:
+async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     bot = Bot(dispatch_timeout=timedelta(seconds=0.01))
     gateway = recording_gateway(bot)
     slow_cancelled = AsyncEvent()
@@ -494,18 +500,17 @@ async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers() -> 
     def fast() -> None:
         seen.append("fast")
 
-    with LogbookTestHandler() as handler:
-        async with timeout(1):
-            async with bot:
-                await bot.dispatch(gateway.connection, make_event("slow"))
-                await bot.dispatch(
-                    gateway.connection,
-                    make_event("fast", event_id="evt-fast"),
-                )
+    async with timeout(1):
+        async with bot:
+            await bot.dispatch(gateway.connection, make_event("slow"))
+            await bot.dispatch(
+                gateway.connection,
+                make_event("fast", event_id="evt-fast"),
+            )
 
     assert slow_cancelled.is_set()
     assert seen == ["fast"]
-    assert sum("timed out" in record.message for record in handler.records) == 1
+    assert sum("timed out" in message for message in caplog.messages) == 1
 
 
 async def test_dispatch_external_cancellation_propagates() -> None:

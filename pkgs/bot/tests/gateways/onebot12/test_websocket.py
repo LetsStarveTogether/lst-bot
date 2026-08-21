@@ -24,7 +24,6 @@ from bot.gateways.onebot12 import (
     WebSocketAction,
 )
 from bot.testing import ScriptedWebSocket
-from logbook import TestHandler as LogbookTestHandler
 from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import Server
@@ -398,7 +397,10 @@ async def test_websocket_closes_when_global_event_queue_is_full() -> None:
     assert websocket.closed.is_set()
 
 
-async def test_forward_websocket_reconnects_and_keeps_received_event() -> None:
+async def test_forward_websocket_reconnects_and_keeps_received_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("DEBUG", logger="bot")
     marker = "sensitive-inbound-value"
     first = ScriptedWebSocket({"secret": marker})
     second = ScriptedWebSocket(
@@ -426,13 +428,12 @@ async def test_forward_websocket_reconnects_and_keeps_received_event() -> None:
     def collect() -> None:
         received.set()
 
-    with LogbookTestHandler() as handler:
-        async with timeout(1), bot:
-            await received.wait()
-            assert first.closed.is_set()
+    async with timeout(1), bot:
+        await received.wait()
+        assert first.closed.is_set()
 
     assert second.closed.is_set()
-    assert marker not in "\n".join(record.message for record in handler.records)
+    assert marker not in caplog.text
     assert (
         connector.await_args_list
         == [

@@ -10,8 +10,6 @@ from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
 from httpx import AsyncClient
 from klei import KleiClient
-from logbook.compat import redirected_logging
-from logbook.more import ColorizedStderrHandler
 from lst import LstClient
 from pydantic_ai import Agent
 from urllib3_future import AsyncProxyManager
@@ -123,13 +121,10 @@ async def run(settings: Settings) -> None:
 
 def main() -> None:
     settings = Settings()
+    logging.basicConfig(level=settings.log_level, force=True)
     for name in ("httpcore", "urllib3_future", "websockets", "mcp"):
         logging.getLogger(name).setLevel(logging.INFO)
-    with (
-        redirected_logging(),
-        ColorizedStderrHandler(level=settings.log_level).applicationbound(),
-    ):
-        asyncio.run(run(settings))
+    asyncio.run(run(settings))
 
 
 if __name__ == "__main__":
