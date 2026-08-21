@@ -12,6 +12,7 @@ from pydantic import (
     Tag,
     model_validator,
 )
+from pydantic.experimental.missing_sentinel import MISSING
 
 from .base import Model
 from .enums import MsgSegmentType
@@ -51,10 +52,7 @@ class LocationSegmentData(Model):
 
 class ReplySegmentData(Model):
     message_id: StrictStr
-    user_id: StrictStr | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
+    user_id: StrictStr | MISSING = MISSING
 
 
 class ExtensionSegmentData(Model):
@@ -134,7 +132,7 @@ class Msg(RootModel[list[MsgSegment]]):
         message_id: str,
         message: MsgInput = None,
         *,
-        user_id: str | None = None,
+        user_id: str | MISSING = MISSING,
     ) -> Msg:
         return cls([
             ReplySegment(

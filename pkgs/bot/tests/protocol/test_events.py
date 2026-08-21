@@ -265,7 +265,7 @@ def test_each_standard_event_variant_round_trips_json(
         pytest.param("message", Event, id="message"),
         pytest.param("notice", NoticeEvent, id="notice"),
         pytest.param("request", RequestEvent, id="request"),
-        pytest.param("meta", MetaEvent, id="meta-explicit-null-self"),
+        pytest.param("meta", MetaEvent, id="meta"),
     ],
 )
 def test_event_extension_variants_preserve_json_fields(
@@ -275,8 +275,6 @@ def test_event_extension_variants_preserve_json_fields(
     detail_type = f"vendor.{event_type}"
     payload = _event(event_type, detail_type)
     payload["vendor.payload"] = {"nested": [True, None]}
-    if event_type == "meta":
-        payload["self"] = None
     event = EventPayload.model_validate(payload).root
 
     assert type(event) is event_class
@@ -285,19 +283,26 @@ def test_event_extension_variants_preserve_json_fields(
 
 
 def test_event_repr_hides_all_extra_payloads() -> None:
-    secrets = {"qq_raw": "qq-secret", "future_platform": "future-secret"}
-    extras = {field: {"token": secret} for field, secret in secrets.items()}
-    event = EventPayload.model_validate({**_message("private"), **extras}).root
-
-    assert event.model_extra == extras
-    rendered = f"{event!r} {event}"
-    assert not any(secret in rendered for secret in secrets.values())
-
-    notice = EventPayload.model_validate({
-        **_event("notice", "vendor.raw"),
-        "alt_message": "future-secret",
+    content = "private-value"
+    event = EventPayload.model_validate({
+        **_message("private"),
+        "qq_raw": {"token": content},
+        "message": [{"type": "text", "data": {"text": content}}],
+        "alt_message": content,
     }).root
-    assert "future-secret" not in str(notice)
+
+    assert content not in f"{event!r} {event}"
+
+    request = EventPayload.model_validate(
+        _event(
+            "request",
+            "friend",
+            user_id="42",
+            comment=content,
+            flag=content,
+        )
+    ).root
+    assert content not in f"{request!r} {request}"
 
 
 @pytest.mark.parametrize(
@@ -370,6 +375,10 @@ def test_heartbeat_rejects_non_positive_or_non_int64_interval(
             id="incomplete-self",
         ),
         pytest.param(
+            {**_event("meta", "vendor.meta"), "self": None},
+            id="meta-null-self",
+        ),
+        pytest.param(
             {**_message("private"), "message": "hello"},
             id="message-not-segment-list",
         ),
@@ -380,5 +389,5 @@ def test_heartbeat_rejects_non_positive_or_non_int64_interval(
     ],
 )
 def test_event_rejects_invalid_protocol_shape(payload: object) -> None:
-    with pytest.raises((TypeError, ValidationError)):
+    with pytest.raises(ValidationError):
         EventPayload.model_validate(payload)

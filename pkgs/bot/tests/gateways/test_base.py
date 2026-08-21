@@ -320,13 +320,18 @@ async def test_disconnect_fails_action_and_manager_recovers() -> None:
 async def test_websocket_action_manager_prefers_latest_bound_session() -> None:
     manager = WebSocketActionManager(timeout=1)
     self_ = BotSelf(platform="test", user_id="bot")
+    request_self = BotSelf.model_validate({
+        "platform": "test",
+        "user_id": "bot",
+        "vendor_session": "new",
+    })
     first = ScriptedWebSocket()
     second = ScriptedWebSocket()
     first_session = manager.register(first)
     second_session = manager.register(second)
 
     with pytest.raises(LookupError):
-        await manager.request(self_, lambda echo: echo)
+        await manager.request(request_self, lambda echo: echo)
 
     manager.bind_self(first_session, self_)
     manager.bind_self(second_session, self_)
@@ -336,7 +341,10 @@ async def test_websocket_action_manager_prefers_latest_bound_session() -> None:
         assert manager.receive(second_session, ActionResponse.ok(echo=echo))
 
     async with timeout(2):
-        await gather(manager.request(self_, lambda echo: echo), respond_latest())
+        await gather(
+            manager.request(request_self, lambda echo: echo),
+            respond_latest(),
+        )
     assert first.sent.empty()
 
     manager.unregister(second_session)

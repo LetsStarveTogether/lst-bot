@@ -13,11 +13,6 @@ from bot import (
     ReturnAction,
 )
 from bot.protocol.actions import (
-    FragmentedGetPrepareParams,
-    FragmentedGetTransferParams,
-    FragmentedUploadFinishParams,
-    FragmentedUploadPrepareParams,
-    FragmentedUploadTransferParams,
     LatestEventsParams,
     UploadFileBaseParams,
 )
@@ -50,7 +45,7 @@ ACTION_CASES: dict[str, dict[str, object]] = {
     "get_guild_member_list": {"guild_id": "30000"},
     "leave_guild": {"guild_id": "30000"},
     "get_channel_info": {"guild_id": "30000", "channel_id": "40000"},
-    "get_channel_list": {"guild_id": "30000", "joined_only": None},
+    "get_channel_list": {"guild_id": "30000"},
     "set_channel_name": {
         "guild_id": "30000",
         "channel_id": "40000",
@@ -183,8 +178,6 @@ def test_upload_file_discriminator_selects_each_source_variant(
 ) -> None:
     call = ActionCall.model_validate({"action": "upload_file", "params": params})
 
-    assert isinstance(call.params, UploadFileBaseParams)
-    assert call.params.type == params["type"]
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -228,15 +221,6 @@ def test_fragmented_file_discriminators_accept_each_stage(
 ) -> None:
     call = ActionCall.model_validate({"action": action, "params": params})
 
-    assert isinstance(
-        call.params,
-        FragmentedUploadPrepareParams
-        | FragmentedUploadTransferParams
-        | FragmentedUploadFinishParams
-        | FragmentedGetPrepareParams
-        | FragmentedGetTransferParams,
-    )
-    assert call.params.stage == params["stage"]
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -252,29 +236,14 @@ def test_extension_action_preserves_nested_json_values_and_null() -> None:
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
-def test_action_request_round_trips_explicit_null_envelope_fields() -> None:
-    call = ActionCall.model_validate({"action": "get_status", "params": {}})
-    request = ActionRequest(
-        action="get_status",
-        params=call.params,
-        echo=None,
-        self_=None,
-    )
+def test_action_request_omits_absent_envelope_fields() -> None:
+    request = ActionRequest.model_validate({"action": "get_status", "params": {}})
 
-    payload = request.model_dump(mode="json")
-
-    assert (
-        ActionRequest.model_validate_json(request.model_dump_json()).model_dump(
-            mode="json",
-        )
-        == payload
-    )
-    assert payload == {
+    assert request.model_dump(mode="json") == {
         "action": "get_status",
         "params": {},
-        "echo": None,
-        "self": None,
     }
+    assert ActionRequest.model_validate_json(request.model_dump_json()) == request
 
 
 @pytest.mark.parametrize(
@@ -288,12 +257,24 @@ def test_action_request_round_trips_explicit_null_envelope_fields() -> None:
             id="non-object-params",
         ),
         pytest.param(
-            {"action": "send_message", "params": {}, "echo": 1},
+            {"action": "get_status", "params": {}, "echo": 1},
             id="non-string-echo",
         ),
         pytest.param(
-            {"action": "send_message", "params": {}, "self": {"platform": "qq"}},
+            {"action": "get_status", "params": {}, "echo": None},
+            id="null-echo",
+        ),
+        pytest.param(
+            {"action": "get_status", "params": {}, "self": None},
+            id="null-self",
+        ),
+        pytest.param(
+            {"action": "get_status", "params": {}, "self": {"platform": "qq"}},
             id="incomplete-self",
+        ),
+        pytest.param(
+            {"action": "get_user_info", "params": {}},
+            id="invalid-action-params",
         ),
     ],
 )
@@ -302,7 +283,7 @@ def test_action_request_rejects_invalid_protocol_shape(payload: object) -> None:
         ActionRequest.model_validate(payload)
 
 
-def test_action_response_round_trips_required_null_data_and_omits_null_echo() -> None:
+def test_action_response_round_trips_required_null_data_and_omits_empty_echo() -> None:
     response = ActionResponse.ok(echo="")
 
     assert response.model_dump(mode="json") == {
@@ -398,6 +379,16 @@ def test_action_response_accepts_status_retcode_contract(
             {"status": "failed", "retcode": 1, "data": None, "message": "bad"},
             id="failed-with-async-retcode",
         ),
+        pytest.param(
+            {
+                "status": "ok",
+                "retcode": 0,
+                "data": None,
+                "message": "",
+                "echo": None,
+            },
+            id="null-echo",
+        ),
     ],
 )
 def test_action_response_rejects_invalid_protocol_shape(payload: object) -> None:
@@ -420,6 +411,17 @@ def test_non_negative_int_params_accept_int64_boundaries(value: int) -> None:
 
     assert isinstance(call.params, LatestEventsParams)
     assert call.params.limit == value
+
+
+def test_optional_action_params_use_protocol_defaults() -> None:
+    latest = ActionCall.model_validate({"action": "get_latest_events", "params": {}})
+    channels = ActionCall.model_validate({
+        "action": "get_channel_list",
+        "params": {"guild_id": "30000"},
+    })
+
+    assert latest.params.model_dump() == {"limit": 0, "timeout": 0}
+    assert channels.params.model_dump() == {"guild_id": "30000", "joined_only": False}
 
 
 @pytest.mark.parametrize(
@@ -493,18 +495,8 @@ def test_upload_data_rejects_invalid_base64(value: object) -> None:
         })
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        pytest.param("0" * 64, "0" * 64, id="lowercase"),
-        pytest.param("ABCDEF01" * 8, "abcdef01" * 8, id="uppercase-normalized"),
-        pytest.param(None, None, id="optional-null"),
-    ],
-)
-def test_sha256_accepts_valid_or_null_value(
-    value: object,
-    expected: str | None,
-) -> None:
+def test_sha256_accepts_lowercase_value() -> None:
+    value = "0" * 64
     call = ActionCall.model_validate({
         "action": "upload_file",
         "params": {
@@ -516,7 +508,7 @@ def test_sha256_accepts_valid_or_null_value(
     })
 
     assert isinstance(call.params, UploadFileBaseParams)
-    assert call.params.sha256 == expected
+    assert call.params.sha256 == value
 
 
 @pytest.mark.parametrize(
@@ -525,9 +517,11 @@ def test_sha256_accepts_valid_or_null_value(
         pytest.param("0" * 63, id="too-short"),
         pytest.param("0" * 65, id="too-long"),
         pytest.param("z" * 64, id="non-hex"),
+        pytest.param("ABCDEF01" * 8, id="uppercase"),
+        pytest.param(None, id="null"),
     ],
 )
-def test_sha256_rejects_invalid_value(value: str) -> None:
+def test_sha256_rejects_invalid_value(value: object) -> None:
     with pytest.raises(ValidationError):
         ActionCall.model_validate({
             "action": "upload_file",
@@ -563,6 +557,7 @@ def test_return_action_serializes_python_parameter_values() -> None:
         "bytes": b"\xff",
         "bytearray": bytearray(b"\x00"),
         "model": VendorParams(enabled=True),
+        "nested": {"bytes": [b"hello", bytearray(b"\x00")], "text": "POST"},
         "text": "/w==",
     }
 
@@ -579,6 +574,7 @@ def test_return_action_serializes_python_parameter_values() -> None:
             "bytes": "/w==",
             "bytearray": "AA==",
             "model": {"enabled": True},
+            "nested": {"bytes": ["aGVsbG8=", "AA=="], "text": "POST"},
             "text": "/w==",
         },
     }

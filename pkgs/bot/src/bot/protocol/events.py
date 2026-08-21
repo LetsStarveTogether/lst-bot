@@ -32,37 +32,8 @@ class Event(Model):
         return [
             (name, value)
             for name, value in super().__repr_args__()
-            if name in type(self).model_fields
+            if name in {"id", "type", "detail_type", "self_"}
         ]
-
-    def __str__(self) -> str:
-        parts = [f"{self.type}/{self.detail_type}#{self.id}"]
-
-        fields = type(self).model_fields
-        guild_id = getattr(self, "guild_id", None) if "guild_id" in fields else None
-        channel_id = (
-            getattr(self, "channel_id", None) if "channel_id" in fields else None
-        )
-        group_id = getattr(self, "group_id", None) if "group_id" in fields else None
-        user_id = getattr(self, "user_id", None) if "user_id" in fields else None
-        if guild_id and channel_id:
-            parts.append(f"channel:{guild_id}/{channel_id}")
-        elif group_id:
-            parts.append(f"group:{group_id}")
-        elif guild_id:
-            parts.append(f"guild:{guild_id}")
-        elif user_id:
-            parts.append(f"user:{user_id}")
-
-        alt_message = (
-            getattr(self, "alt_message", "") if "alt_message" in fields else ""
-        )
-        if isinstance(alt_message, str) and alt_message:
-            text = " ".join(alt_message.split())
-            if text:
-                parts.append(f'"{text}"')
-
-        return " ".join(parts)
 
 
 class UserEvent(Event):
@@ -223,7 +194,16 @@ class MetaEvent(Event):
     self_: BotSelf | None = Field(
         alias="self",
         default=None,
+        exclude_if=lambda value: value is None,
     )
+
+    @field_validator("self_", mode="before")
+    @classmethod
+    def self_value(cls, value: object) -> object:
+        if value is None:
+            msg = "self must be omitted rather than null"
+            raise ValueError(msg)
+        return value
 
 
 class ConnectMetaEvent(MetaEvent):

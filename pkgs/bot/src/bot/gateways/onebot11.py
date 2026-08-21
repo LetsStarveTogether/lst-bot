@@ -37,6 +37,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic.dataclasses import dataclass as validated_dataclass
+from pydantic.experimental.missing_sentinel import MISSING
 from robyn import Request, Response, Robyn, WebSocketDisconnect
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server, ServerConnection, serve
@@ -1592,7 +1593,7 @@ def decode_action_response(payload: object) -> ActionResponse:
             retcode=response.retcode,
             data=response.data,
             message=response.message or response.msg or "",
-            echo=echo,
+            echo=echo or MISSING,
         )
     message = response.message or response.msg or ""
     return ActionResponse(
@@ -1600,7 +1601,7 @@ def decode_action_response(payload: object) -> ActionResponse:
         retcode=response.retcode,
         data=response.data,
         message=message,
-        echo=echo,
+        echo=echo or MISSING,
     )
 
 

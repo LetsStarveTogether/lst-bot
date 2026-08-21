@@ -23,10 +23,10 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.experimental.missing_sentinel import MISSING
 
 from .base import Model
 from .common import BotSelf
-from .constants import SHA256_STRING_PATTERN
 from .enums import (
     Action,
     ApiStatus,
@@ -49,7 +49,7 @@ type ActionParamInput = (
 type NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
 type Sha256String = Annotated[
     StrictStr,
-    StringConstraints(pattern=SHA256_STRING_PATTERN, to_lower=True),
+    StringConstraints(pattern=r"^[a-f0-9]{64}$"),
 ]
 type HeaderMap = dict[StrictStr, StrictStr]
 
@@ -77,11 +77,11 @@ type WireBytes = Annotated[
 ]
 
 type _ActionParamValue = (
-    JsonValue
+    dict[str, _ActionParamValue]
+    | list[_ActionParamValue]
+    | JsonValue
     | WireBytes
     | SerializeAsAny[BaseModel]
-    | dict[str, _ActionParamValue]
-    | list[_ActionParamValue]
 )
 
 
@@ -95,87 +95,13 @@ class ActionParamModel(Model):
             return value.model_dump(mode="json", by_alias=True, serialize_as_any=True)
         return value
 
-    def __str__(self) -> str:
-        parts: list[str] = []
-
-        guild_id = getattr(self, "guild_id", None)
-        channel_id = getattr(self, "channel_id", None)
-        group_id = getattr(self, "group_id", None)
-        user_id = getattr(self, "user_id", None)
-        if guild_id and channel_id:
-            parts.append(f"channel:{guild_id}/{channel_id}")
-        elif group_id:
-            parts.append(f"group:{group_id}")
-        elif guild_id:
-            parts.append(f"guild:{guild_id}")
-        if user_id:
-            parts.append(f"user:{user_id}")
-
-        message_id = getattr(self, "message_id", None)
-        if message_id:
-            parts.append(f"msg:{message_id}")
-        file_id = getattr(self, "file_id", None)
-        if file_id:
-            parts.append(f"file:{file_id}")
-        stage = getattr(self, "stage", None)
-        if stage:
-            parts.append(f"stage:{stage}")
-        file_type = getattr(self, "type", None)
-        if file_type:
-            parts.append(f"type:{file_type}")
-
-        if parts:
-            return " ".join(parts)
-
-        fields = {
-            key
-            for key in (*type(self).model_fields, *(self.model_extra or ()))
-            if key not in {"data", "headers", "message"}
-            and getattr(self, key, None) is not None
-        }
-        return f"params={len(fields)}" if fields else "-"
-
-
-class ActionRequest(Model):
-    action: StrictStr
-    params: SerializeAsAny[ActionParamModel]
-    echo: StrictStr | None = None
-    self_: BotSelf | None = Field(
-        alias="self",
-        default=None,
-    )
-
-    def __str__(self) -> str:
-        params = str(self.params)
-        text = self.action if params == "-" else f"{self.action} {params}"
-        if self.self_ is None:
-            return text
-        return f"{text} @ {self.self_}"
-
 
 class ActionResponse(Model):
     status: ApiStatus
     retcode: StrictInt
     data: JsonValue
     message: StrictStr
-    echo: StrictStr | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-
-    @field_validator("echo", mode="before")
-    @classmethod
-    def echo_value(cls, value: object) -> object:
-        if isinstance(value, str) and not value:
-            return None
-        return value
-
-    def __str__(self) -> str:
-        text = f"{self.status}:{self.retcode}"
-        if not self.message:
-            return text
-        message = " ".join(self.message.split())
-        return f"{text} {message}"
+    echo: StrictStr | MISSING = MISSING
 
     @model_validator(mode="after")
     def match_status_and_retcode(self) -> Self:
@@ -204,7 +130,7 @@ class ActionResponse(Model):
             retcode=Retcode.OK,
             data=data,
             message="",
-            echo=echo,
+            echo=echo or MISSING,
         )
 
     @classmethod
@@ -220,7 +146,7 @@ class ActionResponse(Model):
             retcode=retcode,
             data=None,
             message=message,
-            echo=echo,
+            echo=echo or MISSING,
         )
 
 
@@ -254,8 +180,8 @@ def _upload_file_params_tag(value: object) -> UploadFileTag:
 
 
 class LatestEventsParams(ActionParamModel):
-    limit: NonNegativeStrictInt | None = None
-    timeout: NonNegativeStrictInt | None = None
+    limit: NonNegativeStrictInt = 0
+    timeout: NonNegativeStrictInt = 0
 
 
 class SendMsgBaseParams(ActionParamModel):
@@ -264,28 +190,6 @@ class SendMsgBaseParams(ActionParamModel):
         validation_alias=AliasChoices("message", "msg"),
         serialization_alias="message",
     )
-
-    def __str__(self) -> str:
-        guild_id = getattr(self, "guild_id", None)
-        channel_id = getattr(self, "channel_id", None)
-        group_id = getattr(self, "group_id", None)
-        user_id = getattr(self, "user_id", None)
-        if guild_id and channel_id:
-            target = f"channel:{guild_id}/{channel_id}"
-        elif group_id:
-            target = f"group:{group_id}"
-        elif user_id:
-            target = f"user:{user_id}"
-        else:
-            target = str(self.detail_type or "-")
-
-        text = " ".join(self.message.text.split())
-        if text:
-            message = f'"{text}"'
-        else:
-            count = len(self.message)
-            message = f"{count} segments" if count else "-"
-        return f"{target} {message}"
 
 
 class SendPrivateMsgParams(SendMsgBaseParams):
@@ -304,15 +208,11 @@ class SendChannelMsgParams(SendMsgBaseParams):
     channel_id: StrictStr
 
 
-class SendExtensionMsgParams(SendMsgBaseParams):
-    pass
-
-
 type SendMsgParams = Annotated[
     Annotated[SendPrivateMsgParams, Tag(MsgTargetTag.PRIVATE)]
     | Annotated[SendGroupMsgParams, Tag(MsgTargetTag.GROUP)]
     | Annotated[SendChannelMsgParams, Tag(MsgTargetTag.CHANNEL)]
-    | Annotated[SendExtensionMsgParams, Tag(MsgTargetTag.EXTENSION)],
+    | Annotated[SendMsgBaseParams, Tag(MsgTargetTag.EXTENSION)],
     Discriminator(_send_msg_params_tag),
 ]
 
@@ -320,13 +220,13 @@ type SendMsgParams = Annotated[
 class UploadFileBaseParams(ActionParamModel):
     type: StrictStr
     name: StrictStr
-    sha256: Sha256String | None = None
+    sha256: Sha256String | MISSING = MISSING
 
 
 class UploadFileUrlParams(UploadFileBaseParams):
     type: Literal[UploadFileTag.URL] = UploadFileTag.URL
     url: StrictStr
-    headers: HeaderMap | None = None
+    headers: HeaderMap | MISSING = MISSING
 
 
 class UploadFilePathParams(UploadFileBaseParams):
@@ -339,15 +239,11 @@ class UploadFileDataParams(UploadFileBaseParams):
     data: WireBytes
 
 
-class UploadFileExtensionParams(UploadFileBaseParams):
-    pass
-
-
 type UploadFileParams = Annotated[
     Annotated[UploadFileUrlParams, Tag(UploadFileTag.URL)]
     | Annotated[UploadFilePathParams, Tag(UploadFileTag.PATH)]
     | Annotated[UploadFileDataParams, Tag(UploadFileTag.DATA)]
-    | Annotated[UploadFileExtensionParams, Tag(UploadFileTag.EXTENSION)],
+    | Annotated[UploadFileBaseParams, Tag(UploadFileTag.EXTENSION)],
     Discriminator(_upload_file_params_tag),
 ]
 
@@ -434,7 +330,7 @@ class ChannelIdParams(GuildIdParams):
 
 
 class ChannelListParams(GuildIdParams):
-    joined_only: StrictBool | None = None
+    joined_only: StrictBool = False
 
 
 class ChannelUserIdParams(ChannelIdParams):
@@ -516,3 +412,8 @@ class ActionCall(Model):
             info.data.get("action"),
             _DEFAULT_ACTION_PARAMS,
         ).validate_python(value)
+
+
+class ActionRequest(ActionCall):
+    echo: StrictStr | MISSING = MISSING
+    self_: BotSelf | MISSING = Field(alias="self", default=MISSING)

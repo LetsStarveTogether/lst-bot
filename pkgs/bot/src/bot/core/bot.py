@@ -448,8 +448,10 @@ class Bot(EventRouter):
         active_gateway = connection.gateway if connection is not None else gateway
 
         logger.info(
-            "dispatch event: %s via %s",
-            event,
+            "dispatch event: %s/%s#%s via %s",
+            event.type,
+            event.detail_type,
+            event.id,
             active_gateway or "-",
         )
 

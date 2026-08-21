@@ -37,7 +37,6 @@ from bot.protocol.actions import (
     ActionCall,
     ActionParamInput,
     ActionParamModel,
-    ActionRequest,
     ActionResponse,
 )
 from bot.protocol.common import BotSelf
@@ -225,17 +224,15 @@ class Connection:
         action: str,
         params: ActionParamModel,
     ) -> BaseModel:
-        params_text = str(params)
-        action_text = action if params_text == "-" else f"{action} {params_text}"
         logger.info(
             "execute action: %s @ %s",
-            action_text,
+            action,
             self.self_,
         )
         response = await self.gateway.request_action(self, action, params)
         response_text = (
-            str(response)
-            if isinstance(response, ActionRequest | ActionResponse)
+            f"{response.status}:{response.retcode}"
+            if isinstance(response, ActionResponse)
             else type(response).__name__
         )
         logger.info(
@@ -386,7 +383,7 @@ class Gateway:
 @dataclass(slots=True)
 class WebSocketActionSession:
     websocket: WebSocketConnection
-    selfs: set[BotSelf] = field(default_factory=set)
+    selfs: set[tuple[str, str]] = field(default_factory=set)
 
 
 class WebSocketActionManager:
@@ -407,7 +404,7 @@ class WebSocketActionManager:
         if not any(current is session for current in self._sessions):
             msg = "WebSocket action session is not registered"
             raise LookupError(msg)
-        session.selfs.add(self_)
+        session.selfs.add((self_.platform, self_.user_id))
 
     def unregister(self, session: WebSocketActionSession) -> None:
         self._sessions = [
@@ -452,32 +449,35 @@ class WebSocketActionManager:
         response: ActionResponse,
     ) -> bool:
         echo = response.echo
-        if echo is None:
-            logger.warning("WebSocket action response missing echo: %s", response)
+        if not isinstance(echo, str):
+            logger.warning(
+                "WebSocket action response missing echo: %s:%s",
+                response.status,
+                response.retcode,
+            )
             return False
         pending = self._pending.get(echo)
         if pending is None:
             logger.warning(
-                "unmatched WebSocket action response: echo=%s %s",
+                "unmatched WebSocket action response: echo=%s",
                 echo,
-                response,
             )
             return False
         pending_session, future = pending
         if pending_session is not session:
             logger.warning(
-                "mismatched WebSocket action response source: echo=%s %s",
+                "mismatched WebSocket action response source: echo=%s",
                 echo,
-                response,
             )
             return False
         if future.done():
             return False
         future.set_result(response)
         logger.debug(
-            "receive WebSocket action response: echo=%s %s",
+            "receive WebSocket action response: echo=%s %s:%s",
             echo,
-            response,
+            response.status,
+            response.retcode,
         )
         return True
 
@@ -490,8 +490,9 @@ class WebSocketActionManager:
         self._sessions.clear()
 
     def _session_for(self, self_: BotSelf) -> WebSocketActionSession | None:
+        key = (self_.platform, self_.user_id)
         return next(
-            (session for session in reversed(self._sessions) if self_ in session.selfs),
+            (session for session in reversed(self._sessions) if key in session.selfs),
             None,
         )
 

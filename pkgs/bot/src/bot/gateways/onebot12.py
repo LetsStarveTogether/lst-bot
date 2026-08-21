@@ -358,7 +358,7 @@ class OneBot12Gateway(Gateway):
         backend: HttpAction,
         action: str,
         params: ActionParamModel,
-        self_: BotSelf | None,
+        self_: BotSelf,
     ) -> ActionResponse:
         if self.http_pool is None:
             if not self._owns_http_pool:

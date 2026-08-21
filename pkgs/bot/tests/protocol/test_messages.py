@@ -66,7 +66,7 @@ def test_message_text_uses_protocol_segments() -> None:
     ]
 
 
-def test_reply_helper_omits_null_user_id_on_wire() -> None:
+def test_reply_helper_omits_absent_user_id_on_wire() -> None:
     message = Msg.reply("message-1", "received")
 
     assert message.model_dump(mode="json") == [
@@ -94,8 +94,12 @@ def test_message_accepts_text_segment_model_and_preserves_whitespace() -> None:
             [{"type": "qq.face", "data": {"type": "reserved"}}],
             id="extension-reserved-data-type",
         ),
+        pytest.param(
+            [{"type": "reply", "data": {"message_id": "1", "user_id": None}}],
+            id="reply-null-user-id",
+        ),
     ],
 )
 def test_message_rejects_invalid_discriminator_or_shape(payload: object) -> None:
-    with pytest.raises((TypeError, ValidationError)):
+    with pytest.raises(ValidationError):
         Msg.model_validate(payload)
