@@ -99,11 +99,17 @@ def test_message_media_uses_onebot11_wire_types() -> None:
         ("audio", "record"),
     ):
         message: list[MsgSegmentInput] = [
-            {"type": segment_type, "data": {"file_id": "resource"}}
+            {
+                "type": segment_type,
+                "data": {"file_id": "resource", "vendor.flag": "kept"},
+            }
         ]
         converted = onebot11_module._dump_ob11_message(message)  # ruff: ignore[private-member-access]
         assert converted.model_dump(mode="json") == [
-            {"type": wire_type, "data": {"file": "resource"}}
+            {
+                "type": wire_type,
+                "data": {"file": "resource", "vendor.flag": "kept"},
+            }
         ]
 
     with pytest.raises(TypeError, match="does not define a file"):

@@ -189,7 +189,9 @@ class OneBot12Gateway(Gateway):
             if isinstance(action, WebSocketAction)
             else None
         )
-        self._websocket_connector = websocket_connector or connect_websocket
+        self._websocket_connector = (
+            connect_websocket if websocket_connector is None else websocket_connector
+        )
         self._forward_tasks: list[Task[None]] = []
         self._reverse_servers: list[Server] = []
         self._reverse_tasks: set[Task[None]] = set()

@@ -13,6 +13,7 @@ from bot import (
     NoticeEvent,
     PrivateMessageEvent,
 )
+from bot.gateways import onebot11 as onebot11_module
 from bot.gateways.onebot11 import decode_event
 from pydantic import JsonValue
 
@@ -109,6 +110,9 @@ def test_official_extension_notices_are_validated_and_preserved(
     assert converted.detail_type == detail_type
     assert extra(converted)["group_id"] == "20000"
     assert extra(converted)["user_id"] == "42"
+    dumped = converted.model_dump(mode="json")
+    for key, value in values.items():
+        assert dumped[key] == (str(value) if key.endswith("_id") else value)
 
 
 @pytest.mark.parametrize(
@@ -172,36 +176,28 @@ def test_unknown_notice_remains_a_notice_event() -> None:
     assert extra(converted)["vendor_value"] == 1
 
 
-def test_heartbeat_status_is_strict_and_maps_online_bot() -> None:
+@pytest.mark.parametrize(
+    "online",
+    [pytest.param(True, id="online"), pytest.param(None, id="unknown")],
+)
+def test_heartbeat_maps_bot_status(online: bool | None) -> None:
     converted = event({
         "time": 1,
         "self_id": 10000,
         "post_type": "meta_event",
         "meta_event_type": "heartbeat",
-        "status": {"good": False, "online": True},
+        "status": {"good": False, "online": online},
         "interval": 5000,
     })
 
     assert isinstance(converted, HeartbeatMetaEvent)
-    status = extra(converted)["status"]
-    assert status == {
-        "good": False,
-        "bots": [{"self": {"platform": "qq", "user_id": "10000"}, "online": True}],
-    }
-
-
-def test_heartbeat_unknown_online_state_has_no_bot_status() -> None:
-    converted = event({
-        "time": 1,
-        "self_id": 10000,
-        "post_type": "meta_event",
-        "meta_event_type": "heartbeat",
-        "status": {"good": False, "online": None},
-        "interval": 5000,
-    })
-
-    assert isinstance(converted, HeartbeatMetaEvent)
-    assert extra(converted)["status"] == {"good": False, "bots": []}
+    bots: list[JsonValue] = []
+    if online is not None:
+        bots.append({
+            "self": {"platform": "qq", "user_id": "10000"},
+            "online": online,
+        })
+    assert extra(converted)["status"] == {"good": False, "bots": bots}
 
 
 @pytest.mark.parametrize(
@@ -383,6 +379,34 @@ def test_cq_parameters_are_unescaped_once() -> None:
 
     assert isinstance(converted, PrivateMessageEvent)
     assert converted.message[0].data.model_extra == {"title": "&#44;"}
+
+
+def test_standard_message_segments_preserve_extension_data() -> None:
+    message: list[JsonValue] = [
+        {"type": "text", "data": {"text": "hello", "vendor.flag": "text"}},
+        {"type": "at", "data": {"qq": "42", "vendor.flag": "mention"}},
+        {"type": "at", "data": {"qq": "all", "vendor.flag": "all"}},
+        {
+            "type": "location",
+            "data": {
+                "lat": "1.0",
+                "lon": "2.0",
+                "title": "",
+                "content": "",
+                "vendor.flag": "location",
+            },
+        },
+        {"type": "reply", "data": {"id": "3", "vendor.flag": "reply"}},
+    ]
+    converted = event(private_msg_payload(message))
+
+    assert isinstance(converted, PrivateMessageEvent)
+    assert (
+        onebot11_module._dump_ob11_message(  # ruff: ignore[private-member-access]
+            converted.message
+        ).model_dump(mode="json")
+        == message
+    )
 
 
 def test_message_segment_rejects_non_object_data() -> None:

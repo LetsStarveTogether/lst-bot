@@ -52,6 +52,13 @@ def test_forward_websocket_validates_role_endpoint_and_identity() -> None:
         )
 
 
+def test_gateway_preserves_falsey_websocket_connector() -> None:
+    connector = AsyncMock()
+    connector.__bool__.return_value = False
+    gateway = OneBot11Gateway(Bot(), websocket_connector=connector)
+    assert gateway._websocket_connector is connector  # ruff: ignore[private-member-access]
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -128,6 +135,26 @@ def test_reverse_websocket_reports_every_actual_port() -> None:
     )
 
     assert gateway.reverse_websocket_ports == (10001, 10002)
+
+
+def test_universal_websocket_identifies_events_before_extension_fields() -> None:
+    gateway = OneBot11Gateway(Bot())
+    payload = {
+        **private_msg_payload(),
+        "status": "ok",
+        "retcode": 0,
+    }
+
+    with patch.object(gateway, "enqueue_event") as enqueue:
+        self_ = gateway._queue_ws_payload(  # ruff: ignore[private-member-access]
+            payload,
+            "universal",
+            None,
+            None,
+        )
+
+    assert self_ == BotSelf(platform="qq", user_id="10000")
+    assert enqueue.call_args.args[0].model_extra["status"] == "ok"
 
 
 @pytest.mark.parametrize(

@@ -532,7 +532,9 @@ class OneBot11Gateway(Gateway):
             if isinstance(action, WebSocketAction)
             else None
         )
-        self._websocket_connector = websocket_connector or connect_websocket
+        self._websocket_connector = (
+            connect_websocket if websocket_connector is None else websocket_connector
+        )
         self._forward_tasks: list[Task[None]] = []
         self._reverse_servers: list[Server] = []
         self._reverse_tasks: set[Task[None]] = set()
@@ -957,7 +959,7 @@ class OneBot11Gateway(Gateway):
         session: WebSocketActionSession | None,
         expected_self: BotSelf | None,
     ) -> BotSelf | None:
-        if "status" in data and "retcode" in data:
+        if "post_type" not in data:
             if session is None:
                 msg = "OneBot 11 event WebSocket returned an action response"
                 raise ValueError(msg)
@@ -1153,11 +1155,15 @@ def _dump_ob11_message(value: MsgInput) -> OneBot11Message:
 
 def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
     if isinstance(segment, TextSegment):
-        return _ob11_segment("text", {"text": segment.data.text})
+        return _ob11_segment("text", _segment_data(_json_object(segment.data)))
     if isinstance(segment, MentionSegment):
-        return _ob11_segment("at", {"qq": segment.data.user_id})
+        data = _json_object(segment.data)
+        data["qq"] = data.pop("user_id")
+        return _ob11_segment("at", _segment_data(data))
     if isinstance(segment, MentionAllSegment):
-        return _ob11_segment("at", {"qq": "all"})
+        data = _json_object(segment.data)
+        data["qq"] = "all"
+        return _ob11_segment("at", _segment_data(data))
     if isinstance(segment, MediaSegment):
         if segment.type is MsgSegmentType.FILE:
             msg = "OneBot 11 does not define a file message segment"
@@ -1171,21 +1177,15 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
         data["file"] = data.pop("file_id")
         return _ob11_segment(segment_type, _segment_data(data))
     if isinstance(segment, LocationSegment):
-        data = segment.data.model_dump(
-            mode="json",
-            exclude_none=True,
-        )
-        return _ob11_segment(
-            "location",
-            _segment_data({
-                "lat": data["latitude"],
-                "lon": data["longitude"],
-                "title": data["title"],
-                "content": data["content"],
-            }),
-        )
+        data = _json_object(segment.data)
+        data["lat"] = data.pop("latitude")
+        data["lon"] = data.pop("longitude")
+        return _ob11_segment("location", _segment_data(data))
     if isinstance(segment, ReplySegment):
-        return _ob11_segment("reply", {"id": segment.data.message_id})
+        data = _json_object(segment.data)
+        data["id"] = data.pop("message_id")
+        data.pop("user_id", None)
+        return _ob11_segment("reply", _segment_data(data))
     if isinstance(segment, ExtensionSegment):
         restored = _json_object(segment.data)
         ob11_type = restored.pop("ob11_type", None)
@@ -1297,12 +1297,14 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
     data = _ob11_segment_data(value.get("data"))
 
     if segment_type == "text":
-        return _ob11_segment("text", {"text": _required_str(data.get("text"), "text")})
+        _required_str(data.get("text"), "text")
+        return _ob11_segment("text", data)
     if segment_type == "at":
-        qq = _id_string(data.get("qq"))
+        qq = _id_string(data.pop("qq", None))
         if qq == "all":
-            return _ob11_segment("mention_all", {})
-        return _ob11_segment("mention", {"user_id": qq})
+            return _ob11_segment("mention_all", data)
+        data["user_id"] = qq
+        return _ob11_segment("mention", data)
     if segment_type in {"image", "record", "video"}:
         internal_type = {
             "image": "image",
@@ -1316,17 +1318,14 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
         payload["file_id"] = _required_str(file, f"{segment_type} file")
         return _ob11_segment(internal_type, payload)
     if segment_type == "location":
-        return _ob11_segment(
-            "location",
-            {
-                "latitude": _finite_float(data.get("lat")),
-                "longitude": _finite_float(data.get("lon")),
-                "title": _optional_str(data.get("title"), "title"),
-                "content": _optional_str(data.get("content"), "content"),
-            },
-        )
+        data["latitude"] = _finite_float(data.pop("lat", None))
+        data["longitude"] = _finite_float(data.pop("lon", None))
+        data["title"] = _optional_str(data.get("title"), "title")
+        data["content"] = _optional_str(data.get("content"), "content")
+        return _ob11_segment("location", data)
     if segment_type == "reply":
-        return _ob11_segment("reply", {"message_id": _id_string(data.get("id"))})
+        data["message_id"] = _id_string(data.pop("id", None))
+        return _ob11_segment("reply", data)
     payload = dict(data)
     ob11_type = payload.pop("type", None)
     if ob11_type is not None:
