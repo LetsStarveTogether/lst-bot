@@ -241,14 +241,10 @@ async def connect_websocket(
     return WebsocketsConnection(websocket)
 
 
+@dataclass(frozen=True, slots=True)
 class Connection:
-    def __init__(
-        self,
-        gateway: Gateway,
-        self_: BotSelf,
-    ) -> None:
-        self.gateway = gateway
-        self.self_ = self_
+    gateway: Gateway
+    self_: BotSelf
 
     def __str__(self) -> str:
         return f"{self.gateway}@{self.self_}"

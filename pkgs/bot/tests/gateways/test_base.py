@@ -8,6 +8,7 @@ from asyncio import (
     timeout,
 )
 from contextlib import suppress
+from dataclasses import FrozenInstanceError
 from gc import collect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -228,6 +229,8 @@ def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
     assert first is not second
     assert first.gateway is second.gateway is gateway
     assert first.self_ == second.self_ == self_
+    with pytest.raises(FrozenInstanceError):
+        first.self_ = BotSelf(platform="test", user_id="other")  # ty: ignore[invalid-assignment]
 
 
 @pytest.mark.parametrize(
