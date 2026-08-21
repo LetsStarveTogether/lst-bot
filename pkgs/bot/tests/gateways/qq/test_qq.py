@@ -326,6 +326,9 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     assert first.closed.is_set()
     assert second.closed.is_set()
     assert not gateway._online  # ruff: ignore[private-member-access]
+    assert gateway._task is None  # ruff: ignore[private-member-access]
+    assert gateway._session_id is None  # ruff: ignore[private-member-access]
+    assert gateway._closed  # ruff: ignore[private-member-access]
 
 
 async def test_gateway_lifecycle_actually_restarts() -> None:
@@ -632,6 +635,81 @@ async def test_common_media_message_preserves_caption(
     assert pool.requests[1][2]["json"] == {
         "content": "caption",
         "media": {"file_info": "uploaded-image"},
+        "msg_type": 7,
+    }
+
+
+@pytest.mark.parametrize(
+    ("event_type", "event_data", "resource_path"),
+    [
+        (
+            "C2C_MESSAGE_CREATE",
+            {
+                "author": {"user_openid": "user"},
+                "message_scene": {"source": "c2c"},
+            },
+            "/v2/users/user",
+        ),
+        (
+            "GROUP_AT_MESSAGE_CREATE",
+            {
+                "author": {"member_openid": "member"},
+                "group_openid": "group",
+                "message_scene": {"source": "group"},
+            },
+            "/v2/groups/group",
+        ),
+    ],
+    ids=["c2c", "group"],
+)
+async def test_common_media_reply_uploads_inbound_attachment_url(
+    event_type: str,
+    event_data: dict[str, object],
+    resource_path: str,
+) -> None:
+    attachment_url = "https://qq.example/image.png"
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"file_uuid": "file", "file_info": "uploaded-image", "ttl": 60},
+        {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
+    )
+    gateway = _gateway(pool)
+    event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - verifies the complete inbound-to-outbound media boundary
+        QQDispatch.model_validate({
+            "id": "event",
+            "op": 0,
+            "s": 1,
+            "t": event_type,
+            "d": {
+                "id": "incoming-message",
+                "content": "",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "message_type": 0,
+                "attachments": [{"url": attachment_url, "content_type": "image/png"}],
+                **event_data,
+            },
+        })
+    )
+    assert isinstance(event, PrivateMessageEvent | GroupMessageEvent)
+
+    await gateway.connection_for(event.self_).execute_message_action(
+        event,
+        event.message,
+    )
+
+    assert [request[1] for request in pool.requests[1:]] == [
+        f"https://qq.example{resource_path}/files",
+        f"https://qq.example{resource_path}/messages",
+    ]
+    assert pool.requests[1][2]["json"] == {
+        "file_type": 1,
+        "srv_send_msg": False,
+        "url": attachment_url,
+    }
+    assert pool.requests[2][2]["json"] == {
+        "media": {"file_info": "uploaded-image"},
+        "msg_id": "incoming-message",
+        "msg_seq": 1,
         "msg_type": 7,
     }
 

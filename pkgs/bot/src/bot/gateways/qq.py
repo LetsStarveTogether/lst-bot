@@ -106,6 +106,17 @@ _MESSAGE_TARGET_DETAIL: dict[QQMessageTarget, QQMessageDetailType] = {
     "channel": "channel",
     "dm": "private",
 }
+_MEDIA_FILE_TYPES: dict[str, int] = {
+    MsgSegmentType.IMAGE: 1,
+    MsgSegmentType.VIDEO: 2,
+    MsgSegmentType.VOICE: 3,
+    MsgSegmentType.AUDIO: 3,
+    MsgSegmentType.FILE: 4,
+}
+_MEDIA_UPLOADS = {
+    "c2c": (QQAction.UPLOAD_C2C_FILE, "user_openid", "user_id"),
+    "group": (QQAction.UPLOAD_GROUP_FILE, "group_openid", "group_id"),
+}
 
 
 def _valid_shard(value: tuple[int, int]) -> tuple[int, int]:
@@ -1085,6 +1096,31 @@ class QQGateway(Gateway, QQRestClient):
             msg = "QQ mention-all is only supported in channels"
             raise ValueError(msg)
         body = _qq_send_body(message)
+        media = next(
+            (segment for segment in message if segment.type in _MEDIA_FILE_TYPES),
+            None,
+        )
+        if (
+            media is not None
+            and (upload := _MEDIA_UPLOADS.get(target)) is not None
+            and (
+                file_id := cast(object, media.data).file_id  # ty: ignore[unresolved-attribute]
+            )
+            .casefold()
+            .startswith(("http://", "https://"))
+        ):
+            upload_action, target_name, source_name = upload
+            uploaded = cast(
+                qq_api.QQFileInfo,
+                await self.request_qq(
+                    upload_action,
+                    **{target_name: params[source_name]},
+                    file_type=_MEDIA_FILE_TYPES[media.type],
+                    url=file_id,
+                    srv_send_msg=False,
+                ),
+            )
+            body["media"] = {"file_info": uploaded.file_info}
         if (
             target in {"c2c", "group"}
             and "msg_id" in params
@@ -1213,13 +1249,7 @@ def _qq_send_body(message: Msg) -> dict[str, object]:
             )
         elif segment.type == MsgSegmentType.MENTION_ALL:
             content.append("<qqbot-at-everyone />")
-        elif segment.type in {
-            MsgSegmentType.IMAGE,
-            MsgSegmentType.VOICE,
-            MsgSegmentType.AUDIO,
-            MsgSegmentType.VIDEO,
-            MsgSegmentType.FILE,
-        }:
+        elif segment.type in _MEDIA_FILE_TYPES:
             if media is not None:
                 msg = "QQ sends at most one media resource per message"
                 raise ValueError(msg)
