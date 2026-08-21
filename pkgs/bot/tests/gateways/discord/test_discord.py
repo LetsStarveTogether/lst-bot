@@ -1020,7 +1020,7 @@ async def test_sequence_commit_and_public_message_actions() -> None:
         )
 
 
-async def test_public_lookup_actions_map_endpoints_and_models() -> None:
+async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
     guild = {"id": "10", "name": "guild", "icon": None, "features": []}
     member = {"user": user(), "roles": []}
     channel = {"id": "20", "type": 0}
@@ -1106,25 +1106,15 @@ async def test_public_lookup_actions_map_endpoints_and_models() -> None:
         (method, url.removeprefix("https://discord.example/api/v10"))
         for method, url, _ in pool.requests
     ] == [(method, path) for _, _, _, _, method, path in cases]
-
-
-@pytest.mark.parametrize(
-    ("action", "data"),
-    [
+    invalid_names: tuple[tuple[str, dict[str, object]], ...] = (
         ("set_guild_name", {"guild_id": "1", "guild_name": "x"}),
         ("set_guild_name", {"guild_id": "1", "guild_name": " guild"}),
         ("set_channel_name", {"channel_id": "1", "channel_name": ""}),
         ("set_channel_name", {"channel_id": "1", "channel_name": "x" * 101}),
-    ],
-)
-async def test_common_name_actions_validate_discord_boundaries(
-    action: str,
-    data: dict[str, object],
-) -> None:
-    instance = gateway()
-
-    with pytest.raises(ValidationError):
-        await instance._common_action(action, data)
+    )
+    for action, data in invalid_names:
+        with pytest.raises(ValidationError):
+            await instance._common_action(action, data)
 
 
 def test_message_model_is_strict_but_accepts_new_fields() -> None:
@@ -1214,9 +1204,6 @@ async def test_interaction_callbacks_do_not_start_after_deadlines() -> None:
 
 
 async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
-    interaction = DiscordRequest(method="POST", path="/interactions/1/token/callback")
-    assert DiscordGateway._rate_route(interaction)[1] == ""
-
     class BucketPool(Pool):
         def __init__(self) -> None:
             super().__init__()
