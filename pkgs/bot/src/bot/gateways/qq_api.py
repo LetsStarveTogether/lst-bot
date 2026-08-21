@@ -149,6 +149,7 @@ class QQChannel(Model):
     private_type: Literal[0, 1, 2] | None = None
     speak_permission: Literal[0, 1, 2] | None = None
     application_id: StrictStr | None = None
+    permissions: StrictStr | None = None
 
 
 class QQChannelList(RootModel[list[QQChannel]]):

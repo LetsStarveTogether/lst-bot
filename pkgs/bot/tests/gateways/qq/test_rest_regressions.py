@@ -111,6 +111,7 @@ def test_response_models_accept_current_qq_wire_values() -> None:
         "guild_id": "guild",
         "type": 1,
         "sub_type": 4,
+        "permissions": "1",
     })
     roles = QQGuildRoles.model_validate({"roles": [], "role_num_limit": "30"})
     members = QQRoleMemberList.model_validate({
@@ -123,8 +124,15 @@ def test_response_models_accept_current_qq_wire_values() -> None:
         ]
     })
 
-    assert (channel.type, channel.sub_type, roles.role_num_limit) == (1, 4, "30")
+    assert (channel.type, channel.sub_type, channel.permissions) == (1, 4, "1")
+    assert roles.role_num_limit == "30"
     assert members.data[0].roles == []
+    with pytest.raises(ValidationError):
+        QQChannel.model_validate({
+            "id": "channel",
+            "guild_id": "guild",
+            "permissions": 1,
+        })
 
 
 def test_rest_request_models_follow_current_qq_contract() -> None:
