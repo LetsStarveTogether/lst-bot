@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from hmac import compare_digest
 from logging import getLogger
 from types import TracebackType
-from typing import TYPE_CHECKING, Annotated, Never, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Protocol, Self
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -198,8 +198,12 @@ class WebsocketsConnection:
     async def receive_text(self) -> str:
         try:
             payload = await self.websocket.recv()
+        except ConnectionClosedOK as exc:
+            raise StopAsyncIteration from exc
         except ConnectionClosed as exc:
-            self._raise_closed(exc)
+            raise WebSocketClosedError(
+                exc.rcvd.code if exc.rcvd is not None else None
+            ) from exc
         if isinstance(payload, bytes):
             msg = "WebSocket text frame required"
             raise TypeError(msg)
@@ -208,19 +212,17 @@ class WebsocketsConnection:
     async def send_text(self, payload: str) -> None:
         try:
             await self.websocket.send(payload)
+        except CancelledError:
+            with suppress(Exception):
+                await await_cleanup(create_task(self.websocket.close()))
+            raise
         except ConnectionClosed as exc:
-            self._raise_closed(exc)
+            raise WebSocketClosedError(
+                exc.rcvd.code if exc.rcvd is not None else None
+            ) from exc
 
     async def close(self, code: int = 1000) -> None:
         await self.websocket.close(code=code)
-
-    @staticmethod
-    def _raise_closed(exc: ConnectionClosed) -> Never:
-        if isinstance(exc, ConnectionClosedOK):
-            raise StopAsyncIteration from exc
-        raise WebSocketClosedError(
-            exc.rcvd.code if exc.rcvd is not None else None
-        ) from exc
 
 
 async def connect_websocket(

@@ -265,6 +265,24 @@ async def test_websockets_connection_requires_text_frames() -> None:
         await connection.receive_text()
 
 
+async def test_cancelled_websockets_send_closes_transport() -> None:
+    started = Event()
+
+    async def send(_payload: str) -> None:
+        started.set()
+        await Event().wait()
+
+    native = AsyncMock()
+    native.send.side_effect = send
+    sending = create_task(WebsocketsConnection(native).send_text("payload"))
+    await started.wait()
+    sending.cancel()
+
+    with pytest.raises(CancelledError):
+        await sending
+    native.close.assert_awaited_once_with()
+
+
 async def test_connect_websocket_passes_explicit_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,11 +335,12 @@ async def test_websockets_connection_normalizes_close(
         assert received.value.code == 4008
 
     native.send.side_effect = error
-    with pytest.raises(expected) as sent:
+    with pytest.raises(WebSocketClosedError) as sent:
         await connection.send_text("payload")
     assert sent.value.__cause__ is error
-    if isinstance(sent.value, WebSocketClosedError):
-        assert sent.value.code == 4008
+    assert sent.value.code == (
+        4008 if isinstance(error, ConnectionClosedError) else 1000
+    )
 
 
 async def test_disconnect_fails_action_and_manager_recovers() -> None:
