@@ -169,18 +169,3 @@ class UploadFileTag(StrEnum):
     PATH = auto()
     DATA = auto()
     EXTENSION = auto()
-
-
-__all__ = [
-    "Action",
-    "ActionCallTag",
-    "ApiStatus",
-    "EventDetailType",
-    "EventKind",
-    "EventTag",
-    "FileStage",
-    "MsgSegmentType",
-    "MsgTargetTag",
-    "Retcode",
-    "UploadFileTag",
-]

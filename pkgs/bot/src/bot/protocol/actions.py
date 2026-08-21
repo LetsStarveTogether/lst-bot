@@ -280,21 +280,6 @@ class SendMsgBaseParams(ActionParamModel):
         serialization_alias="message",
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_input(cls, value: object) -> object:
-        if not isinstance(value, Mapping):
-            return value
-        data = dict(value)
-        if data.get("detail_type") is None:
-            if data.get("guild_id") and data.get("channel_id"):
-                data["detail_type"] = MsgTargetTag.CHANNEL
-            elif data.get("group_id"):
-                data["detail_type"] = MsgTargetTag.GROUP
-            elif data.get("user_id"):
-                data["detail_type"] = MsgTargetTag.PRIVATE
-        return data
-
     def __str__(self) -> str:
         guild_id = getattr(self, "guild_id", None)
         channel_id = getattr(self, "channel_id", None)
@@ -646,35 +631,3 @@ type ActionCallVariant = Annotated[
 class ActionCall(RootModel[ActionCallVariant]):
     def __str__(self) -> str:
         return str(self.root)
-
-
-__all__ = [
-    "ActionCall",
-    "ActionCallVariant",
-    "ActionParamInput",
-    "ActionRequest",
-    "ActionResponse",
-    "ChannelIdParams",
-    "ChannelListParams",
-    "ChannelNameParams",
-    "ChannelUserIdParams",
-    "EmptyActionParams",
-    "FileStage",
-    "FragmentedGetParams",
-    "FragmentedUploadParams",
-    "GetFileParams",
-    "GroupIdParams",
-    "GroupNameParams",
-    "GroupUserIdParams",
-    "GuildIdParams",
-    "GuildNameParams",
-    "GuildUserIdParams",
-    "HeaderMap",
-    "LatestEventsParams",
-    "MsgIdParams",
-    "NonNegativeStrictInt",
-    "SendMsgParams",
-    "Sha256String",
-    "UploadFileParams",
-    "UserIdParams",
-]

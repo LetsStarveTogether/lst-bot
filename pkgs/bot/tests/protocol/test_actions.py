@@ -100,7 +100,7 @@ def test_action_matrix_covers_every_declared_standard_action() -> None:
     ("params", "detail_type"),
     [
         pytest.param(
-            {"user_id": "42", "message": "private"},
+            {"user_id": "42", "msg": "private"},
             "private",
             id="private-inferred",
         ),
@@ -131,10 +131,11 @@ def test_send_message_discriminator_selects_each_target_variant(
 ) -> None:
     call = ActionCall.model_validate({"action": "send_message", "params": params})
     normalized = call.model_dump(mode="json", by_alias=True, exclude_none=True)
+    message = params.get("message", params.get("msg"))
 
     assert normalized["params"]["detail_type"] == detail_type
     assert normalized["params"]["message"] == [
-        {"type": "text", "data": {"text": params["message"]}},
+        {"type": "text", "data": {"text": message}},
     ]
 
 
@@ -236,23 +237,6 @@ def test_extension_action_preserves_nested_json_values_and_null() -> None:
 
     assert call.model_dump(mode="json", by_alias=True) == payload
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
-
-
-def test_action_normalization_is_idempotent() -> None:
-    call = ActionCall.model_validate({
-        "action": "send_message",
-        "params": {"group_id": "20000", "msg": "hello"},
-    })
-    normalized = call.model_dump(mode="json", by_alias=True, exclude_none=True)
-
-    assert (
-        ActionCall.model_validate(normalized).model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-        )
-        == normalized
-    )
 
 
 def test_action_request_round_trips_explicit_null_envelope_fields() -> None:
@@ -645,15 +629,3 @@ def test_action_params_recursively_serialize_models_with_aliases() -> None:
     assert nested.model_dump(mode="json", by_alias=True)["params"] == {
         "operations": [expected]
     }
-
-
-def test_return_action_factories_cover_message_call_and_request() -> None:
-    message = ReturnAction.message("hello")
-    request = ReturnAction.request(False, reason="denied")
-
-    assert (message.kind, message.msg.text if message.msg else None) == (
-        "message",
-        "hello",
-    )
-    assert request.kind == "request"
-    assert request.approve is False

@@ -151,11 +151,7 @@ class Msg(RootModel[list[MsgSegment]]):
 
     @classmethod
     def t(cls, text: str) -> Msg:
-        return cls([
-            TextSegment(
-                data=TextSegmentData(text=text),
-            ),
-        ])
+        return cls.from_input(text)
 
     @classmethod
     def mention(cls, user_id: str, message: MsgInput = None) -> Msg:
@@ -196,22 +192,16 @@ class Msg(RootModel[list[MsgSegment]]):
     def __iter__(self) -> Iterator[MsgSegment]:  # ty: ignore[invalid-method-override]
         return iter(self.root)
 
-    def _text(self, *, strip: bool) -> str:
-        text = "".join(
-            segment.data.text if isinstance(segment, TextSegment) else ""
-            for segment in self.root
-        )
-        if strip:
-            return text.strip()
-        return text
-
     @property
     def text(self) -> str:
-        return self._text(strip=True)
+        return str(self).strip()
 
     @override
     def __str__(self) -> str:
-        return self._text(strip=False)
+        return "".join(
+            segment.data.text if isinstance(segment, TextSegment) else ""
+            for segment in self.root
+        )
 
     def append(self, segment: MsgSegmentInput | str) -> None:
         self.extend(segment)
@@ -243,29 +233,3 @@ def _msg_input_value(value: object) -> object:
 type MsgValue = Annotated[Msg, BeforeValidator(_msg_input_value)]
 
 _MSG_INPUT_ADAPTER = TypeAdapter(MsgValue)
-
-
-__all__ = [
-    "AudioSegment",
-    "EmptySegmentData",
-    "ExtensionSegment",
-    "ExtensionSegmentData",
-    "FileSegment",
-    "FileSegmentData",
-    "ImageSegment",
-    "LocationSegment",
-    "LocationSegmentData",
-    "MentionAllSegment",
-    "MentionSegment",
-    "MentionSegmentData",
-    "Msg",
-    "MsgInput",
-    "MsgSegment",
-    "MsgSegmentInput",
-    "ReplySegment",
-    "ReplySegmentData",
-    "TextSegment",
-    "TextSegmentData",
-    "VideoSegment",
-    "VoiceSegment",
-]

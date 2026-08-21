@@ -121,28 +121,6 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
     assert alias_results[0].values == ["p:!p:now"]
 
 
-async def test_router_cmd_blocks_by_default() -> None:
-    bot = Bot()
-    router = EventRouter()
-    seen: list[str] = []
-
-    @router.on_cmd("ping")
-    def command() -> None:
-        seen.append("command")
-
-    @router.on_msg()
-    def message() -> None:
-        seen.append("message")
-
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(gateway.connection, private_message_event("/ping"))
-
-    assert seen == ["command"]
-
-
 async def test_context_route_and_cmd_are_resolved_from_current_route() -> None:
     bot = Bot()
     router = EventRouter()

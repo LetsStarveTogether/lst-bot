@@ -46,11 +46,3 @@ ACTION_CALL_TAGS = {
     Action.GET_FILE_FRAGMENTED: ActionCallTag.GET_FILE_FRAGMENTED,
     **dict.fromkeys(NO_PARAM_ACTIONS, ActionCallTag.EMPTY),
 }
-
-__all__ = [
-    "ACTION_CALL_TAGS",
-    "MAX_RETCODE",
-    "NAME_PATTERN",
-    "NO_PARAM_ACTIONS",
-    "SHA256_STRING_PATTERN",
-]

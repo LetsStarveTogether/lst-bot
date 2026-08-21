@@ -38,6 +38,3 @@ class Model(BaseModel):
             visited.add(id(item))
             pending.extend(values)
         return value
-
-
-__all__ = ["Model"]

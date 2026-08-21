@@ -340,36 +340,3 @@ type EventPayloadVariant = Annotated[
 
 class EventPayload(RootModel[EventPayloadVariant]):
     pass
-
-
-__all__ = [
-    "ChannelCreateNoticeEvent",
-    "ChannelDeleteNoticeEvent",
-    "ChannelMemberDecreaseNoticeEvent",
-    "ChannelMemberIncreaseNoticeEvent",
-    "ChannelMessageDeleteNoticeEvent",
-    "ChannelMessageEvent",
-    "ConnectMetaEvent",
-    "Event",
-    "EventPayload",
-    "EventPayloadVariant",
-    "FriendDecreaseNoticeEvent",
-    "FriendIncreaseNoticeEvent",
-    "FriendRequestEvent",
-    "GroupMemberDecreaseNoticeEvent",
-    "GroupMemberIncreaseNoticeEvent",
-    "GroupMessageDeleteNoticeEvent",
-    "GroupMessageEvent",
-    "GroupRequestEvent",
-    "GuildMemberDecreaseNoticeEvent",
-    "GuildMemberIncreaseNoticeEvent",
-    "HeartbeatMetaEvent",
-    "MessageEvent",
-    "MetaEvent",
-    "NoticeEvent",
-    "PrivateMessageDeleteNoticeEvent",
-    "PrivateMessageEvent",
-    "RequestEvent",
-    "StatusUpdateMetaEvent",
-    "UserEvent",
-]

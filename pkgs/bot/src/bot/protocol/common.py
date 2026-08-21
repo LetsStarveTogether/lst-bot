@@ -46,11 +46,3 @@ class Status(Model):
     def __str__(self) -> str:
         state = "good" if self.good else "bad"
         return f"{state} bots={len(self.bots)}"
-
-
-__all__ = [
-    "BotSelf",
-    "BotStatus",
-    "Status",
-    "Version",
-]

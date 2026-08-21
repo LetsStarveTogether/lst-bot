@@ -80,6 +80,3 @@ class Permission(Rule):
             return isinstance(role, str) and role in {"admin", "owner"}
 
         return cls(check)
-
-
-__all__ = ["Permission", "Rule"]
