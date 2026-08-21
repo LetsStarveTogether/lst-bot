@@ -378,3 +378,22 @@ async def test_start_reaps_a_finished_gateway_task() -> None:
         assert gateway._task is not finished  # ruff: ignore[private-member-access]
         assert gateway._session_id is None  # ruff: ignore[private-member-access]
         await gateway.close()
+
+
+async def test_start_retries_unfinished_gateway_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = _gateway()
+    gateway._closing = True  # ruff: ignore[private-member-access]
+    cleanup = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None])
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gateway, "_finish_gateway_close", cleanup)
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await gateway.start()
+        assert gateway._closing  # ruff: ignore[private-member-access]
+        await gateway.start()
+
+    assert not gateway._closing  # ruff: ignore[private-member-access]
+    assert cleanup.await_count == 2
+    await gateway.close()

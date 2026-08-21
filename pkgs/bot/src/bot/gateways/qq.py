@@ -564,6 +564,8 @@ class QQGateway(Gateway, QQRestClient):
     @override
     async def start(self) -> None:
         async with self._lifecycle_lock:
+            if self._closing:
+                await self._finish_gateway_close()
             if self._task is not None:
                 if not self._task.done():
                     return
