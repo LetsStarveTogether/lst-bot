@@ -519,7 +519,7 @@ class OneBot11Gateway(Gateway):
         self.action_backend = action
         self.access_token = access_token_value(access_token)
         self.http_pool = (
-            action.http_pool or AsyncPoolManager()
+            (action.http_pool if action.http_pool is not None else AsyncPoolManager())
             if isinstance(action, HttpAction)
             else None
         )
@@ -960,7 +960,11 @@ class OneBot11Gateway(Gateway):
         expected_self: BotSelf | None,
     ) -> BotSelf | None:
         if "status" in data and "retcode" in data:
-            self._receive_ws_action_response(session, data)
+            if session is None:
+                msg = "OneBot 11 event WebSocket returned an action response"
+                raise ValueError(msg)
+            if self._ws_actions is not None:
+                self._ws_actions.receive(session, decode_action_response(data))
             return expected_self
         if role not in _EVENT_ROLES:
             msg = "OneBot 11 API WebSocket received an event"
@@ -982,18 +986,6 @@ class OneBot11Gateway(Gateway):
             msg = "OneBot 11 event queue is full"
             raise ConnectionError(msg) from None
         return expected_self or event_self
-
-    def _receive_ws_action_response(
-        self,
-        session: WebSocketActionSession | None,
-        data: Mapping[str, JsonValue],
-    ) -> None:
-        if session is None:
-            msg = "OneBot 11 event WebSocket returned an action response"
-            raise ValueError(msg)
-        response = decode_action_response(data)
-        if self._ws_actions is not None:
-            self._ws_actions.receive(session, response)
 
     async def _run_forward_websocket(self, ingress: ForwardWebSocket) -> None:
         while not self._closing:
@@ -1119,7 +1111,10 @@ def _request_response(
     event: Event | None,
     action: ReturnAction,
 ) -> tuple[OneBot11QuickOperation, str, ActionParamModel]:
-    approve = _request_approve(action)
+    approve = action.approve
+    if approve is None:
+        msg = "Request response return action requires approve"
+        raise TypeError(msg)
     if isinstance(event, FriendRequestEvent):
         if action.reason:
             msg = "Friend request rejections do not support reason"
@@ -1152,13 +1147,6 @@ def _request_response(
     raise TypeError(msg)
 
 
-def _request_approve(action: ReturnAction) -> bool:
-    if action.approve is None:
-        msg = "Request response return action requires approve"
-        raise TypeError(msg)
-    return action.approve
-
-
 def _dump_ob11_message(value: MsgInput) -> OneBot11Message:
     return OneBot11Message(
         root=[_dump_ob11_segment(segment) for segment in Msg.from_input(value)]
@@ -1181,7 +1169,9 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
             if segment.type in {MsgSegmentType.VOICE, MsgSegmentType.AUDIO}
             else segment.type
         )
-        return _ob11_segment(segment_type, _file_segment_data(segment.data))
+        data = _json_object(segment.data)
+        data["file"] = data.pop("file_id")
+        return _ob11_segment(segment_type, _segment_data(data))
     if isinstance(segment, LocationSegment):
         data = segment.data.model_dump(
             mode="json",
@@ -1206,13 +1196,6 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
         return _ob11_segment(segment.type, _segment_data(restored))
     msg = f"{segment.type} is not supported by OneBot 11"
     raise TypeError(msg)
-
-
-def _file_segment_data(data: BaseModel) -> Model:
-    dumped = _json_object(data)
-    file_id = dumped.pop("file_id")
-    dumped["file"] = file_id
-    return _segment_data(dumped)
 
 
 def _segment_data(data: Mapping[str, JsonValue]) -> Model:

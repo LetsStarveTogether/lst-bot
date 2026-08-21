@@ -400,7 +400,10 @@ class OneBot12Gateway(Gateway):
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
-            if not self._authenticate(request):
+            if not token_matches(
+                self.access_token,
+                bearer_or_query_token(request),
+            ):
                 logger.warning(
                     "reject OneBot 12 HTTP webhook token: %s",
                     ingress.path,
@@ -605,9 +608,6 @@ class OneBot12Gateway(Gateway):
                     )
             if not self._closing:
                 await sleep(ingress.reconnect_interval)
-
-    def _authenticate(self, source: object) -> bool:
-        return token_matches(self.access_token, bearer_or_query_token(source))
 
 
 def _is_onebot12_subprotocol(protocol: str) -> bool:

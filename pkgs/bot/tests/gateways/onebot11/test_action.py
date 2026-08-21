@@ -224,14 +224,19 @@ async def test_closed_gateway_rejects_new_http_actions() -> None:
 
 
 async def test_gateway_does_not_close_borrowed_http_pool() -> None:
+    class FalseyPool(AsyncPoolManager):
+        def __bool__(self) -> bool:
+            return False
+
     async with (
         ActionServer(action_response_payload({})) as server,
-        AsyncPoolManager() as pool,
+        FalseyPool() as pool,
     ):
         gateway = OneBot11Gateway(
             Bot(),
             action=HttpAction(server.base_url, http_pool=pool),
         )
+        assert gateway.http_pool is pool
 
         async with gateway:
             pass
