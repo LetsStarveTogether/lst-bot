@@ -87,13 +87,7 @@ python-platform = "linux"
 
 [tool.pytest]
 minversion = '9.1'
-testpaths = [
-    'tests',
-    'pkgs/bot/tests',
-    'pkgs/hitokoto/tests',
-    'pkgs/klei/tests',
-    'pkgs/lst/tests',
-]
+testpaths = ['tests', 'pkgs']
 strict = true
 filterwarnings = ['error']
 asyncio_mode = 'auto'
