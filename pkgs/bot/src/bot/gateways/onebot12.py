@@ -202,6 +202,8 @@ class OneBot12Gateway(Gateway):
         async with self._lifecycle_lock:
             if self._started:
                 return
+            if self._closing:
+                await self._finish_close()
             self._closing = False
             try:
                 for ingress in self.ingress:

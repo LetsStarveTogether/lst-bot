@@ -182,6 +182,18 @@ async def test_start_and_cleanup_failures_close_owned_http_pool() -> None:
     assert gateway._started is False  # ruff: ignore[private-member-access]
 
 
+async def test_start_retries_failed_cleanup() -> None:
+    gateway = OneBot12Gateway(Bot())
+    cleanup = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None, None])
+    with patch.object(gateway, "_close_transports", cleanup):
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await gateway.close()
+        await gateway.start()
+        await gateway.close()
+
+    assert cleanup.await_count == 3
+
+
 async def test_http_action_timeout_includes_response_body() -> None:
     pool = AsyncMock(spec=AsyncPoolManager)
     pool.request.return_value = SimpleNamespace(
