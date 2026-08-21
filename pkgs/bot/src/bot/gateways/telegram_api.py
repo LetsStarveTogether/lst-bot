@@ -1,6 +1,7 @@
 from asyncio import (
     Event,
     Lock,
+    create_task,
     timeout,
 )
 from collections.abc import Mapping
@@ -34,7 +35,7 @@ from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
-from .base import run_while_open, validate_https_base_url
+from .base import await_cleanup, run_while_open, validate_https_base_url
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
@@ -976,8 +977,12 @@ async def _download_response(
         raise ConnectionError(msg) from None
     finally:
         if response is not None:
-            with suppress(Exception):
-                await response.close()
+
+            async def close() -> None:
+                with suppress(Exception):
+                    await response.close()
+
+            await await_cleanup(create_task(close()))
 
 
 def _validate_download_response(

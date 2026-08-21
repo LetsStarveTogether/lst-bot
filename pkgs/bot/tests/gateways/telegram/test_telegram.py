@@ -1,7 +1,9 @@
+# ruff: file-ignore[private-member-access]
 from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
 from collections.abc import AsyncIterator, Mapping
 from hashlib import sha256
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from bot import Bot, BotSelf, Msg, Status
@@ -258,17 +260,13 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
         {"type": "text", "data": {"text": text}},
         {"type": "image", "data": {"file_id": "photo"}},
     ])
-    calls = telegram_module._message_calls(  # ruff: ignore[private-member-access]
-        "42", message, {"parse_mode": "HTML"}
-    )
+    calls = telegram_module._message_calls("42", message, {"parse_mode": "HTML"})
     assert [method for method, _ in calls] == methods
     assert calls[-1][1].get("caption") == (text if length == 1024 else None)
     assert calls[0][1]["parse_mode"] == "HTML"
     assert calls[-1][1].get("parse_mode") == ("HTML" if length == 1024 else None)
     entities = [{"type": "bold", "offset": 0, "length": 1}]
-    calls = telegram_module._message_calls(  # ruff: ignore[private-member-access]
-        "42", message, {"entities": entities}
-    )
+    calls = telegram_module._message_calls("42", message, {"entities": entities})
     assert calls[0][1].get("entities") == (entities if length == 1025 else None)
     assert calls[-1][1].get("caption_entities") == (
         entities if length == 1024 else None
@@ -277,12 +275,10 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
 
 def test_message_text_limit() -> None:
     message = Msg.from_input("x" * 4096)
-    assert telegram_module._message_calls("42", message, {})  # ruff: ignore[private-member-access]
+    assert telegram_module._message_calls("42", message, {})
     with pytest.raises(ValueError, match="4096"):
-        telegram_module._message_calls(  # ruff: ignore[private-member-access]
-            "42", Msg.from_input("x" * 4097), {}
-        )
-    assert telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        telegram_module._message_calls("42", Msg.from_input("x" * 4097), {})
+    assert telegram_module._message_calls(
         "42",
         Msg.from_input(f"<b>{'x' * 4094}</b>"),
         {"parse_mode": "HTML"},
@@ -297,7 +293,7 @@ def test_unmapped_message_content_is_preserved() -> None:
     raw["poll"] = {"id": "poll"}
     message = TelegramUpdate.model_validate({"update_id": 2, "message": raw}).message
     assert message is not None
-    converted = telegram_module._telegram_message(message)  # ruff: ignore[private-member-access]
+    converted = telegram_module._telegram_message(message)
     assert converted[0].type == "telegram.message"
     assert converted[0].data.model_extra == {"raw": message.model_dump(mode="json")}
 
@@ -318,7 +314,7 @@ def test_location_and_venue_conversion() -> None:
         },
     })
     assert update.message is not None
-    venue = telegram_module._telegram_message(update.message)  # ruff: ignore[private-member-access]
+    venue = telegram_module._telegram_message(update.message)
     assert venue.model_dump(mode="json") == [
         {
             "type": "location",
@@ -330,7 +326,7 @@ def test_location_and_venue_conversion() -> None:
             },
         }
     ]
-    assert telegram_module._message_calls("42", venue, {}) == [  # ruff: ignore[private-member-access]
+    assert telegram_module._message_calls("42", venue, {}) == [
         (
             "sendVenue",
             {
@@ -354,16 +350,14 @@ def test_location_and_venue_conversion() -> None:
             },
         }
     ])
-    assert telegram_module._message_calls("42", location, {}) == [  # ruff: ignore[private-member-access]
+    assert telegram_module._message_calls("42", location, {}) == [
         (
             "sendLocation",
             {"chat_id": "42", "latitude": 1.25, "longitude": 2.5},
         )
     ]
     with pytest.raises(ValueError, match="require message text"):
-        telegram_module._message_calls(  # ruff: ignore[private-member-access]
-            "42", location, {"parse_mode": "HTML"}
-        )
+        telegram_module._message_calls("42", location, {"parse_mode": "HTML"})
 
 
 async def test_common_message_options_are_scoped_to_supported_methods() -> None:
@@ -371,7 +365,7 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
         {"type": "text", "data": {"text": "reply"}},
         {"type": "telegram.sticker", "data": {"file_id": "sticker"}},
     ])
-    calls = telegram_module._message_calls(  # ruff: ignore[private-member-access]
+    calls = telegram_module._message_calls(
         "42",
         message,
         {
@@ -396,13 +390,13 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
     ]
 
     with pytest.raises(ValidationError):
-        telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        telegram_module._message_calls(
             "42",
             Msg.from_input({"type": "image", "data": {"file_id": "photo"}}),
             {"has_spoiler": True},
         )
     with pytest.raises(ValidationError, match="mutually exclusive"):
-        telegram_module._message_calls(  # ruff: ignore[private-member-access]
+        telegram_module._message_calls(
             "42",
             Msg.from_input("formatted"),
             {"parse_mode": "HTML", "entities": []},
@@ -411,7 +405,7 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
     pool = Pool({"ok": True, "result": {"message_id": 1}})
     gateway = make_gateway(pool)
     self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_  # ruff: ignore[private-member-access] - isolate action routing
+    gateway._self = self_
     await gateway.connection_for(self_).action(
         "sendPhoto",
         chat_id=42,
@@ -520,8 +514,8 @@ async def test_rest_timeout_includes_response_body() -> None:
 async def test_multipart_preserves_file_metadata() -> None:
     pool = Pool({"ok": True, "result": True})
     instance = make_gateway(pool)
-    instance._self = BotSelf(platform="telegram", user_id="123")  # ruff: ignore[private-member-access]
-    await instance.connection_for(instance._self).action(  # ruff: ignore[private-member-access]
+    instance._self = BotSelf(platform="telegram", user_id="123")
+    await instance.connection_for(instance._self).action(
         "sendDocument",
         chat_id=42,
         files={
@@ -549,10 +543,8 @@ async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
     })
     pool.responses.append(cast(AsyncHTTPResponse, stream))
     gateway = make_gateway(pool)
-    gateway._self = BotSelf(  # ruff: ignore[private-member-access] - isolate action routing
-        platform="telegram", user_id="123"
-    )
-    connection = gateway.connection_for(gateway._self)  # ruff: ignore[private-member-access] - paired test self
+    gateway._self = BotSelf(platform="telegram", user_id="123")
+    connection = gateway.connection_for(gateway._self)
 
     downloaded = await connection.action(
         Action.GET_FILE,
@@ -604,6 +596,56 @@ async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
         await client(oversized_pool).download_file("file", max_bytes=4)
     assert CREDENTIAL not in str(error.value)
     assert oversized_stream.closed
+
+
+async def test_file_download_finishes_close_after_repeated_cancellation() -> None:
+    class BlockingStreamResponse(StreamResponse):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reading = Event()
+            self.closing = Event()
+            self.release_close = Event()
+
+        async def stream(
+            self,
+            _: int,
+            *,
+            decode_content: bool,
+        ) -> AsyncIterator[bytes]:
+            assert decode_content is False
+            self.reading.set()
+            await Event().wait()
+            yield b""
+
+        async def close(self) -> None:
+            self.closing.set()
+            await self.release_close.wait()
+            self.closed = True
+            msg = "close failed"
+            raise RuntimeError(msg)
+
+    stream = BlockingStreamResponse()
+    pool = Pool({
+        "ok": True,
+        "result": {
+            "file_id": "file",
+            "file_unique_id": "unique",
+            "file_path": "documents/file.bin",
+        },
+    })
+    pool.responses.append(cast(AsyncHTTPResponse, stream))
+    task = create_task(client(pool).download_file("file"))
+
+    async with timeout(1):
+        await stream.reading.wait()
+        task.cancel()
+        await stream.closing.wait()
+        task.cancel()
+        stream.release_close.set()
+        with pytest.raises(CancelledError):
+            await task
+
+    assert stream.closed
 
 
 async def test_rate_limit_retry_and_error_parameters() -> None:
@@ -919,7 +961,7 @@ async def test_cancelling_one_start_waiter_keeps_shared_startup(
             await cancelled
         continue_identification.set()
         await surviving
-        assert gateway._task is not None  # ruff: ignore[private-member-access]
+        assert gateway._task is not None
         await gateway.close()
 
 
@@ -942,9 +984,47 @@ async def test_cancelling_only_start_waiter_rolls_back(
         with pytest.raises(CancelledError):
             await startup
 
-    assert gateway._closed  # ruff: ignore[private-member-access]
-    assert gateway._startup_task is None  # ruff: ignore[private-member-access]
-    assert not gateway._polling_reserved  # ruff: ignore[private-member-access]
+    assert gateway._closed
+    assert gateway._startup_task is None
+    assert not gateway._polling_reserved
+
+
+async def test_failed_start_preserves_cleanup_error_and_can_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = Pool()
+    identify_error = RuntimeError("identify failed")
+    clear_error = RuntimeError("clear failed")
+    clear = AsyncMock(side_effect=[clear_error, None, None])
+    monkeypatch.setattr(pool, "clear", clear)
+    monkeypatch.setattr(telegram_api_module, "AsyncPoolManager", lambda: pool)
+    gateway = TelegramGateway(
+        Bot(),
+        token=CREDENTIAL,
+        base_url="https://telegram.example",
+    )
+    identify = AsyncMock(
+        side_effect=[
+            identify_error,
+            TelegramUser(id=123, is_bot=True, first_name="Bot"),
+        ]
+    )
+    monkeypatch.setattr(gateway, "_identify", identify)
+    async with timeout(1):
+        try:
+            with pytest.raises(
+                BaseExceptionGroup,
+                match="startup and cleanup",
+            ) as error:
+                await gateway.start()
+
+            assert error.value.exceptions == (identify_error, clear_error)
+            await gateway.start()
+            assert identify.await_count == 2
+            assert clear.await_count == 2
+        finally:
+            async with timeout(1):
+                await gateway.close()
 
 
 async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
@@ -1053,10 +1133,8 @@ def test_service_messages_are_not_empty_messages(
     value: JsonValue,
 ) -> None:
     gateway = make_gateway()
-    gateway._self = BotSelf(  # ruff: ignore[private-member-access] - event conversion boundary
-        platform="telegram", user_id="123"
-    )
-    event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    gateway._self = BotSelf(platform="telegram", user_id="123")
+    event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 1,
             "message": {
@@ -1082,10 +1160,8 @@ def test_service_messages_are_not_empty_messages(
 
 def test_removed_chat_boost_uses_removal_time() -> None:
     gateway = make_gateway()
-    gateway._self = BotSelf(  # ruff: ignore[private-member-access] - event conversion boundary
-        platform="telegram", user_id="123"
-    )
-    event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    gateway._self = BotSelf(platform="telegram", user_id="123")
+    event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 2,
             "removed_chat_boost": {"remove_date": 123},
@@ -1102,10 +1178,10 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
     )
     gateway = make_gateway(pool)
     self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_  # ruff: ignore[private-member-access] - event conversion boundary
+    gateway._self = self_
     connection = gateway.connection_for(self_)
 
-    business_event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    business_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 1,
             "business_message": {
@@ -1126,7 +1202,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         "text": "reply",
     }
 
-    direct_event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    direct_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 2,
             "message": {
@@ -1159,7 +1235,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
     with pytest.raises(ValueError, match="direct_messages_topic_id"):
         await connection.execute_message_action(missing_topic, "reply")
 
-    ephemeral_event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    ephemeral_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 3,
             "message": {
@@ -1192,7 +1268,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         assert params["receiver_user_id"] == 42
         assert params["reply_parameters"] == {"ephemeral_message_id": 70}
 
-    guest_event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    guest_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 4,
             "guest_message": {
@@ -1279,9 +1355,9 @@ async def test_join_request_query_uses_query_response_endpoint() -> None:
     pool = Pool({"ok": True, "result": True})
     gateway = make_gateway(pool)
     self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_  # ruff: ignore[private-member-access] - event conversion boundary
+    gateway._self = self_
     connection = gateway.connection_for(self_)
-    event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+    event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 5,
             "chat_join_request": {
@@ -1329,8 +1405,8 @@ async def test_webhook_conflict_fails_before_polling() -> None:
     with pytest.raises(RuntimeError, match="webhook") as error:
         await gateway.start()
     assert "secret.example" not in str(error.value)
-    assert gateway._closed  # ruff: ignore[private-member-access]
-    assert not gateway._polling_reserved  # ruff: ignore[private-member-access]
+    assert gateway._closed
+    assert not gateway._polling_reserved
 
 
 async def test_poller_respects_flood_wait_and_stops_on_auth_error(
@@ -1338,7 +1414,7 @@ async def test_poller_respects_flood_wait_and_stops_on_auth_error(
 ) -> None:
     gateway = make_gateway()
     self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_  # ruff: ignore[private-member-access] - public status requires identified self
+    gateway._self = self_
     connection = gateway.connection_for(self_)
     outcomes = iter((
         [],
@@ -1378,7 +1454,7 @@ async def test_poller_respects_flood_wait_and_stops_on_auth_error(
     monkeypatch.setattr(gateway, "get_updates", get_updates)
     monkeypatch.setattr("bot.gateways.telegram.sleep", record_sleep)
 
-    await gateway._run_poller()  # ruff: ignore[private-member-access] - isolated retry loop
+    await gateway._run_poller()
     online_states.append(await online())
     assert delays == [45]
     assert online_states == [True, False, True, False]
@@ -1400,16 +1476,14 @@ async def test_poller_does_not_retry_invalid_update_models(
 
     async with timeout(1):
         with pytest.raises(ValidationError):
-            await gateway._run_poller()  # ruff: ignore[private-member-access] - retry boundary
+            await gateway._run_poller()
 
 
 def test_offset_advances_only_after_enqueue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = make_gateway()
-    gateway._self = BotSelf(  # ruff: ignore[private-member-access] - isolate the queue invariant
-        platform="telegram", user_id="123"
-    )
+    gateway._self = BotSelf(platform="telegram", user_id="123")
     events: list[GroupMessageEvent] = []
 
     def enqueue(event: object) -> None:
@@ -1425,10 +1499,8 @@ def test_offset_advances_only_after_enqueue(
     )
     monkeypatch.setattr(gateway, "enqueue_event", enqueue)
     with pytest.raises(QueueFull):
-        gateway._accept_updates(  # ruff: ignore[private-member-access] - direct invariant check
-            [reply_update, message_update(11)]
-        )
-    assert gateway._offset == 11  # ruff: ignore[private-member-access] - direct invariant check
+        gateway._accept_updates([reply_update, message_update(11)])
+    assert gateway._offset == 11
     assert events[0].group_id == str(SUPERGROUP_ID)
     extra = events[0].model_extra or {}
     assert extra["reply_alt_message"] == "previous"
@@ -1436,12 +1508,10 @@ def test_offset_advances_only_after_enqueue(
     assert isinstance(raw, dict)
     assert raw["message"]["text"] == "hello"
 
-    gateway._offset = None  # ruff: ignore[private-member-access] - reset isolated invariant
+    gateway._offset = None
     notices: list[object] = []
     monkeypatch.setattr(gateway, "enqueue_event", notices.append)
-    gateway._accept_updates([  # ruff: ignore[private-member-access] - unknown update boundary
-        TelegramUpdate.model_validate({"update_id": 12})
-    ])
+    gateway._accept_updates([TelegramUpdate.model_validate({"update_id": 12})])
     assert isinstance(notices[0], NoticeEvent)
     assert notices[0].detail_type == "telegram.raw_update"
-    assert gateway._offset == 13  # ruff: ignore[private-member-access] - zero payload was consumed
+    assert gateway._offset == 13

@@ -229,14 +229,12 @@ class TelegramGateway(Gateway, TelegramRestClient):
         self._me: TelegramUser | None = None
 
     @override
-    async def start(self) -> None:
+    async def start(  # ruff: ignore[complex-structure] - shared startup keeps paired rollback failures
+        self,
+    ) -> None:
         while True:
             async with self._gateway_lock:
                 cleanup = self._close_task
-                if cleanup is not None and cleanup.done():
-                    cleanup.result()
-                    self._close_task = None
-                    cleanup = None
                 if cleanup is None:
                     if self._task is not None:
                         if not self._task.done():
@@ -255,16 +253,31 @@ class TelegramGateway(Gateway, TelegramRestClient):
                     self._startup_waiters += 1
                     break
             await wait((cleanup,))
-            cleanup.result()
-        cleanup = None
+            await self._await_close_task(cleanup)
+
+        startup_error: BaseException | None = None
         try:
             await wait((startup,))
             startup.result()
-        finally:
-            async with self._gateway_lock:
-                cleanup = self._release_startup_waiter(startup)
-            if cleanup is not None:
-                await await_cleanup(cleanup)
+        except BaseException as exc:
+            startup_error = exc
+        async with self._gateway_lock:
+            cleanup = self._release_startup_waiter(startup)
+
+        cleanup_error: BaseException | None = None
+        if cleanup is not None:
+            try:
+                await self._await_close_task(cleanup)
+            except BaseException as exc:
+                cleanup_error = exc
+
+        if startup_error is not None and cleanup_error is not None:
+            msg = "Telegram startup and cleanup failed"
+            raise BaseExceptionGroup(msg, [startup_error, cleanup_error]) from None
+        if startup_error is not None:
+            raise startup_error
+        if cleanup_error is not None:
+            raise cleanup_error
 
     def _release_startup_waiter(self, startup: Task[None]) -> Task[None] | None:
         self._startup_waiters -= 1
@@ -309,6 +322,9 @@ class TelegramGateway(Gateway, TelegramRestClient):
     async def close(self) -> None:
         async with self._gateway_lock:
             cleanup = self._ensure_close_task()
+        await self._await_close_task(cleanup)
+
+    async def _await_close_task(self, cleanup: Task[None]) -> None:
         try:
             await await_cleanup(cleanup)
         finally:
