@@ -1,5 +1,5 @@
-from asyncio import CancelledError, QueueFull, TaskGroup, create_task, gather, timeout
 from asyncio import Event as AsyncEvent
+from asyncio import QueueFull, TaskGroup, gather, timeout
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import cast
@@ -525,45 +525,8 @@ async def test_lifecycle_restarts_real_forward_transport() -> None:
                 await websocket.receiving.wait()
                 assert connector.await_count == index
             assert websocket.closed.is_set()
-
-
-async def test_close_finishes_cleanup_before_propagating_cancellation() -> None:
-    websocket = ScriptedWebSocket(connect_payload())
-    close_started = AsyncEvent()
-    close_allowed = AsyncEvent()
-
-    async def gated_close() -> None:
-        close_started.set()
-        await close_allowed.wait()
-        websocket.closed.set()
-
-    connector = AsyncMock(return_value=websocket)
-    bot = Bot()
-    gateway = OneBot12Gateway(
-        bot,
-        ingress=[ForwardWebSocket("ws://onebot.example/ws", reconnect_interval=60)],
-        websocket_connector=connector,
-    )
-    bot.add_gateway(gateway)
-
-    async with timeout(1):
-        await bot.start()
-        try:
-            await websocket.receiving.wait()
-            with patch.object(websocket, "close", side_effect=gated_close):
-                closing = create_task(gateway.close())
-                await close_started.wait()
-                closing.cancel()
-                close_allowed.set()
-                with pytest.raises(CancelledError):
-                    await closing
-                assert gateway.http_pool is None
-                assert not gateway._forward_tasks  # ruff: ignore[private-member-access]
-        finally:
-            close_allowed.set()
-            await bot.close()
-
-    assert websocket.closed.is_set()
+            assert not gateway._started  # ruff: ignore[private-member-access]
+            assert not gateway._forward_tasks  # ruff: ignore[private-member-access]
 
 
 @pytest.mark.parametrize(

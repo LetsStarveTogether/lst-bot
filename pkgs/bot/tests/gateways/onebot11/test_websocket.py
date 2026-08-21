@@ -1,12 +1,4 @@
-from asyncio import (
-    CancelledError,
-    Event,
-    QueueFull,
-    TaskGroup,
-    create_task,
-    gather,
-    timeout,
-)
+from asyncio import Event, QueueFull, TaskGroup, gather, timeout
 from http import HTTPStatus
 from math import inf, nan
 from types import SimpleNamespace
@@ -388,19 +380,18 @@ async def test_forward_websocket_lifecycle_restarts_real_connections() -> None:
     websockets = [ScriptedWebSocket(), ScriptedWebSocket()]
     connector = AsyncMock(side_effect=websockets)
     bot = Bot()
-    bot.add_gateway(
-        OneBot11Gateway(
-            bot,
-            ingress=[
-                ForwardWebSocket(
-                    "ws://onebot.example/event",
-                    role="event",
-                    reconnect_interval=60,
-                )
-            ],
-            websocket_connector=connector,
-        )
+    gateway = OneBot11Gateway(
+        bot,
+        ingress=[
+            ForwardWebSocket(
+                "ws://onebot.example/event",
+                role="event",
+                reconnect_interval=60,
+            )
+        ],
+        websocket_connector=connector,
     )
+    bot.add_gateway(gateway)
 
     async with timeout(1):
         for index, websocket in enumerate(websockets, start=1):
@@ -408,6 +399,8 @@ async def test_forward_websocket_lifecycle_restarts_real_connections() -> None:
                 await websocket.receiving.wait()
                 assert connector.await_count == index
             assert websocket.closed.is_set()
+            assert not gateway._started  # ruff: ignore[private-member-access]
+            assert not gateway._forward_tasks  # ruff: ignore[private-member-access]
 
 
 async def test_disconnect_cancels_pending_action() -> None:
@@ -440,50 +433,6 @@ async def test_disconnect_cancels_pending_action() -> None:
             await gather(connection.action("get_version"), disconnect())
 
     assert websocket.closed.is_set()
-
-
-async def test_gateway_close_finishes_cleanup_before_propagating_cancellation() -> None:
-    bot = Bot()
-    websocket = ScriptedWebSocket()
-    close_started = Event()
-    close_allowed = Event()
-    gateway = OneBot11Gateway(
-        bot,
-        ingress=[
-            ForwardWebSocket(
-                "ws://onebot.example/event",
-                role="event",
-                reconnect_interval=60,
-            )
-        ],
-        websocket_connector=AsyncMock(return_value=websocket),
-    )
-    bot.add_gateway(gateway)
-
-    async def slow_close() -> None:
-        close_started.set()
-        await close_allowed.wait()
-        websocket.closed.set()
-
-    with patch.object(websocket, "close", side_effect=slow_close):
-        async with timeout(1):
-            await bot.start()
-            try:
-                await websocket.receiving.wait()
-                closing = create_task(gateway.close())
-                await close_started.wait()
-                closing.cancel()
-                close_allowed.set()
-                with pytest.raises(CancelledError):
-                    await closing
-                assert websocket.closed.is_set()
-                assert gateway.http_pool is None
-                assert not gateway._started  # ruff: ignore[private-member-access]
-                assert not gateway._forward_tasks  # ruff: ignore[private-member-access]
-            finally:
-                close_allowed.set()
-                await gateway.close()
-                await bot.close()
 
 
 async def test_forward_websocket_waits_until_bot_start_completes() -> None:

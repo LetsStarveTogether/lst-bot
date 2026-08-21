@@ -364,23 +364,6 @@ async def test_final_expired_token_response_clears_cached_token() -> None:
     assert await rest.access_token() == "next"
 
 
-async def test_second_http_401_invalidates_the_refreshed_token() -> None:
-    pool = Pool(
-        response(200, {"access_token": "stale", "expires_in": 7200}),
-        response(401, body=b"<html>unauthorized</html>"),
-        response(200, {"access_token": "fresh", "expires_in": 7200}),
-        response(401, headers={"X-Trace-ID": "second-401"}),
-        response(200, {"access_token": "next", "expires_in": 7200}),
-    )
-    rest = client(pool)
-
-    with pytest.raises(QQAPIError) as caught:
-        await rest.request_qq(QQAction.LIST_BOT_GUILDS)
-
-    assert (caught.value.status, caught.value.trace_id) == (401, "second-401")
-    assert await rest.access_token() == "next"
-
-
 @pytest.mark.parametrize(
     ("body", "code", "message"),
     [

@@ -1,5 +1,5 @@
 import pytest
-from bot import ActionResponse, Bot, Msg
+from bot import ActionResponse, Bot, Msg, Retcode
 from bot.testing import RecordingGateway, private_message_event, recording_gateway
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -62,6 +62,14 @@ async def test_build_question_combines_reply_and_command_text() -> None:
     empty = event.model_copy(update={"reply_alt_message": ""})
     assert await build_question(gateway.connection, empty, "") == ""
     assert len(gateway.actions) == 1
+
+    gateway.responses["get_msg"] = ActionResponse.failed(
+        Retcode.INTERNAL_HANDLER_ERROR,
+        "internal details",
+    )
+    assert await build_question(gateway.connection, event, "new question") == (
+        "用户问题：\nnew question"
+    )
 
 
 async def test_question_command_sends_reply_from_injected_agent() -> None:

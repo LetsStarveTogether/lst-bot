@@ -1,4 +1,12 @@
-from asyncio import CancelledError, create_task, gather, get_running_loop, timeout
+from asyncio import (
+    CancelledError,
+    Event,
+    create_task,
+    gather,
+    get_running_loop,
+    sleep,
+    timeout,
+)
 from contextlib import suppress
 from gc import collect
 from types import SimpleNamespace
@@ -12,6 +20,7 @@ from bot.gateways.base import (
     WebSocketActionManager,
     WebSocketClosedError,
     WebsocketsConnection,
+    await_cleanup,
     bearer_or_query_token,
     connect_websocket,
     header_value,
@@ -107,6 +116,25 @@ def test_header_value_rejects_repeated_headers() -> None:
 def test_token_matches_supports_unicode_credentials() -> None:
     assert token_matches("密钥", "密钥") is True
     assert token_matches("密钥", "别的") is False
+
+
+async def test_await_cleanup_finishes_after_repeated_cancellation() -> None:
+    release = Event()
+
+    async def cleanup() -> None:
+        await release.wait()
+
+    cleanup_task = create_task(cleanup())
+    closing = create_task(await_cleanup(cleanup_task))
+    await sleep(0)
+    closing.cancel()
+    await sleep(0)
+    closing.cancel()
+    release.set()
+
+    with pytest.raises(CancelledError):
+        await closing
+    assert cleanup_task.result() is None
 
 
 def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:

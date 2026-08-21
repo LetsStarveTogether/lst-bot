@@ -1,4 +1,4 @@
-from asyncio import CancelledError, Event, TaskGroup, create_task, sleep, timeout
+from asyncio import create_task, sleep, timeout
 from unittest.mock import AsyncMock
 
 import pytest
@@ -364,35 +364,6 @@ async def test_ready_and_resumed_do_not_reset_retry_count(
     )
 
     assert gateway._retry_count == 4  # ruff: ignore[private-member-access]
-
-
-async def test_close_finishes_cleanup_before_propagating_cancellation() -> None:
-    gateway = _gateway()
-    cleanup_started = Event()
-    release_cleanup = Event()
-
-    async def runner() -> None:
-        try:
-            await Event().wait()
-        finally:
-            cleanup_started.set()
-            await release_cleanup.wait()
-
-    async with timeout(1), TaskGroup() as tasks:
-        gateway._session_id = "session"  # ruff: ignore[private-member-access]
-        runner_task = tasks.create_task(runner())
-        gateway._task = runner_task  # ruff: ignore[private-member-access]
-        close_task = tasks.create_task(gateway.close())
-        await cleanup_started.wait()
-
-        close_task.cancel()
-        release_cleanup.set()
-        with pytest.raises(CancelledError):
-            await close_task
-
-        assert gateway._task is None  # ruff: ignore[private-member-access]
-        assert gateway._session_id is None  # ruff: ignore[private-member-access]
-        assert gateway._closed is True  # ruff: ignore[private-member-access]
 
 
 async def test_start_reaps_a_finished_gateway_task() -> None:

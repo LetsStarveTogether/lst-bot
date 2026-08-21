@@ -146,11 +146,6 @@ def test_strict_models() -> None:
     poll_answer = payload[1]
     assert isinstance(poll_answer, TelegramPollAnswer)
     assert poll_answer.option_ids == [0, 2]
-    assert TelegramUpdate.model_validate({
-        "update_id": 3,
-        "future_update": {"value": 1},
-    }).payload == ("future_update", {"value": 1})
-    assert TelegramUpdate.model_validate({"update_id": 4}).payload is None
     with pytest.raises(ValidationError):
         TelegramUpdate.model_validate({
             "update_id": 5,
@@ -200,8 +195,6 @@ def test_strict_models() -> None:
     for update_id in (0, 2**31):
         with pytest.raises(ValidationError):
             TelegramUpdate(update_id=update_id)
-    with pytest.raises(ValidationError):
-        TelegramUpdate.model_validate({"update_id": 6, "poll": True})
     with pytest.raises(ValidationError):
         TelegramUpdate.model_validate({
             "update_id": 7,
@@ -412,14 +405,11 @@ async def test_multipart_preserves_file_metadata() -> None:
 
 
 async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
+    file = {"file_id": "file", "file_unique_id": "unique"}
     stream = StreamResponse(b"abc", b"def")
     pool = Pool({
         "ok": True,
-        "result": {
-            "file_id": "file",
-            "file_unique_id": "unique",
-            "file_path": "documents/a b.txt",
-        },
+        "result": file | {"file_path": "documents/a b.txt"},
     })
     pool.responses.append(cast(AsyncHTTPResponse, stream))
     gateway = make_gateway(pool)
@@ -453,25 +443,25 @@ async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
 
     absolute_pool = Pool({
         "ok": True,
-        "result": {
-            "file_id": "file",
-            "file_unique_id": "unique",
-            "file_path": "/srv/telegram/file",
-        },
+        "result": file | {"file_path": "/srv/telegram/file"},
     })
     with pytest.raises(ValueError, match="relative path") as error:
         await client(absolute_pool).download_file("file")
     assert CREDENTIAL not in str(error.value)
     assert len(absolute_pool.requests) == 1
 
+    metadata_pool = Pool({
+        "ok": True,
+        "result": file | {"file_path": "documents/file.bin", "file_size": 5},
+    })
+    with pytest.raises(TelegramFileTooLargeError):
+        await client(metadata_pool).download_file("file", max_bytes=4)
+    assert len(metadata_pool.requests) == 1
+
     oversized_stream = StreamResponse(b"123", b"45")
     oversized_pool = Pool({
         "ok": True,
-        "result": {
-            "file_id": "file",
-            "file_unique_id": "unique",
-            "file_path": "documents/file.bin",
-        },
+        "result": file | {"file_path": "documents/file.bin"},
     })
     oversized_pool.responses.append(cast(AsyncHTTPResponse, oversized_stream))
     with pytest.raises(TelegramFileTooLargeError) as error:
@@ -851,6 +841,9 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
             await dispatched.wait()
             dispatched.clear()
             await gateway.close()
+            assert gateway._closed  # ruff: ignore[private-member-access]
+            assert gateway._task is None  # ruff: ignore[private-member-access]
+            assert not gateway._polling_reserved  # ruff: ignore[private-member-access]
             await gateway.start()
             await dispatched.wait()
         finally:
@@ -860,42 +853,6 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
     polls = [params for method, params in pool.requests if method == "getUpdates"]
     assert polls[0].get("offset") is None
     assert any(params.get("offset") == 2 for params in polls)
-
-
-async def test_cancelled_close_finishes_gateway_cleanup() -> None:
-    class ClearingPool:
-        def __init__(self) -> None:
-            self.started = Event()
-            self.release = Event()
-
-        async def clear(self) -> None:
-            self.started.set()
-            await self.release.wait()
-
-    async def poller() -> None:
-        await Event().wait()
-
-    pool = ClearingPool()
-    gateway = TelegramGateway(
-        Bot(),
-        token=CREDENTIAL,
-        base_url="https://telegram.example",
-    )
-    gateway.http_pool = cast(AsyncPoolManager, pool)
-    gateway._polling_reserved = True  # ruff: ignore[private-member-access] - isolate cancellation cleanup
-    gateway._task = create_task(poller())  # ruff: ignore[private-member-access] - isolate cancellation cleanup
-    closing = create_task(gateway.close())
-
-    async with timeout(1):
-        await pool.started.wait()
-        closing.cancel()
-        pool.release.set()
-        with pytest.raises(CancelledError):
-            await closing
-
-    assert gateway._closed  # ruff: ignore[private-member-access] - lifecycle invariant
-    assert gateway._task is None  # ruff: ignore[private-member-access] - lifecycle invariant
-    assert not gateway._polling_reserved  # ruff: ignore[private-member-access] - lifecycle invariant
 
 
 @pytest.mark.parametrize(

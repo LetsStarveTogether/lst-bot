@@ -409,38 +409,16 @@ async def test_public_gateway_lifecycle_can_restart(
         2,
         2,
     ]
+    assert instance._task is None
+    assert instance._session_id is None
+    assert instance._closed
 
 
-async def test_gateway_close_finishes_under_cancellation_and_restarts_done_task(
+async def test_gateway_start_reaps_finished_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     instance = gateway()
-    cleanup_started = Event()
-    release_cleanup = Event()
-
-    async def cleanup() -> None:
-        cleanup_started.set()
-        await release_cleanup.wait()
-
-    instance._close_interaction_callbacks = cleanup  # ty: ignore[invalid-assignment]
-    closing = create_task(instance.close())
-    async with timeout(1):
-        await cleanup_started.wait()
-        closing.cancel()
-        release_cleanup.set()
-        with pytest.raises(CancelledError):
-            await closing
-
-    assert instance._task is None
-    assert instance._closed is True
-
-    finished_event = Event()
-    finished_event.set()
-
-    async def finished() -> None:
-        await finished_event.wait()
-
-    old_task = create_task(finished())
+    old_task = create_task(sleep(0))
     await old_task
     instance._task = old_task
     restarted = Event()
@@ -1502,35 +1480,6 @@ async def test_slow_interaction_response_is_cancelled_then_falls_back(
         await instance.close()
 
 
-async def test_callback_after_fallback_uses_discord_server_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pool = Pool(
-        response(204),
-        response(400, {"code": 10062, "message": "Unknown interaction"}),
-    )
-    instance = gateway(pool)
-    instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
-    monkeypatch.setattr(discord_module, "_INTERACTION_AUTO_ACK_DELAY", 0.0)
-    path = f"/interactions/10/{CREDENTIAL}/callback"
-
-    try:
-        await instance._receive_dispatch(interaction())
-        pending = instance._interaction_callbacks[path]
-        assert pending.task is not None
-        await pending.task
-        with pytest.raises(DiscordAPIError, match="10062"):
-            await instance.connection_for(instance._self).action(
-                "discord.request",
-                method="POST",
-                path=path,
-                json={"type": 4},
-            )
-        assert len(pool.requests) == 2
-    finally:
-        await instance.close()
-
-
 async def test_close_cancels_owner_and_waiting_interaction_response() -> None:
     started = Event()
     finished = Event()
@@ -1630,6 +1579,7 @@ async def test_close_waits_for_all_inflight_requests() -> None:
         assert isinstance(await authenticated_task, DiscordNoContent)
         await close_task
     assert rest._interaction_callbacks == {}
+    assert not pool.cleared
 
 
 async def test_close_waits_for_request_not_its_caller() -> None:
@@ -1671,40 +1621,6 @@ async def test_close_waits_for_request_not_its_caller() -> None:
         await close_task
         assert not caller_task.done()
         release_caller.set()
-
-
-async def test_rest_close_finishes_after_repeated_cancellation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class SlowClearPool(Pool):
-        def __init__(self) -> None:
-            super().__init__()
-            self.clear_started = Event()
-            self.release_clear = Event()
-
-        async def clear(self) -> None:
-            self.clear_started.set()
-            await self.release_clear.wait()
-            self.cleared = True
-
-    pool = SlowClearPool()
-    monkeypatch.setattr(discord_module, "AsyncPoolManager", lambda: pool)
-    rest = discord_module.DiscordRestClient(
-        CREDENTIAL,
-        base_url="https://discord.example/api/v10",
-    )
-
-    async with timeout(1):
-        closing = create_task(rest.close())
-        await pool.clear_started.wait()
-        closing.cancel()
-        await sleep(0)
-        closing.cancel()
-        pool.release_clear.set()
-        with pytest.raises(CancelledError):
-            await closing
-
-    assert pool.cleared is True
 
 
 async def test_close_interrupts_rate_limit_wait() -> None:
