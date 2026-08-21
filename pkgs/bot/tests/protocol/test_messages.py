@@ -69,7 +69,7 @@ def test_message_text_uses_protocol_segments() -> None:
 def test_reply_helper_omits_null_user_id_on_wire() -> None:
     message = Msg.reply("message-1", "received")
 
-    assert message.model_dump(mode="json", by_alias=True) == [
+    assert message.model_dump(mode="json") == [
         {"type": "reply", "data": {"message_id": "message-1"}},
         {"type": "text", "data": {"text": "received"}},
     ]

@@ -43,7 +43,6 @@ def group_message_event(
     return GroupMessageEvent.model_validate({
         **make_event(text, user_id=user_id, event_id=event_id).model_dump(
             mode="json",
-            by_alias=True,
         ),
         "detail_type": "group",
         "group_id": "group-1",
@@ -61,7 +60,7 @@ async def test_connection_send_msg_builds_standard_action() -> None:
     assert response.data == {"status": "ok"}
     action = gateway.actions[0]
     assert action.action == "send_message"
-    assert action.params.model_dump(mode="json", by_alias=True) == {
+    assert action.params.model_dump(mode="json") == {
         "detail_type": "group",
         "group_id": "20000",
         "message": [{"type": "text", "data": {"text": "pong"}}],
@@ -119,7 +118,7 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
 
     action = gateway.actions[0]
     assert action.action == "send_message"
-    assert action.params.model_dump(mode="json", by_alias=True)["message"] == [
+    assert action.params.model_dump(mode="json")["message"] == [
         {"type": "text", "data": {"text": "pong hi"}},
     ]
 
@@ -189,7 +188,7 @@ async def test_dispatch_auto_replies_string_return() -> None:
     async with bot:
         await bot.dispatch(gateway.connection, make_event("ping"))
 
-    assert gateway.actions[0].model_dump(mode="json", by_alias=True) == {
+    assert gateway.actions[0].model_dump(mode="json") == {
         "action": "send_message",
         "params": {
             "detail_type": "private",
@@ -211,8 +210,7 @@ async def test_dispatch_executes_list_returns_in_order() -> None:
         await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [
-        action.params.model_dump(mode="json", by_alias=True)["message"]
-        for action in gateway.actions
+        action.params.model_dump(mode="json")["message"] for action in gateway.actions
     ] == [
         [{"type": "text", "data": {"text": "one"}}],
         [{"type": "text", "data": {"text": "two"}}],

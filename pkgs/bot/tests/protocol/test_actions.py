@@ -142,7 +142,7 @@ def test_send_message_discriminator_selects_each_target_variant(
     detail_type: str,
 ) -> None:
     call = ActionCall.model_validate({"action": "send_message", "params": params})
-    normalized = call.model_dump(mode="json", by_alias=True, exclude_none=True)
+    normalized = call.model_dump(mode="json", exclude_none=True)
     message = params.get("message", params.get("msg"))
 
     assert normalized["params"]["detail_type"] == detail_type
@@ -247,7 +247,7 @@ def test_extension_action_preserves_nested_json_values_and_null() -> None:
 
     call = ActionCall.model_validate(payload)
 
-    assert call.model_dump(mode="json", by_alias=True) == payload
+    assert call.model_dump(mode="json") == payload
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -260,12 +260,11 @@ def test_action_request_round_trips_explicit_null_envelope_fields() -> None:
         self_=None,
     )
 
-    payload = request.model_dump(mode="json", by_alias=True)
+    payload = request.model_dump(mode="json")
 
     assert (
         ActionRequest.model_validate_json(request.model_dump_json()).model_dump(
             mode="json",
-            by_alias=True,
         )
         == payload
     )
@@ -305,7 +304,7 @@ def test_action_request_rejects_invalid_protocol_shape(payload: object) -> None:
 def test_action_response_round_trips_required_null_data_and_omits_null_echo() -> None:
     response = ActionResponse.ok(echo="")
 
-    assert response.model_dump(mode="json", by_alias=True) == {
+    assert response.model_dump(mode="json") == {
         "status": "ok",
         "retcode": 0,
         "data": None,
@@ -338,7 +337,7 @@ def test_action_response_accepts_status_retcode_contract(
 ) -> None:
     response = ActionResponse.model_validate(payload)
 
-    assert response.model_dump(mode="json", by_alias=True) == payload
+    assert response.model_dump(mode="json") == payload
 
 
 @pytest.mark.parametrize(
@@ -467,7 +466,7 @@ def test_upload_data_accepts_python_bytes_and_json_base64(
 
     for call in (python_call, json_call):
         assert call.params.model_dump()["data"] == b"\xff"
-        assert call.model_dump(mode="json", by_alias=True, exclude_none=True) == {
+        assert call.model_dump(mode="json", exclude_none=True) == {
             "action": action,
             "params": encoded_params,
         }

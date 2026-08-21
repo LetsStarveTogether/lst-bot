@@ -727,7 +727,6 @@ class OneBot11Gateway(Gateway):
                     params=payload,
                     echo=echo,
                 ).model_dump_json(
-                    by_alias=True,
                     exclude_unset=True,
                 ),
             )
@@ -792,7 +791,6 @@ class OneBot11Gateway(Gateway):
                 headers=self.authorization_headers,
                 json=params.model_dump(
                     mode="json",
-                    by_alias=True,
                     exclude_unset=True,
                 ),
             )
@@ -1013,7 +1011,7 @@ def _normalize_ob11_params(
 ) -> Model:
     payload = cast(
         dict[str, JsonValue | BaseModel],
-        params.model_dump(mode="json", by_alias=True, exclude_unset=True),
+        params.model_dump(mode="json", exclude_unset=True),
     )
     for key in _OB11_NUMBER_PARAM_KEYS:
         if key in payload:
@@ -1031,7 +1029,7 @@ def _event_from_payload(event: OneBot11Event) -> Event:
         "id": str(uuid4()),
         "self": cast(
             JsonValue,
-            self_.model_dump(mode="json", by_alias=True),
+            self_.model_dump(mode="json"),
         ),
         "time": event.time,
         "type": "meta" if isinstance(event, OneBot11MetaEvent) else event.post_type,
@@ -1048,7 +1046,7 @@ def _event_from_payload(event: OneBot11Event) -> Event:
         message = _load_ob11_message(event.message)
         payload["message"] = cast(
             JsonValue,
-            message.model_dump(mode="json", by_alias=True),
+            message.model_dump(mode="json"),
         )
         payload["alt_message"] = event.raw_message or str(message)
     elif isinstance(event, OneBot11NoticeEvent):
@@ -1061,7 +1059,6 @@ def _event_from_payload(event: OneBot11Event) -> Event:
             JsonValue,
             _status_payload(event.status, self_).model_dump(
                 mode="json",
-                by_alias=True,
             ),
         )
 
@@ -1173,7 +1170,6 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
     if isinstance(segment, LocationSegment):
         data = segment.data.model_dump(
             mode="json",
-            by_alias=True,
             exclude_none=True,
         )
         return _ob11_segment(
@@ -1488,7 +1484,7 @@ def _adapt_query_action_data(
         status = OneBot11Status.model_validate(_action_data_object(value, action))
         return cast(
             JsonValue,
-            _status_payload(status, self_).model_dump(mode="json", by_alias=True),
+            _status_payload(status, self_).model_dump(mode="json"),
         )
     if action == Action.GET_VERSION:
         data = _action_data_object(value, action)

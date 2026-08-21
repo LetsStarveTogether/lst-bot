@@ -285,7 +285,7 @@ def test_event_extension_variants_preserve_json_fields(
     event = EventPayload.model_validate(payload).root
 
     assert type(event) is event_class
-    assert event.model_dump(mode="json", by_alias=True) == payload
+    assert event.model_dump(mode="json") == payload
     assert EventPayload.model_validate_json(event.model_dump_json()).root == event
 
 
