@@ -123,7 +123,6 @@ TELEGRAM_SERVICE_MESSAGE_TYPES = tuple(
 )
 
 _MAX_INT32 = 2**31 - 1
-_MAX_INT64 = 2**63 - 1
 _MAX_TELEGRAM_ID = 2**52 - 1
 
 
@@ -152,8 +151,8 @@ type TelegramUpdateOffset = Annotated[
     Field(ge=-_MAX_INT32 - 1, le=_MAX_INT32),
 ]
 type TelegramUpdateID = Annotated[StrictInt, Field(gt=0, le=_MAX_INT32)]
-type NonNegativeInt = Annotated[StrictInt, Field(ge=0, le=_MAX_INT64)]
-type PositiveInt = Annotated[StrictInt, Field(gt=0, le=_MAX_INT64)]
+type NonNegativeInt = Annotated[StrictInt, Field(ge=0, le=_MAX_INT32)]
+type PositiveInt = Annotated[StrictInt, Field(gt=0, le=_MAX_INT32)]
 type PositiveSeconds = Annotated[
     StrictInt | StrictFloat,
     Field(gt=0, allow_inf_nan=False),
@@ -586,7 +585,7 @@ class TelegramWebhookInfo(Model):
     last_error_date: PositiveInt | None = None
     last_error_message: StrictStr | None = None
     last_synchronization_error_date: PositiveInt | None = None
-    max_connections: PositiveInt | None = None
+    max_connections: Annotated[StrictInt, Field(ge=1, le=100)] | None = None
     allowed_updates: list[StrictStr] | None = None
 
 

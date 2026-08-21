@@ -222,6 +222,31 @@ def test_current_telegram_model_boundaries() -> None:
     with pytest.raises(ValidationError):
         TelegramMessageEntity.model_validate(entity | {"date_time_format": "rw"})
 
+    maximum_int32 = 2**31 - 1
+    message = {
+        "message_id": maximum_int32,
+        "date": maximum_int32,
+        "chat": {"id": 1, "type": "private"},
+    }
+    telegram_api_module.TelegramMessage.model_validate(message)
+    for field in ("message_id", "date"):
+        with pytest.raises(ValidationError):
+            telegram_api_module.TelegramMessage.model_validate(
+                message | {field: maximum_int32 + 1}
+            )
+
+    webhook = {
+        "url": "",
+        "has_custom_certificate": False,
+        "pending_update_count": 0,
+        "max_connections": 100,
+    }
+    telegram_api_module.TelegramWebhookInfo.model_validate(webhook)
+    with pytest.raises(ValidationError):
+        telegram_api_module.TelegramWebhookInfo.model_validate(
+            webhook | {"max_connections": 101}
+        )
+
 
 @pytest.mark.parametrize(
     ("length", "methods"),
