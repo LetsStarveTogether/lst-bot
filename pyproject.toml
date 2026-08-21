@@ -61,7 +61,6 @@ ignore = [
     'too-many-arguments', # Explicit is better than implicit.
     'no-self-use', # Violates the usual practice.
     'any-type',  # Framework boundaries carry protocol and DI values.
-    'builtin-argument-shadowing',    # Event(type=...) is part of the public API.
     'blind-except',  # Dispatch records handler exceptions before re-raising.
     'D',       # Too verbose.
     'FBT',     # Too strict.

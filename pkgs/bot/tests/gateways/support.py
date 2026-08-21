@@ -103,8 +103,8 @@ class ActionServer:
                 self.end_headers()
                 self.wfile.write(response)
 
-            def log_message(self, format: str, *args: object) -> None:
-                _ = format, args
+            def log_message(self, *args: object, **kwargs: object) -> None:
+                _ = args, kwargs
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = Thread(
