@@ -313,14 +313,7 @@ class TelegramVenue(Model):
 
     @model_validator(mode="after")
     def location_is_not_live(self) -> Self:
-        if any(
-            value is not None
-            for value in (
-                self.location.live_period,
-                self.location.heading,
-                self.location.proximity_alert_radius,
-            )
-        ):
+        if self.location.live_period is not None:
             msg = "Telegram venue locations cannot be live"
             raise ValueError(msg)
         return self
@@ -982,8 +975,6 @@ async def _download_response(
             )
             _validate_download_response(response, max_bytes)
             return await _read_download(response, max_bytes)
-    except TelegramFileTooLargeError:
-        raise
     except HTTPError, TimeoutError:
         msg = "Telegram file download failed"
         raise ConnectionError(msg) from None
