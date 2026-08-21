@@ -13,7 +13,7 @@ from bot import (
 from bot.testing import private_message_event, recording_gateway
 
 
-async def test_falsey_permission_is_not_replaced() -> None:
+async def test_falsey_rule_is_not_replaced() -> None:
     class Deny:
         def __bool__(self) -> bool:
             return False
@@ -25,7 +25,7 @@ async def test_falsey_permission_is_not_replaced() -> None:
     router = EventRouter()
     seen: list[str] = []
 
-    @router.on_msg(permission=Deny())
+    @router.on_msg(rule=Deny())
     def protected() -> None:
         seen.append("allowed")
 

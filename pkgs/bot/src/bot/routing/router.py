@@ -23,7 +23,6 @@ class EventRouter:
         event_type: EventKind | None = None,
         *,
         rule: Rule | Callable | None = None,
-        permission: Rule | Callable | None = None,
         priority: int = 1,
         block: bool = False,
         name: str | None = None,
@@ -33,8 +32,6 @@ class EventRouter:
             if isinstance(rule, Rule)
             else Rule((lambda: True) if rule is None else rule)
         )
-        if permission is not None:
-            route_rule &= permission
 
         def decorator(handler: Callable) -> Callable:
             route_name = name or getattr(handler, "__name__", "handler")
@@ -57,7 +54,6 @@ class EventRouter:
         self,
         *,
         rule: Rule | Callable | None = None,
-        permission: Rule | Callable | None = None,
         priority: int = 1,
         block: bool = False,
         name: str | None = None,
@@ -65,7 +61,6 @@ class EventRouter:
         return self.on_event(
             EventKind.MESSAGE,
             rule=rule,
-            permission=permission,
             priority=priority,
             block=block,
             name=name,
@@ -77,7 +72,6 @@ class EventRouter:
         *,
         aliases: Iterable[str] = (),
         rule: Rule | Callable | None = None,
-        permission: Rule | Callable | None = None,
         priority: int = 1,
         block: bool = True,
         name: str | None = None,
@@ -100,7 +94,6 @@ class EventRouter:
 
         return self.on_msg(
             rule=Rule(cmd_rule) & rule,
-            permission=permission,
             priority=priority,
             block=block,
             name=name or cmd,

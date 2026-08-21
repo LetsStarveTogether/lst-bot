@@ -92,7 +92,7 @@ async def rooms(
     return "\n".join(format_lobby_data(room) for room in room_data_list)
 
 
-@router.on_cmd("房间存档", permission=admin_permission)
+@router.on_cmd("房间存档", rule=admin_permission)
 def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
@@ -103,7 +103,7 @@ def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已存档 {room_ids}"
 
 
-@router.on_cmd("房间回档", permission=admin_permission)
+@router.on_cmd("房间回档", rule=admin_permission)
 def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids_text, days_text = cmd.arg.split()
@@ -116,7 +116,7 @@ def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已回档 {days} 天 {room_ids}"
 
 
-@router.on_cmd("房间重启", permission=admin_permission)
+@router.on_cmd("房间重启", rule=admin_permission)
 def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
@@ -134,7 +134,7 @@ def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已重启 {room_ids}"
 
 
-@router.on_cmd("房间重置", permission=admin_permission)
+@router.on_cmd("房间重置", rule=admin_permission)
 def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)

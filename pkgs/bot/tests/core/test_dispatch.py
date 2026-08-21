@@ -84,7 +84,7 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    @bot.on_cmd("secure", permission=admin_permission, block=True)
+    @bot.on_cmd("secure", rule=admin_permission, block=True)
     def secure(cmd: Injected[Cmd]) -> None:
         seen.append(cmd.arg)
 
@@ -229,7 +229,7 @@ async def test_dispatch_continues_after_failed_blocking_route(
     )
 
 
-async def test_dispatch_records_rule_and_permission_exceptions(
+async def test_dispatch_records_rule_exceptions(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     bot = Bot()
@@ -240,17 +240,9 @@ async def test_dispatch_records_rule_and_permission_exceptions(
         msg = "rule failed"
         raise ValueError(msg)
 
-    def fail_permission() -> bool:
-        msg = "permission failed"
-        raise PermissionError(msg)
-
     @bot.on_msg(rule=fail_rule)
     def unreachable_rule() -> None:
         seen.append("rule")
-
-    @bot.on_msg(permission=fail_permission)
-    def unreachable_permission() -> None:
-        seen.append("permission")
 
     @bot.on_msg(block=True)
     def recover() -> None:
@@ -264,10 +256,7 @@ async def test_dispatch_records_rule_and_permission_exceptions(
         message.rsplit("(", 1)[-1].rstrip(")")
         for message in caplog.messages
         if "Dispatch route failed" in message
-    ] == [
-        "ValueError: rule failed",
-        "PermissionError: permission failed",
-    ]
+    ] == ["ValueError: rule failed"]
 
 
 async def test_dispatch_respects_priority_and_block() -> None:
