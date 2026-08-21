@@ -208,7 +208,7 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     room_url = ROOM_URL.format(region=region)
     pool = RecordingPool({
         lobby_url: rows_payload([
-            lobby_row() | {"season": "mild"},
+            lobby_row() | {"season": "mild", "region": "eu-west-1"},
             {"__rowId": "invalid"},
         ]),
         room_url: rows_payload([{"__rowId": "invalid"}, room_row()]),
@@ -335,6 +335,7 @@ def test_response_envelope_and_lobby_bounds_are_validated() -> None:
     assert internal.platform.value == 19
 
     for changes in (
+        {"__rowId": ""},
         {"port": 0},
         {"port": 65536},
         {"connected": -1},

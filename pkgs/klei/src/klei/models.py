@@ -93,7 +93,7 @@ class Secondary(BaseModel):
 class LobbyData(BaseModel):
     model_config = ConfigDict(strict=True)
 
-    row_id: Annotated[str, Field(alias="__rowId")]
+    row_id: Annotated[str, Field(strict=True, min_length=1, alias="__rowId")]
     name: str
     addr: Annotated[IPv4Address, Field(alias="__addr")]
     port: Port
@@ -134,7 +134,7 @@ class LobbyData(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def inject_region(cls, value: object, info: ValidationInfo) -> object:
-        if not isinstance(value, Mapping) or "region" in value:
+        if not isinstance(value, Mapping):
             return value
         if not isinstance(info.context, Mapping):
             return value
