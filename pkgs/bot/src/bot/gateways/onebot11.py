@@ -566,8 +566,11 @@ class OneBot11Gateway(Gateway):
     @property
     def reverse_websocket_ports(self) -> tuple[int, ...]:
         return tuple(
-            cast(tuple[str, int], server.sockets[0].getsockname())[1]
-            for server in self._reverse_servers
+            dict.fromkeys(
+                socket.getsockname()[1]
+                for server in self._reverse_servers
+                for socket in server.sockets
+            )
         )
 
     @override
@@ -661,7 +664,7 @@ class OneBot11Gateway(Gateway):
         token = _HTTP_QUICK_OPERATIONS.set(collector)
         try:
             try:
-                data = _model_dump_object(payload)
+                data = _json_object(payload)
                 await self.dispatch_event(decode_event(data))
             except QueueFull:
                 return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
@@ -879,7 +882,7 @@ class OneBot11Gateway(Gateway):
                 payload = Model.model_validate_json(request.body)
             except ValidationError as exc:
                 return text_response(HTTPStatus.BAD_REQUEST, str(exc))
-            data = _model_dump_object(payload)
+            data = _json_object(payload)
             self_id = header_value(request.headers, "X-Self-ID")
             try:
                 header_self = _qq_self(self_id) if self_id is not None else None
@@ -1079,7 +1082,7 @@ def _normalize_ob11_params(
 def _event_from_payload(event: OneBot11Event) -> Event:
     self_ = _qq_self(_id_string(event.self_id))
     detail_type = _event_detail_type(event)
-    payload: dict[str, JsonValue] = _model_dump_object(event)
+    payload = _json_object(event)
     payload.update({
         "id": str(uuid4()),
         "self": cast(
@@ -1248,7 +1251,7 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
     if isinstance(segment, ReplySegment):
         return _ob11_segment("reply", {"id": segment.data.message_id})
     if isinstance(segment, ExtensionSegment):
-        restored = _model_dump_object(segment.data)
+        restored = _json_object(segment.data)
         ob11_type = restored.pop("ob11_type", None)
         if ob11_type is not None and "type" not in restored:
             restored["type"] = ob11_type
@@ -1262,7 +1265,7 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
 
 
 def _file_segment_data(data: BaseModel) -> Model:
-    dumped = _model_dump_object(data)
+    dumped = _json_object(data)
     file_id = dumped.pop("file_id")
     dumped["file"] = file_id
     return _segment_data(dumped)
@@ -1655,32 +1658,23 @@ def decode_action_response(
     )
 
 
-def _model_dump_object(value: BaseModel) -> dict[str, JsonValue]:
-    return cast(
-        dict[str, JsonValue],
-        value.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_unset=True,
-        ),
-    )
-
-
 def _json_object(value: object) -> dict[str, JsonValue]:
-    if isinstance(value, BaseModel):
-        return _model_dump_object(value)
-    if not isinstance(value, Mapping):
+    value = _json_value(value)
+    if not isinstance(value, dict):
         msg = "JSON value must be an object"
         raise TypeError(msg)
-    return {str(key): _json_value(item) for key, item in value.items()}
+    return value
 
 
 def _json_value(value: object) -> JsonValue:
     if isinstance(value, BaseModel):
-        return value.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_unset=True,
+        return cast(
+            JsonValue,
+            value.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_unset=True,
+            ),
         )
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}

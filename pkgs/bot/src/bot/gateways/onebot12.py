@@ -194,16 +194,21 @@ class OneBot12Gateway(Gateway):
                         self._forward_tasks.append(
                             create_task(self._run_forward_websocket(ingress))
                         )
-            except BaseException:
-                await self._close_transports()
+            except BaseException as startup_error:
+                try:
+                    await self._finish_close()
+                except BaseException as cleanup_error:
+                    msg = "OneBot 12 startup and cleanup failed"
+                    raise BaseExceptionGroup(
+                        msg,
+                        [startup_error, cleanup_error],
+                    ) from None
                 raise
             self._started = True
 
     @override
     async def close(self) -> None:
         async with self._lifecycle_lock:
-            if self._closing and not self._started:
-                return
             finishing = create_task(
                 self._finish_close(),
                 name="onebot12-gateway-close",
@@ -212,13 +217,19 @@ class OneBot12Gateway(Gateway):
 
     async def _finish_close(self) -> None:
         self._closing = True
-        if self._started:
-            await self._close_transports()
+        try:
+            try:
+                await self._close_transports()
+            finally:
+                await self._close_http_pool()
+        finally:
+            self._started = False
+            await super().close()
+
+    async def _close_http_pool(self) -> None:
         if self._owns_http_pool and self.http_pool is not None:
             await self.http_pool.clear()
             self.http_pool = None
-        await super().close()
-        self._started = False
 
     async def _close_transports(self) -> None:
         self._closing = True

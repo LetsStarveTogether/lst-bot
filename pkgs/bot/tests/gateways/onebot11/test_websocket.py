@@ -1,6 +1,7 @@
 from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
 from http import HTTPStatus
 from math import inf, nan
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -25,6 +26,7 @@ from bot.gateways.onebot11 import (
 from bot.testing import ScriptedWebSocket
 from logbook import TestHandler as LogbookTestHandler
 from websockets.asyncio.client import connect
+from websockets.asyncio.server import Server
 from websockets.exceptions import InvalidStatus
 
 from .support import private_msg_payload
@@ -112,6 +114,19 @@ def test_http_webhook_repr_hides_secret() -> None:
     credential = "secret"
 
     assert credential not in repr(HttpWebhook(secret=credential))
+
+
+def test_reverse_websocket_reports_every_actual_port() -> None:
+    gateway = OneBot11Gateway(Bot())
+    sockets = (
+        SimpleNamespace(getsockname=lambda port=port: ("localhost", port))
+        for port in (10001, 10002, 10001)
+    )
+    gateway._reverse_servers.append(  # ruff: ignore[private-member-access]
+        cast(Server, SimpleNamespace(sockets=list(sockets)))
+    )
+
+    assert gateway.reverse_websocket_ports == (10001, 10002)
 
 
 @pytest.mark.parametrize(

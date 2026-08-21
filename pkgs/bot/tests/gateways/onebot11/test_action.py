@@ -22,7 +22,7 @@ from bot.gateways.onebot11 import (
     adapt_action_response,
     decode_action_response,
 )
-from pydantic import JsonValue
+from pydantic import JsonValue, RootModel
 from urllib3_future import AsyncPoolManager
 
 from .support import ActionServer, action_response_payload
@@ -303,6 +303,11 @@ def test_onebot11_action_response_status_matches_retcode() -> None:
     assert failed.status == ApiStatus.FAILED
     assert failed.retcode == 1404
     assert failed.message == "missing"
+
+
+def test_action_response_requires_an_object_model() -> None:
+    with pytest.raises(TypeError, match="object"):
+        decode_action_response(RootModel[list[int]]([1]))
 
 
 @pytest.mark.parametrize(
