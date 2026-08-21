@@ -5,8 +5,8 @@ from asyncio import (
     Task,
     create_task,
     current_task,
-    shield,
     sleep,
+    wait,
 )
 from asyncio import (
     Event as AsyncEvent,
@@ -167,6 +167,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         self.poll_timeout = _POLL_TIMEOUT_ADAPTER.validate_python(poll_timeout)
         self._gateway_lock = Lock()
         self._startup_task: Task[None] | None = None
+        self._startup_waiters = 0
         self._close_task: Task[None] | None = None
         self._task: Task[None] | None = None
         self._closing = False
@@ -203,27 +204,33 @@ class TelegramGateway(Gateway, TelegramRestClient):
                             name="telegram-gateway-start",
                         )
                         self._startup_task = startup
+                    self._startup_waiters += 1
                     break
-            await shield(cleanup)
+            await wait((cleanup,))
+            cleanup.result()
+        cleanup = None
         try:
-            await self._await_startup(startup)
+            await wait((startup,))
+            startup.result()
         finally:
             async with self._gateway_lock:
-                if self._startup_task is startup and startup.done():
-                    self._startup_task = None
+                cleanup = self._release_startup_waiter(startup)
+            if cleanup is not None:
+                await await_cleanup(cleanup)
 
-    async def _await_startup(self, startup: Task[None]) -> None:
-        try:
-            await shield(startup)
-        except BaseException as exc:
-            caller = current_task()
-            if (
-                not isinstance(exc, CancelledError)
-                or caller is None
-                or not caller.cancelling()
-            ):
-                await self.close()
-            raise
+    def _release_startup_waiter(self, startup: Task[None]) -> Task[None] | None:
+        self._startup_waiters -= 1
+        if not startup.done():
+            if not self._startup_waiters and self._startup_task is startup:
+                return self._ensure_close_task()
+            return None
+
+        failed = startup.cancelled() or startup.exception() is not None
+        if self._startup_task is startup:
+            self._startup_task = None
+            if failed:
+                return self._ensure_close_task()
+        return self._close_task if failed else None
 
     async def _start_gateway(self) -> None:
         await TelegramRestClient.start(self)
@@ -253,19 +260,23 @@ class TelegramGateway(Gateway, TelegramRestClient):
     @override
     async def close(self) -> None:
         async with self._gateway_lock:
-            cleanup = self._close_task
-            if cleanup is None or cleanup.done():
-                cleanup = create_task(
-                    self._close_gateway(),
-                    name="telegram-gateway-close",
-                )
-                self._close_task = cleanup
+            cleanup = self._ensure_close_task()
         try:
             await await_cleanup(cleanup)
         finally:
             async with self._gateway_lock:
                 if self._close_task is cleanup and cleanup.done():
                     self._close_task = None
+
+    def _ensure_close_task(self) -> Task[None]:
+        cleanup = self._close_task
+        if cleanup is None or cleanup.done():
+            cleanup = create_task(
+                self._close_gateway(),
+                name="telegram-gateway-close",
+            )
+            self._close_task = cleanup
+        return cleanup
 
     async def _close_gateway(self) -> None:
         async with self._gateway_lock:

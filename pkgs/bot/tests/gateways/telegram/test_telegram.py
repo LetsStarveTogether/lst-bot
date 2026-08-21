@@ -775,6 +775,30 @@ async def test_cancelling_one_start_waiter_keeps_shared_startup(
         await gateway.close()
 
 
+async def test_cancelling_only_start_waiter_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = make_gateway()
+    identifying = Event()
+
+    async def identify() -> TelegramUser:
+        identifying.set()
+        await Event().wait()
+        raise AssertionError
+
+    monkeypatch.setattr(gateway, "_identify", identify)
+    startup = create_task(gateway.start())
+    async with timeout(1):
+        await identifying.wait()
+        startup.cancel()
+        with pytest.raises(CancelledError):
+            await startup
+
+    assert gateway._closed  # ruff: ignore[private-member-access]
+    assert gateway._startup_task is None  # ruff: ignore[private-member-access]
+    assert not gateway._polling_reserved  # ruff: ignore[private-member-access]
+
+
 async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
     class LifecyclePool:
         def __init__(self) -> None:
@@ -1114,6 +1138,8 @@ async def test_webhook_conflict_fails_before_polling() -> None:
     with pytest.raises(RuntimeError, match="webhook") as error:
         await gateway.start()
     assert "secret.example" not in str(error.value)
+    assert gateway._closed  # ruff: ignore[private-member-access]
+    assert not gateway._polling_reserved  # ruff: ignore[private-member-access]
 
 
 async def test_poller_respects_flood_wait_and_stops_on_auth_error(
