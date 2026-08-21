@@ -104,7 +104,6 @@ from .base import (
 
 logger = getLogger(__name__)
 
-_INTERNAL_ACTIONS = frozenset(Action)
 _ACTION_MAP = {
     Action.DELETE_MESSAGE: "delete_msg",
     Action.GET_SELF_INFO: "get_login_info",
@@ -361,7 +360,7 @@ class OneBot11GroupRequestEvent(OneBot11RequestEvent):
 
 class OneBot11Status(Model):
     good: StrictBool
-    online: StrictBool | None = None
+    online: StrictBool | None
 
 
 class OneBot11MetaEvent(OneBot11Event):
@@ -459,10 +458,12 @@ class ForwardWebSocket:
         ):
             msg = "OneBot 11 WebSocket URL must be an absolute ws or wss URL"
             raise ValueError(msg)
-        endpoint = (parsed_url.path or "/").rstrip("/") or "/"
-        expected = {"api": "/api", "event": "/event", "universal": "/"}[self.role]
-        if endpoint != expected:
-            msg = f"OneBot 11 {self.role} WebSocket must use the {expected} endpoint"
+        expected = {"api": "/api", "event": "/event", "universal": ""}[self.role]
+        if parsed_url.path not in {expected, f"{expected}/"}:
+            msg = (
+                f"OneBot 11 {self.role} WebSocket must use the "
+                f"{expected or '/'} endpoint"
+            )
             raise ValueError(msg)
         if self.role in _ACTION_ROLES and self.self_ is None:
             msg = f"OneBot 11 {self.role} WebSocket requires a bot identity"
@@ -570,9 +571,15 @@ class OneBot11Gateway(Gateway):
                         self._forward_tasks.append(
                             create_task(self._run_forward_websocket(ingress))
                         )
-            except BaseException:
-                await self._close_transports()
-                await self._close_http_pool()
+            except BaseException as startup_error:
+                try:
+                    await self._finish_close()
+                except BaseException as cleanup_error:
+                    msg = "OneBot 11 startup and cleanup failed"
+                    raise BaseExceptionGroup(
+                        msg,
+                        [startup_error, cleanup_error],
+                    ) from None
                 raise
             if self._owns_http_pool and self.http_pool is None:
                 self.http_pool = AsyncPoolManager()
@@ -588,9 +595,14 @@ class OneBot11Gateway(Gateway):
             await await_cleanup(finishing)
 
     async def _finish_close(self) -> None:
-        await self._close_transports()
-        await self._close_http_pool()
-        self._started = False
+        self._closing = True
+        try:
+            try:
+                await self._close_transports()
+            finally:
+                await self._close_http_pool()
+        finally:
+            self._started = False
 
     async def _close_http_pool(self) -> None:
         if self.http_pool is not None and self._owns_http_pool:
@@ -760,7 +772,7 @@ class OneBot11Gateway(Gateway):
         if mapped_action is not None:
             return mapped_action, _normalize_ob11_params(params, strict_ids=True)
 
-        if action in _INTERNAL_ACTIONS:
+        if action in Action:
             msg = f"{action} is not supported by OneBot 11"
             raise LookupError(msg)
 
@@ -795,7 +807,7 @@ class OneBot11Gateway(Gateway):
                 ),
             )
             status = getattr(response, "status", HTTPStatus.OK)
-            if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
+            if status != HTTPStatus.OK:
                 msg = f"OneBot 11 action request failed with HTTP {status}"
                 raise RuntimeError(msg)
             payload = orjson.loads(await response.data)

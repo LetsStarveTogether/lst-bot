@@ -59,12 +59,13 @@ def test_forward_websocket_validates_role_endpoint_and_identity() -> None:
         "//onebot.example/event",
         "http://onebot.example/event",
         "ws://one bot.example/event",
+        "ws://onebot.example/event//",
         "ws://onebot.example/event#fragment",
         "ws://onebot.example:invalid/event",
     ],
 )
 def test_forward_websocket_rejects_invalid_url(url: str) -> None:
-    with pytest.raises(ValueError, match="URL"):
+    with pytest.raises(ValueError, match=r"URL|endpoint"):
         ForwardWebSocket(url, role="event")
 
 

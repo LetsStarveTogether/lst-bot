@@ -206,8 +206,22 @@ def test_heartbeat_unknown_online_state_has_no_bot_status() -> None:
 
 @pytest.mark.parametrize(
     "status",
-    [None, "broken", {}, {"good": 1}, {"good": True, "online": 1}],
-    ids=["null", "string", "empty", "non-boolean-good", "non-boolean-online"],
+    [
+        None,
+        "broken",
+        {},
+        {"good": True},
+        {"good": 1},
+        {"good": True, "online": 1},
+    ],
+    ids=[
+        "null",
+        "string",
+        "empty",
+        "missing-online",
+        "non-boolean-good",
+        "non-boolean-online",
+    ],
 )
 def test_heartbeat_rejects_invalid_status(status: JsonValue) -> None:
     with pytest.raises((TypeError, ValueError)):

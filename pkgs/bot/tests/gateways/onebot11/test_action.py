@@ -2,7 +2,7 @@ from asyncio import get_running_loop, timeout
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from bot import (
@@ -21,6 +21,7 @@ from bot.gateways import onebot11 as onebot11_module
 from bot.gateways.onebot11 import (
     HttpAction,
     OneBot11Gateway,
+    ReverseWebSocket,
     adapt_action_response,
     decode_action_response,
 )
@@ -110,13 +111,50 @@ def test_message_media_uses_onebot11_wire_types() -> None:
         )
 
 
-async def test_http_action_checks_status_before_decoding_body() -> None:
-    async with ActionServer("not-json", status=HTTPStatus.UNAUTHORIZED) as server:
+@pytest.mark.parametrize(
+    "status",
+    [HTTPStatus.UNAUTHORIZED, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT],
+)
+async def test_http_action_checks_status_before_decoding_body(
+    status: HTTPStatus,
+) -> None:
+    async with ActionServer("not-json", status=status) as server:
         gateway = OneBot11Gateway(Bot(), action=HttpAction(server.base_url))
         connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
         async with gateway:
-            with pytest.raises(RuntimeError, match="HTTP 401"):
+            with pytest.raises(RuntimeError, match=f"HTTP {status}"):
                 await connection.action("get_status")
+
+
+async def test_start_and_cleanup_failures_close_owned_http_pool() -> None:
+    gateway = OneBot11Gateway(
+        Bot(),
+        ingress=[ReverseWebSocket(port=0)],
+        action=HttpAction("http://onebot.example"),
+    )
+    pool = gateway.http_pool
+    assert pool is not None
+    clear = AsyncMock()
+    cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
+    with (
+        patch.object(pool, "clear", clear),
+        patch.object(
+            gateway,
+            "_start_reverse_websocket",
+            AsyncMock(side_effect=RuntimeError("start failed")),
+        ),
+        patch.object(gateway, "_close_transports", cleanup),
+        pytest.raises(BaseExceptionGroup, match="startup and cleanup") as error,
+    ):
+        await gateway.start()
+
+    assert [str(exc) for exc in error.value.exceptions] == [
+        "start failed",
+        "cleanup failed",
+    ]
+    clear.assert_awaited_once()
+    assert gateway.http_pool is None
+    assert gateway._started is False  # ruff: ignore[private-member-access]
 
 
 async def test_http_action_timeout_covers_response_body() -> None:
