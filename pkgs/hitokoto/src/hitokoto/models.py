@@ -16,7 +16,11 @@ class Hitokoto(BaseModel):
 
     @override
     def __str__(self) -> str:
-        quote_lines = wrap(self.hitokoto.strip(), width=QUOTE_WIDTH) or [""]
+        quote_lines = [
+            wrapped
+            for line in self.hitokoto.strip().splitlines()
+            for wrapped in (wrap(line, width=QUOTE_WIDTH) or [""])
+        ] or [""]
         quote = "\n".join([
             f"{QUOTE_CORNERS[0]}{QUOTE_SPACE * QUOTE_WIDTH}{QUOTE_CORNERS[1]}",
             *(f"{QUOTE_SPACE}{line}" for line in quote_lines),
@@ -24,8 +28,14 @@ class Hitokoto(BaseModel):
         ])
         author = self.from_who.strip() if self.from_who else ""
         source = self.from_.strip()
-        if SOURCE_QUOTES[0] not in source or SOURCE_QUOTES[1] not in source:
-            source = f"{SOURCE_QUOTES[0]}{source}{SOURCE_QUOTES[1]}"
-        signature_line = f"—— {author}{source}"
+        if source:
+            if SOURCE_QUOTES[0] not in source:
+                source = f"{SOURCE_QUOTES[0]}{source}"
+            if SOURCE_QUOTES[1] not in source:
+                source = f"{source}{SOURCE_QUOTES[1]}"
+        signature = f"{author}{source}"
+        if not signature:
+            return quote
+        signature_line = f"—— {signature}"
         signature_indent = QUOTE_SPACE * max(QUOTE_WIDTH + 4 - len(signature_line), 0)
         return f"{quote}\n{signature_indent}{signature_line}"

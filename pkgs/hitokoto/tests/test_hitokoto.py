@@ -105,6 +105,28 @@ def test_models_validate_only_used_official_fields() -> None:
         })
 
 
+def test_hitokoto_format_preserves_text_and_partial_attributions() -> None:
+    partial_source = Hitokoto.model_validate(
+        hitokoto_payload() | {"from": "云雀叫了一整天》", "from_who": "木心"}
+    )
+    embedded_source = Hitokoto.model_validate(
+        hitokoto_payload() | {"from": "帕斯卡，《思想录》", "from_who": None}
+    )
+    author_only = Hitokoto.model_validate(
+        hitokoto_payload() | {"from": "", "from_who": "自创"}
+    )
+    anonymous = Hitokoto.model_validate(
+        hitokoto_payload() | {"from": "", "from_who": None}
+    )
+    multiline = Hitokoto.model_validate(hitokoto_payload("甲\n乙"))
+
+    assert str(partial_source).endswith("—— 木心《云雀叫了一整天》")
+    assert str(embedded_source).endswith("—— 帕斯卡，《思想录》")
+    assert str(author_only).endswith("—— 自创")
+    assert "——" not in str(anonymous)
+    assert "\u3000甲\n\u3000乙" in str(multiline)
+
+
 def test_client_requires_official_https_transport() -> None:
     pool = RecordingPool({})
     with pytest.raises(ValidationError):
