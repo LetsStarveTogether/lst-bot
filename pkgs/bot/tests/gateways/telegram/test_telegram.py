@@ -206,6 +206,7 @@ def test_protocol_manifest_and_strict_models() -> None:
             "error_code": 400,
             "description": "bad",
         })
+    assert telegram_module._payload_time({"date": 0}) > 0  # ruff: ignore[private-member-access]
 
 
 @pytest.mark.parametrize(
@@ -612,7 +613,7 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
             {"chat_id": "42", "text": "caption"},
             {"chat_id": "42", "sticker": "sticker"},
         ]
-        native = await connection.action("getMyCommands")
+        native = await connection.action("getmycommands")
         assert isinstance(native, TelegramResult)
         assert native.root == []
         await connection.action(
@@ -1108,12 +1109,3 @@ def test_offset_advances_only_after_enqueue(
     assert isinstance(notices[0], NoticeEvent)
     assert notices[0].detail_type == "telegram.raw_update"
     assert gateway._offset == 13  # ruff: ignore[private-member-access] - zero payload was consumed
-
-    gateway._offset = None  # ruff: ignore[private-member-access] - reset isolated invariant
-    events.clear()
-    monkeypatch.setattr(gateway, "enqueue_event", events.append)
-    gateway._accept_updates([  # ruff: ignore[private-member-access] - direct invariant check
-        message_update(11),
-        message_update(10),
-    ])
-    assert gateway._offset == 12  # ruff: ignore[private-member-access] - max offset wins

@@ -1138,9 +1138,10 @@ async def test_websocket_invalid_session_selects_authentication_mode(
         (4004, (True, False, None)),
         (4006, (False, True, None)),
         (4008, (False, False, 60.0)),
+        (4009, (False, False, None)),
         (4900, (False, True, None)),
         (4913, (False, True, None)),
-        (4999, (False, False, None)),
+        (4999, (False, True, None)),
     ],
 )
 async def test_websocket_close_code_recovery_policy(

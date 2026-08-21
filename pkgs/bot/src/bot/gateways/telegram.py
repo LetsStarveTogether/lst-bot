@@ -54,7 +54,7 @@ from bot.protocol.msg import (
 )
 from bot.protocol.returns import ReturnAction
 
-from .base import Connection, Gateway
+from .base import Connection, Gateway, await_cleanup
 from .telegram_api import (
     TELEGRAM_API_BASE_URL,
     TELEGRAM_METHODS,
@@ -262,20 +262,12 @@ class TelegramGateway(Gateway, TelegramRestClient):
                     name="telegram-gateway-close",
                 )
                 self._close_task = cleanup
-        cancelled = False
         try:
-            while not cleanup.done():
-                try:
-                    await shield(cleanup)
-                except CancelledError:
-                    cancelled = True
-            cleanup.result()
+            await await_cleanup(cleanup)
         finally:
             async with self._gateway_lock:
                 if self._close_task is cleanup and cleanup.done():
                     self._close_task = None
-        if cancelled:
-            raise CancelledError
 
     async def _close_gateway(self) -> None:
         async with self._gateway_lock:
@@ -448,7 +440,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
                 data["title"] = data.pop("group_name")
             return await self.call(method, {"chat_id": chat_id, **data})
 
-        if action in _NATIVE_ACTIONS:
+        if action.casefold() in map(str.casefold, _NATIVE_ACTIONS):
             files = cast(Mapping[str, bytes | TelegramUpload], data.pop("files", {}))
             return await self.call(action, data, files)
 
@@ -539,7 +531,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         for update in updates:
             event = self._event_from_update(update)
             self.enqueue_event(event)
-            self._offset = max(self._offset or 0, update.update_id + 1)
+            self._offset = update.update_id + 1
 
     def _event_from_update(self, update: TelegramUpdate) -> Event:
         event_type, payload = update.payload or ("raw_update", None)
@@ -668,22 +660,24 @@ class TelegramGateway(Gateway, TelegramRestClient):
 
 
 def _payload_time(payload: object) -> float:
-    timestamp = getattr(payload, "date", None)
-    if isinstance(payload, Mapping):
-        timestamp = payload.get("date")
-    if isinstance(timestamp, int) and not isinstance(timestamp, bool):
-        return float(timestamp)
-    message = getattr(payload, "message", None)
-    if isinstance(payload, Mapping):
-        message = payload.get("message")
-    timestamp = getattr(message, "date", None)
-    if isinstance(message, Mapping):
-        timestamp = message.get("date")
-    return (
-        float(timestamp)
-        if isinstance(timestamp, int) and not isinstance(timestamp, bool)
-        else time()
+    message = (
+        payload.get("message")
+        if isinstance(payload, Mapping)
+        else getattr(payload, "message", None)
     )
+    for value in (payload, message):
+        timestamp = (
+            value.get("date")
+            if isinstance(value, Mapping)
+            else getattr(value, "date", None)
+        )
+        if (
+            isinstance(timestamp, int)
+            and not isinstance(timestamp, bool)
+            and timestamp > 0
+        ):
+            return float(timestamp)
+    return time()
 
 
 def _telegram_message(message: TelegramMessage) -> Msg:

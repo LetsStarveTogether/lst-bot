@@ -518,7 +518,7 @@ async def test_dispatch_models_commit_only_valid_session_and_rate_state(
     assert marker not in "\n".join(record.message for record in handler.records)
 
 
-async def test_gateway_discovery_refetches_and_limits_identify_buckets(
+async def test_gateway_discovery_refetches_and_throttles_identify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def info(remaining: int, *, reset_after: int, max_concurrency: int) -> dict:
@@ -547,12 +547,11 @@ async def test_gateway_discovery_refetches_and_limits_identify_buckets(
     assert await instance._gateway_url() == (
         "wss://gateway.discord.example/?v=10&encoding=json"
     )
-    assert instance._identify_max_concurrency == 2
-
     websocket = ScriptedWebSocket()
     await instance._authenticate_websocket(websocket)
+    await instance._wait_to_identify()
     await instance._authenticate_websocket(websocket)
-    assert instance._identify_ready_at == {0: 11.5}
+    assert instance._identify_ready_at == pytest.approx(11.5)
     assert [call.args[0] for call in mocked_sleep.await_args_list] == [1.5, 5.0]
 
     instance._session_id = "session"
@@ -974,6 +973,9 @@ async def test_interaction_fallback_io_obeys_the_absolute_deadline() -> None:
 
 
 async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
+    interaction = DiscordRequest(method="POST", path="/interactions/1/token/callback")
+    assert DiscordGateway._rate_route(interaction)[1] == ""
+
     class BucketPool(Pool):
         def __init__(self) -> None:
             super().__init__()

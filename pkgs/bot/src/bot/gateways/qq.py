@@ -81,8 +81,8 @@ _HELLO_TIMEOUT = 30.0
 _RECONNECT_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
 _AUTHENTICATION_FAILED = 4004
 _RATE_LIMITED = 4008
-_INTERNAL_ERROR_MIN = 4900
-_INTERNAL_ERROR_MAX = 4913
+_RESUMABLE_SESSION_TIMEOUT = 4009
+_APPLICATION_CLOSE_CODES = range(4000, 5000)
 _MESSAGE_SEQUENCE_MODULUS = 1 << 16
 _QUOTED_MESSAGE_TYPE = 103
 
@@ -1046,9 +1046,7 @@ class QQGateway(Gateway, QQRestClient):
                 "QQ Gateway rate limited",
                 delay=_RECONNECT_DELAYS[-1],
             )
-        if code in {4006, 4007} or (
-            code is not None and _INTERNAL_ERROR_MIN <= code <= _INTERNAL_ERROR_MAX
-        ):
+        if code in _APPLICATION_CLOSE_CODES and code != _RESUMABLE_SESSION_TIMEOUT:
             return _ReconnectError(
                 f"QQ Gateway session cannot resume (close code {code})",
                 reset_session=True,

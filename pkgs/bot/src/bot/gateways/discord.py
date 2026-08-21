@@ -884,11 +884,11 @@ class DiscordRestClient:
             major = f"{parts[0]}:{parts[1]}"
             normalized[1] = ":id"
         elif len(parts) > 1 and parts[0] in {"interactions", "webhooks"}:
-            major = f"{parts[0]}:{parts[1]}"
+            major = f"webhooks:{parts[1]}" if parts[0] == "webhooks" else ""
             normalized[1] = ":id"
             token_index = 2
             if len(parts) > token_index:
-                major = f"{major}:{parts[token_index]}"
+                major = f"{major}:{parts[token_index]}" if major else ""
                 normalized[token_index] = ":token"
         for index, part in enumerate(normalized):
             if part.isdecimal():
@@ -1442,8 +1442,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         self._gateway_send_times: deque[float] = deque()
         self._presence_send_times: deque[float] = deque()
         self._full_member_ready_at: dict[str, float] = {}
-        self._identify_ready_at: dict[int, float] = {}
-        self._identify_max_concurrency = 1
+        self._identify_ready_at = 0.0
         self._websocket: WebSocketConnection | None = None
         self._closing = False
         self._session_id: str | None = None
@@ -1770,8 +1769,8 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 msg = "Discord Gateway discovery returned an invalid response"
                 raise RuntimeError(msg) from exc
             limit = gateway.session_start_limit
-            self._identify_max_concurrency = limit.max_concurrency
             if limit.remaining:
+                await self._wait_to_identify()
                 return _gateway_url(str(gateway.url))
             await sleep(limit.reset_after / 1000)
 
@@ -1820,12 +1819,11 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 msg = "Discord Gateway expected Hello or Reconnect"
                 raise ValueError(msg)
         hello = DiscordHelloData.model_validate(payload.d)
-        await self._authenticate_websocket(websocket)
-
         interval = hello.heartbeat_interval / 1000
         # Discord requires non-cryptographic heartbeat jitter.
         next_heartbeat = get_running_loop().time() + interval * random()  # ruff: ignore[suspicious-non-cryptographic-random-usage]
         heartbeat_pending = False
+        await self._authenticate_websocket(websocket)
         while True:
             remaining = max(0.0, next_heartbeat - get_running_loop().time())
             try:
@@ -1880,7 +1878,6 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 },
             }
         else:
-            await self._wait_to_identify()
             payload = {
                 "op": DiscordOpcode.IDENTIFY,
                 "d": {
@@ -1899,15 +1896,10 @@ class DiscordGateway(Gateway, DiscordRestClient):
         await self._send_gateway(websocket, payload, system=True)
 
     async def _wait_to_identify(self) -> None:
-        bucket = self.shard[0] % self._identify_max_concurrency
-        while True:
-            async with self._gateway_send_lock:
-                now = get_running_loop().time()
-                delay = self._identify_ready_at.get(bucket, 0.0) - now
-                if delay <= 0:
-                    self._identify_ready_at[bucket] = now + _IDENTIFY_WINDOW_SECONDS
-                    return
+        delay = self._identify_ready_at - get_running_loop().time()
+        if delay > 0:
             await sleep(delay)
+        self._identify_ready_at = get_running_loop().time() + _IDENTIFY_WINDOW_SECONDS
 
     async def _send_heartbeat(self, websocket: WebSocketConnection) -> None:
         await self._send_gateway(
