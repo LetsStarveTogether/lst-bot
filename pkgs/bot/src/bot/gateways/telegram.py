@@ -73,8 +73,18 @@ from .telegram_api import (
 logger = getLogger(__name__)
 
 _RETRY_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0)
-_MAX_GUEST_REPLY_LENGTH = 4096
+_MAX_TEXT_LENGTH = 4096
 _MAX_MEDIA_CAPTION_LENGTH = 1024
+_MEDIA_METHODS: dict[str | MsgSegmentType, tuple[str, str]] = {
+    MsgSegmentType.IMAGE: ("sendPhoto", "photo"),
+    MsgSegmentType.VOICE: ("sendVoice", "voice"),
+    MsgSegmentType.AUDIO: ("sendAudio", "audio"),
+    MsgSegmentType.VIDEO: ("sendVideo", "video"),
+    MsgSegmentType.FILE: ("sendDocument", "document"),
+    "telegram.animation": ("sendAnimation", "animation"),
+    "telegram.sticker": ("sendSticker", "sticker"),
+    "telegram.video_note": ("sendVideoNote", "video_note"),
+}
 _POLL_TIMEOUT_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
 _MESSAGE_ID_ADAPTER = TypeAdapter(Annotated[StrictInt, Field(ge=0)])
 _USER_ID_ADAPTER = TypeAdapter(TelegramUserID)
@@ -653,7 +663,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
             )
             raise TypeError(msg)
         text = "".join(cast(TextSegment, segment).data.text for segment in message)
-        if not 1 <= len(text) <= _MAX_GUEST_REPLY_LENGTH:
+        if not 1 <= len(text) <= _MAX_TEXT_LENGTH:
             msg = "Telegram guest reply text must contain 1 to 4096 characters"
             raise ValueError(msg)
         return await self.call(
@@ -735,6 +745,11 @@ def _telegram_message(message: TelegramMessage) -> Msg:
                 "content": venue.address if venue is not None else "",
             },
         })
+    if not segments:
+        segments.append({
+            "type": "telegram.message",
+            "data": {"raw": message.model_dump(mode="json")},
+        })
     return Msg.model_validate(segments)
 
 
@@ -747,30 +762,23 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
     resources: list[tuple[str, dict[str, object]]] = []
     reply: int | None = None
     html = False
-    media_methods: dict[str | MsgSegmentType, tuple[str, str]] = {
-        MsgSegmentType.IMAGE: ("sendPhoto", "photo"),
-        MsgSegmentType.VOICE: ("sendVoice", "voice"),
-        MsgSegmentType.AUDIO: ("sendAudio", "audio"),
-        MsgSegmentType.VIDEO: ("sendVideo", "video"),
-        MsgSegmentType.FILE: ("sendDocument", "document"),
-        "telegram.animation": ("sendAnimation", "animation"),
-        "telegram.sticker": ("sendSticker", "sticker"),
-        "telegram.video_note": ("sendVideoNote", "video_note"),
-    }
+    text_length = 0
     for segment in message:
         if isinstance(segment, TextSegment):
+            text_length += len(segment.data.text)
             text_parts.append(escape(segment.data.text) if html else segment.data.text)
         elif isinstance(segment, MentionSegment):
             if not html:
                 text_parts = [escape(part) for part in text_parts]
                 html = True
             user_id = _user_id(segment.data.user_id)
+            text_length += len(str(user_id))
             text_parts.append(f'<a href="tg://user?id={user_id}">{user_id}</a>')
         elif isinstance(segment, MentionAllSegment):
             msg = "Telegram does not support mention-all"
             raise TypeError(msg)
-        elif segment.type in media_methods:
-            method, field = media_methods[segment.type]
+        elif segment.type in _MEDIA_METHODS:
+            method, field = _MEDIA_METHODS[segment.type]
             resources.append(
                 (method, {field: cast(object, segment.data).file_id})  # ty: ignore[unresolved-attribute]
             )
@@ -807,6 +815,9 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             raise TypeError(msg)
 
     text = "".join(text_parts)
+    if text_length > _MAX_TEXT_LENGTH:
+        msg = "Telegram message text exceeds 4096 characters"
+        raise ValueError(msg)
     common = {"chat_id": chat_id, **extra}
     keep_reply_context = False
     if reply is not None:
@@ -827,7 +838,7 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
     calls: list[tuple[str, dict[str, object]]] = []
     caption_used = bool(
         text
-        and len(text) <= _MAX_MEDIA_CAPTION_LENGTH
+        and text_length <= _MAX_MEDIA_CAPTION_LENGTH
         and resources
         and resources[0][0]
         not in {"sendSticker", "sendVideoNote", "sendLocation", "sendVenue"}

@@ -140,12 +140,14 @@ def test_strict_models() -> None:
             "poll_id": "poll",
             "user": {"id": 42, "is_bot": False, "first_name": "User"},
             "option_ids": [0, 2],
+            "option_persistent_ids": ["a", "c"],
         },
     }).payload
     assert payload is not None
     poll_answer = payload[1]
     assert isinstance(poll_answer, TelegramPollAnswer)
     assert poll_answer.option_ids == [0, 2]
+    assert poll_answer.option_persistent_ids == ["a", "c"]
     with pytest.raises(ValidationError):
         TelegramUpdate.model_validate({
             "update_id": 5,
@@ -229,6 +231,28 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
     calls = telegram_module._message_calls("42", message, {})  # ruff: ignore[private-member-access]
     assert [method for method, _ in calls] == methods
     assert calls[-1][1].get("caption") == (text if length == 1024 else None)
+
+
+def test_message_text_limit() -> None:
+    message = Msg.from_input("x" * 4096)
+    assert telegram_module._message_calls("42", message, {})  # ruff: ignore[private-member-access]
+    with pytest.raises(ValueError, match="4096"):
+        telegram_module._message_calls(  # ruff: ignore[private-member-access]
+            "42", Msg.from_input("x" * 4097), {}
+        )
+
+
+def test_unmapped_message_content_is_preserved() -> None:
+    original = message_update(1).message
+    assert original is not None
+    raw = original.model_dump(exclude_none=True)
+    raw.pop("text")
+    raw["poll"] = {"id": "poll"}
+    message = TelegramUpdate.model_validate({"update_id": 2, "message": raw}).message
+    assert message is not None
+    converted = telegram_module._telegram_message(message)  # ruff: ignore[private-member-access]
+    assert converted[0].type == "telegram.message"
+    assert converted[0].data.model_extra == {"raw": message.model_dump(mode="json")}
 
 
 def test_location_and_venue_conversion() -> None:

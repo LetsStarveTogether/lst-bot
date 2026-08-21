@@ -447,6 +447,7 @@ class TelegramPollAnswer(Model):
     voter_chat: TelegramChat | None = None
     user: TelegramUser | None = None
     option_ids: list[NonNegativeInt]
+    option_persistent_ids: list[StrictStr]
 
     @model_validator(mode="after")
     def exactly_one_voter(self) -> Self:
