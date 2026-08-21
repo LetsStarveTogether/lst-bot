@@ -21,12 +21,13 @@ from bot.gateways import onebot11 as onebot11_module
 from bot.gateways.onebot11 import (
     HttpAction,
     OneBot11Gateway,
+    OneBot11MessageSegment,
     ReverseWebSocket,
     adapt_action_response,
     decode_action_response,
 )
 from bot.protocol.actions import ActionParamModel
-from pydantic import JsonValue, RootModel
+from pydantic import JsonValue, RootModel, ValidationError
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server
 
@@ -127,6 +128,17 @@ def test_message_media_uses_onebot11_wire_types() -> None:
         onebot11_module._dump_ob11_message(  # ruff: ignore[private-member-access]
             [{"type": "file", "data": {"file_id": "resource"}}]
         )
+
+
+def test_message_segment_requires_data_and_preserves_null() -> None:
+    segment = OneBot11MessageSegment.model_validate({
+        "type": "vendor",
+        "data": None,
+    })
+
+    assert segment.model_dump(mode="json") == {"type": "vendor", "data": None}
+    with pytest.raises(ValidationError):
+        OneBot11MessageSegment.model_validate({"type": "vendor"})
 
 
 @pytest.mark.parametrize(
@@ -455,12 +467,13 @@ def test_action_response_requires_an_object_model() -> None:
             id="unknown-status",
         ),
         pytest.param({"status": "ok", "data": None}, id="missing-retcode"),
+        pytest.param({"status": "ok", "retcode": 0}, id="missing-data"),
     ],
 )
-def test_onebot11_action_response_rejects_invalid_status_retcode_pairs(
+def test_onebot11_action_response_rejects_invalid_protocol_shape(
     payload: dict[str, JsonValue],
 ) -> None:
-    with pytest.raises(ValueError, match=r"status|retcode|represented"):
+    with pytest.raises(ValueError, match=r"status|retcode|data|represented"):
         decode_action_response(payload)
 
 

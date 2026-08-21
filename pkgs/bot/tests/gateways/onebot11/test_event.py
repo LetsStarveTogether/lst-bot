@@ -374,6 +374,14 @@ def test_private_message_decodes_cq_and_generates_event_id() -> None:
     assert str(UUID(converted.id)) == converted.id
 
 
+def test_message_event_requires_message() -> None:
+    payload = private_msg_payload()
+    del payload["message"]
+
+    with pytest.raises(ValueError, match="message"):
+        event(payload)
+
+
 def test_cq_parameters_are_unescaped_once() -> None:
     converted = event(private_msg_payload("[CQ:share,title=&amp;#44;]"))
 

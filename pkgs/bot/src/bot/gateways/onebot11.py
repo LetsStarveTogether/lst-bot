@@ -206,7 +206,7 @@ class OneBot11ActionRequest(Model):
 class OneBot11ActionResponse(Model):
     status: Literal["ok", "async", "failed"]
     retcode: StrictInt
-    data: JsonValue = None
+    data: JsonValue
     message: StrictStr | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -233,7 +233,7 @@ class OneBot11ActionResponse(Model):
 
 class OneBot11MessageSegment(Model):
     type: StrictStr
-    data: Model = Field(default_factory=Model)
+    data: Model | None
 
 
 class OneBot11Message(RootModel[list[OneBot11MessageSegment]]):
@@ -285,7 +285,7 @@ class OneBot11MessageEvent(OneBot11Event):
     message_type: StrictStr
     message_id: OneBot11Id
     user_id: OneBot11Id
-    message: JsonValue = ""
+    message: JsonValue
     raw_message: StrictStr | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
