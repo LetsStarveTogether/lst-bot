@@ -1,17 +1,18 @@
 from asyncio import (
-    Event as AsyncEvent,
-)
-from asyncio import (
+    CancelledError,
+    Future,
     Lock,
     QueueFull,
     Task,
     create_task,
-    current_task,
     gather,
     get_running_loop,
     sleep,
     timeout,
     timeout_at,
+)
+from asyncio import (
+    Event as AsyncEvent,
 )
 from collections import defaultdict, deque
 from collections.abc import Mapping
@@ -98,6 +99,8 @@ _GATEWAY_SYSTEM_RESERVE = 10
 _GATEWAY_WINDOW_SECONDS = 60.0
 _MAX_AUDIT_REASON_LENGTH = 512
 _MAX_REST_ATTEMPTS = 5
+_MAX_GLOBAL_REST_REQUESTS = 50
+_GLOBAL_REST_WINDOW_SECONDS = 1.0
 _RATE_BUCKET_IDLE_TTL = 60.0
 _RATE_BUCKET_PRUNE_INTERVAL = 10.0
 _RATE_BUCKET_PRUNE_THRESHOLD = 256
@@ -115,7 +118,6 @@ _INTERACTION_CALLBACK_PATH = compile_regex(
     r"^/interactions/[1-9][0-9]{0,19}/[^/]+/callback$"
 )
 _WEBHOOK_TOKEN_PATH = compile_regex(r"^/webhooks/[1-9][0-9]{0,19}/[^/]+(?:/.*)?$")
-_INTERACTION_CALLBACK_TTL = 15 * 60.0
 _INTERACTION_AUTO_RESPONSES: dict[int, JsonValue] = {
     2: {"type": 5},
     3: {"type": 6},
@@ -156,6 +158,24 @@ type Snowflake = Annotated[
 ]
 
 _SNOWFLAKE_ADAPTER = TypeAdapter(Snowflake)
+
+
+def _untrimmed_guild_name(value: str) -> str:
+    if value != value.strip():
+        msg = "Discord guild name cannot have leading or trailing whitespace"
+        raise ValueError(msg)
+    return value
+
+
+type DiscordGuildName = Annotated[
+    StrictStr,
+    Field(min_length=2, max_length=100),
+    AfterValidator(_untrimmed_guild_name),
+]
+type DiscordChannelName = Annotated[StrictStr, Field(min_length=1, max_length=100)]
+
+_GUILD_NAME_ADAPTER = TypeAdapter(DiscordGuildName)
+_CHANNEL_NAME_ADAPTER = TypeAdapter(DiscordChannelName)
 
 
 class DiscordRequestModel(Model):
@@ -397,6 +417,23 @@ class DiscordInteraction(Model):
     context: NonNegativeInt | None = None
     attachment_size_limit: NonNegativeInt | None = None
 
+    @model_validator(mode="after")
+    def interaction_data_shape(self) -> Self:
+        required = {
+            2: ("id", "name", "type"),
+            3: ("custom_id", "component_type"),
+            4: ("id", "name", "type"),
+            5: ("custom_id", "components"),
+        }.get(self.type)
+        if required is None:
+            return self
+        if self.data is None or any(
+            getattr(self.data, field_name) is None for field_name in required
+        ):
+            msg = f"Discord interaction type {self.type} has incomplete data"
+            raise ValueError(msg)
+        return self
+
 
 class DiscordApplication(Model):
     id: Snowflake
@@ -600,6 +637,16 @@ class DiscordRequest(DiscordRequestModel):
             ):
                 msg = "Discord form-fields multipart requires a flat JSON object"
                 raise ValueError(msg)
+        if self.files is not None:
+            part_names = {"payload_json"} if self.multipart == "payload_json" else set()
+            if self.multipart == "form_fields" and isinstance(self.json_, dict):
+                part_names.update(self.json_)
+            for index, file in enumerate(self.files):
+                name = file.field or f"files[{index}]"
+                if name in part_names:
+                    msg = "Discord multipart part names must be unique"
+                    raise ValueError(msg)
+                part_names.add(name)
         if (
             self.reason is not None
             and len(quote(self.reason, safe="")) > _MAX_AUDIT_REASON_LENGTH
@@ -614,6 +661,20 @@ class _DiscordRateBucket:
     lock: Lock = field(default_factory=Lock)
     ready_at: float = 0.0
     last_used: float = 0.0
+
+
+type _DiscordResponse = DiscordPayload | DiscordBytes | DiscordNoContent
+
+
+@dataclass(slots=True)
+class _DiscordInteractionCallback:
+    default_payload: JsonValue
+    deadline: float
+    ready: AsyncEvent = field(default_factory=AsyncEvent)
+    request: DiscordRequest | None = None
+    outcome: Future[_DiscordResponse] | None = None
+    task: Task[None] | None = None
+    claimed: bool = False
 
 
 class DiscordRestClient:
@@ -652,13 +713,17 @@ class DiscordRestClient:
         )
         self._next_bucket_prune_at = 0.0
         self._global_ready_at = dict.fromkeys(("authless", "bot", "interaction"), 0.0)
+        self._global_send_lock = Lock()
+        self._global_send_times = {
+            "authless": deque[float](),
+            "bot": deque[float](),
+        }
         self._closed = False
         self._accepting_requests = True
         self._rate_limit_interrupt = AsyncEvent()
         self._unauthorized = False
         self._inflight_requests: set[AsyncEvent] = set()
-        self._interaction_callback_tasks: dict[str, Task[None]] = {}
-        self._interaction_callbacks: dict[str, float | None] = {}
+        self._interaction_callbacks: dict[str, _DiscordInteractionCallback] = {}
 
     async def request_discord(
         self,
@@ -699,39 +764,35 @@ class DiscordRestClient:
         if self._closed or not self._accepting_requests:
             msg = "Discord REST client is closed"
             raise RuntimeError(msg)
-        fallback = self._claim_interaction_callback(request.path) if callback else None
+        pending = self._interaction_callbacks.get(request.path) if callback else None
+        if pending is not None:
+            return await self._submit_interaction_callback(pending, request)
+        return await self._perform_tracked_request(request)
+
+    async def _perform_tracked_request(
+        self,
+        request: DiscordRequest,
+    ) -> _DiscordResponse:
         completed = AsyncEvent()
         self._inflight_requests.add(completed)
         try:
-            if fallback is not None:
-                fallback.cancel()
-                await gather(fallback, return_exceptions=True)
-            response = await self._perform_request(request)
-        except BaseException:
-            if callback:
-                self._interaction_callbacks.pop(request.path, None)
-            raise
-        else:
-            if callback:
-                self._interaction_callbacks[request.path] = (
-                    get_running_loop().time() + _INTERACTION_CALLBACK_TTL
-                )
-            return response
+            return await self._perform_request(request)
         finally:
             completed.set()
             self._inflight_requests.discard(completed)
 
-    def _claim_interaction_callback(self, path: str) -> Task[None] | None:
-        now = get_running_loop().time()
-        for claimed_path, expiry in tuple(self._interaction_callbacks.items()):
-            if expiry is not None and expiry <= now:
-                self._interaction_callbacks.pop(claimed_path, None)
-        if path in self._interaction_callbacks:
+    @staticmethod
+    async def _submit_interaction_callback(
+        pending: _DiscordInteractionCallback,
+        request: DiscordRequest,
+    ) -> _DiscordResponse:
+        if pending.claimed or pending.request is not None:
             msg = "Discord interaction callback was already claimed"
             raise RuntimeError(msg)
-        self._interaction_callbacks[path] = None
-        fallback = self._interaction_callback_tasks.get(path)
-        return fallback if fallback is not current_task() else None
+        pending.request = request
+        pending.outcome = Future()
+        pending.ready.set()
+        return await pending.outcome
 
     async def _perform_request(  # ruff: ignore[complex-structure] - one loop owns bucket rebinding and 429 retries
         self,
@@ -746,6 +807,8 @@ class DiscordRestClient:
                         continue
                     self._ensure_available(request)
                     await self._wait_for_rate_limit(bucket, lane=lane)
+                    self._ensure_available(request)
+                    await self._wait_for_global_limit(lane)
                     self._ensure_available(request)
                     try:
                         async with timeout(_API_TIMEOUT):
@@ -787,6 +850,13 @@ class DiscordRestClient:
                 if retry_after is not None and attempt < _MAX_REST_ATTEMPTS - 1:
                     continue
                 raise self._api_error(response.status, payload)
+            if response.status == HTTPStatus.BAD_GATEWAY:
+                if attempt < _MAX_REST_ATTEMPTS - 1:
+                    await sleep(
+                        _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
+                    )
+                    continue
+                raise self._api_error(response.status, payload)
             if response.status == HTTPStatus.NO_CONTENT:
                 return DiscordNoContent()
             if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
@@ -824,6 +894,8 @@ class DiscordRestClient:
             self._global_ready_at = dict.fromkeys(
                 ("authless", "bot", "interaction"), 0.0
             )
+            for send_times in self._global_send_times.values():
+                send_times.clear()
             self._interaction_callbacks.clear()
 
     async def start(self) -> None:
@@ -914,6 +986,8 @@ class DiscordRestClient:
         bound = self._rate_buckets.get(key)
         if bound is None:
             self._rate_buckets[key] = bound = bucket
+        route_key = ("route", f"{route[0]} {route[1]}", major)
+        self._rate_buckets.pop(route_key, None)
         bound.ready_at = max(bound.ready_at, bucket.ready_at)
         bound.last_used = max(bound.last_used, bucket.last_used)
         return bound
@@ -929,6 +1003,34 @@ class DiscordRestClient:
             delay = ready_at - get_running_loop().time()
             if delay <= 0:
                 return
+            try:
+                async with timeout(delay):
+                    await self._rate_limit_interrupt.wait()
+            except TimeoutError:
+                continue
+            return
+
+    async def _wait_for_global_limit(
+        self,
+        lane: Literal["authless", "bot", "interaction"],
+    ) -> None:
+        if lane == "interaction":
+            return
+        send_times = self._global_send_times[lane]
+        while True:
+            async with self._global_send_lock:
+                now = get_running_loop().time()
+                while send_times and now - send_times[0] >= _GLOBAL_REST_WINDOW_SECONDS:
+                    send_times.popleft()
+                delay = self._global_ready_at[lane] - now
+                if len(send_times) >= _MAX_GLOBAL_REST_REQUESTS:
+                    delay = max(
+                        delay,
+                        _GLOBAL_REST_WINDOW_SECONDS - (now - send_times[0]),
+                    )
+                if delay <= 0:
+                    send_times.append(now)
+                    return
             try:
                 async with timeout(delay):
                     await self._rate_limit_interrupt.wait()
@@ -1584,7 +1686,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
             return await self._guild_list()
         if common == Action.SET_GUILD_NAME:
             guild_id = self._id(data, "guild_id")
-            name = TypeAdapter(StrictStr).validate_python(data.get("guild_name"))
+            name = _GUILD_NAME_ADAPTER.validate_python(data.get("guild_name"))
             return await self._request_model(
                 "PATCH", f"/guilds/{guild_id}", DiscordGuild, json={"name": name}
             )
@@ -1614,7 +1716,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
             )
         if common == Action.SET_CHANNEL_NAME:
             channel_id = self._id(data, "channel_id")
-            name = TypeAdapter(StrictStr).validate_python(data.get("channel_name"))
+            name = _CHANNEL_NAME_ADAPTER.validate_python(data.get("channel_name"))
             return await self._request_model(
                 "PATCH",
                 f"/channels/{channel_id}",
@@ -1846,7 +1948,6 @@ class DiscordGateway(Gateway, DiscordRestClient):
             if payload.op is DiscordOpcode.HEARTBEAT:
                 await self._send_heartbeat(websocket)
                 heartbeat_pending = True
-                next_heartbeat = get_running_loop().time() + interval
                 continue
             if payload.op is DiscordOpcode.RECONNECT:
                 msg = "Discord Gateway requested reconnect"
@@ -2055,45 +2156,102 @@ class DiscordGateway(Gateway, DiscordRestClient):
             f"/interactions/{interaction.id}/"
             f"{quote(interaction.token, safe='')}/callback"
         )
-        if path in self._interaction_callback_tasks:
+        if path in self._interaction_callbacks:
             return
         deadline = received_at + _INTERACTION_RESPONSE_WINDOW_SECONDS
-        self._interaction_callback_tasks[path] = create_task(
-            self._auto_acknowledge_interaction(path, payload, deadline),
+        pending = _DiscordInteractionCallback(payload, deadline)
+        self._interaction_callbacks[path] = pending
+        pending.task = create_task(
+            self._run_interaction_callback(path, pending),
             name=f"discord-interaction-{interaction.id}",
         )
 
-    async def _auto_acknowledge_interaction(
+    async def _run_interaction_callback(
         self,
         path: str,
-        payload: JsonValue,
-        deadline: float,
+        pending: _DiscordInteractionCallback,
     ) -> None:
         try:
-            send_at = (
-                deadline
-                - _INTERACTION_RESPONSE_WINDOW_SECONDS
-                + _INTERACTION_AUTO_ACK_DELAY
-            )
-            await sleep(max(0.0, send_at - get_running_loop().time()))
-            async with timeout_at(deadline):
-                await self.request_discord("POST", path, json=payload, auth=False)
+            await self._execute_interaction_callback(path, pending)
+        except CancelledError:
+            if pending.outcome is not None and not pending.outcome.done():
+                pending.outcome.cancel()
+            raise
         except Exception as exc:
+            if pending.outcome is not None and not pending.outcome.done():
+                pending.outcome.set_exception(exc)
             logger.exception(
                 "Discord interaction auto-acknowledgement failed: {error}",
                 error=str(exc) or type(exc).__name__,
             )
         finally:
-            task = current_task()
-            if self._interaction_callback_tasks.get(path) is task:
-                self._interaction_callback_tasks.pop(path, None)
+            if self._interaction_callbacks.get(path) is pending:
+                self._interaction_callbacks.pop(path, None)
+
+    @staticmethod
+    def _ensure_interaction_deadline(deadline: float) -> None:
+        if get_running_loop().time() >= deadline:
+            raise TimeoutError
+
+    async def _execute_interaction_callback(
+        self,
+        path: str,
+        pending: _DiscordInteractionCallback,
+    ) -> None:
+        send_at = (
+            pending.deadline
+            - _INTERACTION_RESPONSE_WINDOW_SECONDS
+            + _INTERACTION_AUTO_ACK_DELAY
+        )
+        try:
+            async with timeout_at(send_at):
+                await pending.ready.wait()
+        except TimeoutError:
+            pass
+        pending.claimed = True
+        failure: Exception | None = None
+        if pending.request is not None:
+            try:
+                self._ensure_interaction_deadline(send_at)
+                async with timeout_at(send_at):
+                    response = await self._perform_tracked_request(pending.request)
+            except Exception as exc:
+                failure = exc
+            else:
+                if pending.outcome is not None and not pending.outcome.done():
+                    pending.outcome.set_result(response)
+                return
+        fallback = DiscordRequest.model_validate({
+            "method": "POST",
+            "path": path,
+            "json": pending.default_payload,
+            "auth": False,
+        })
+        try:
+            self._ensure_interaction_deadline(pending.deadline)
+            async with timeout_at(pending.deadline):
+                await self._perform_tracked_request(fallback)
+        except Exception as exc:
+            if pending.outcome is not None and not pending.outcome.done():
+                pending.outcome.set_exception(failure or exc)
+            raise
+        if (
+            failure is not None
+            and pending.outcome is not None
+            and not pending.outcome.done()
+        ):
+            pending.outcome.set_exception(failure)
 
     async def _close_interaction_callbacks(self) -> None:
-        tasks = tuple(self._interaction_callback_tasks.values())
+        tasks = tuple(
+            pending.task
+            for pending in self._interaction_callbacks.values()
+            if pending.task is not None
+        )
         for task in tasks:
             task.cancel()
         await gather(*tasks, return_exceptions=True)
-        self._interaction_callback_tasks.clear()
+        self._interaction_callbacks.clear()
 
     def _event_from_dispatch(
         self,

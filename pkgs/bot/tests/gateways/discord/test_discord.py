@@ -27,6 +27,7 @@ from bot.gateways.discord import (
     DiscordGuildMemberEvent,
     DiscordHelloData,
     DiscordIntent,
+    DiscordInteraction,
     DiscordMessage,
     DiscordNoContent,
     DiscordPayload,
@@ -124,6 +125,30 @@ def test_strict_boundaries_and_secret_repr() -> None:
         DiscordReady.model_validate({**ready, "shard": [1, 1]})
     with pytest.raises(ValidationError):
         DiscordGuildMemberEvent.model_validate({"guild_id": "1", "roles": []})
+
+
+@pytest.mark.parametrize(
+    ("interaction_type", "data"),
+    [
+        (2, None),
+        (3, {"custom_id": "button"}),
+        (4, {"id": "12", "name": "query"}),
+        (5, {"custom_id": "modal"}),
+    ],
+)
+def test_interaction_types_require_their_minimum_data(
+    interaction_type: int,
+    data: object,
+) -> None:
+    with pytest.raises(ValidationError, match="incomplete data"):
+        DiscordInteraction.model_validate({
+            "id": "10",
+            "application_id": "11",
+            "type": interaction_type,
+            "data": data,
+            "token": CREDENTIAL,
+            "version": 1,
+        })
 
 
 async def test_default_connector_accepts_unbounded_official_gateway_frames(
@@ -246,6 +271,44 @@ async def test_form_fields_multipart_requires_flat_json() -> None:
             "files": [{"field": "file", "filename": "a", "data": b"a"}],
             "multipart": "form_fields",
         })
+    with pytest.raises(ValidationError, match="part names must be unique"):
+        DiscordRequest.model_validate({
+            "method": "POST",
+            "path": "/guilds/1/stickers",
+            "json": {"name": "wave"},
+            "files": [{"field": "name", "filename": "a", "data": b"a"}],
+            "multipart": "form_fields",
+        })
+    with pytest.raises(ValidationError, match="part names must be unique"):
+        DiscordRequest.model_validate({
+            "method": "POST",
+            "path": "/channels/1/messages",
+            "files": [{"field": "payload_json", "filename": "a", "data": b"a"}],
+        })
+
+
+async def test_bad_gateway_retries_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mocked_sleep = AsyncMock()
+    monkeypatch.setattr(discord_module, "sleep", mocked_sleep)
+    recovered_pool = Pool(response(502, body=b"bad gateway"), response(200, {}))
+
+    result = await client(recovered_pool).request_discord("GET", "/gateway/bot")
+
+    assert isinstance(result, DiscordPayload)
+    assert len(recovered_pool.requests) == 2
+    failed_pool = Pool(*(response(502, body=b"bad gateway") for _ in range(5)))
+    with pytest.raises(DiscordAPIError, match="502"):
+        await client(failed_pool).request_discord("GET", "/gateway/bot")
+    assert len(failed_pool.requests) == 5
+    assert [call.args[0] for call in mocked_sleep.await_args_list] == [
+        1.0,
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+    ]
 
 
 async def test_public_gateway_lifecycle_can_restart(
@@ -788,7 +851,7 @@ async def test_reconnect_heartbeat_and_shutdown_close_codes(
     assert shutdown.close_code == 1000
 
 
-async def test_server_heartbeat_request_starts_a_fresh_ack_window(
+async def test_server_heartbeat_request_preserves_the_periodic_schedule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = Clock()
@@ -821,7 +884,7 @@ async def test_server_heartbeat_request_starts_a_fresh_ack_window(
         with pytest.raises(ConnectionError, match="requested reconnect"):
             await gateway()._read_websocket(websocket)
 
-    assert waits == [30.0, 9.0, 10.0]
+    assert waits == [30.0, 9.0, 1.0]
 
 
 @pytest.mark.parametrize(
@@ -919,6 +982,25 @@ async def test_sequence_commit_and_public_message_actions() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("action", "data"),
+    [
+        ("set_guild_name", {"guild_id": "1", "guild_name": "x"}),
+        ("set_guild_name", {"guild_id": "1", "guild_name": " guild"}),
+        ("set_channel_name", {"channel_id": "1", "channel_name": ""}),
+        ("set_channel_name", {"channel_id": "1", "channel_name": "x" * 101}),
+    ],
+)
+async def test_common_name_actions_validate_discord_boundaries(
+    action: str,
+    data: dict[str, object],
+) -> None:
+    instance = gateway()
+
+    with pytest.raises(ValidationError):
+        await instance._common_action(action, data)
+
+
 def test_message_model_is_strict_but_accepts_new_fields() -> None:
     parsed = DiscordMessage.model_validate({**message(), "future_field": True})
     assert parsed.model_extra == {"future_field": True}
@@ -936,17 +1018,16 @@ async def test_interaction_fallback_survives_a_full_event_queue(
         raise QueueFull
 
     instance.enqueue_event = full  # ty: ignore[invalid-assignment]
-    mocked_sleep = AsyncMock()
-    monkeypatch.setattr(discord_module, "sleep", mocked_sleep)
+    monkeypatch.setattr(discord_module, "_INTERACTION_AUTO_ACK_DELAY", 0.0)
     try:
         with pytest.raises(ConnectionError, match="queue is full"):
             await instance._receive_dispatch(interaction())
 
-        task = next(iter(instance._interaction_callback_tasks.values()))
+        pending = next(iter(instance._interaction_callbacks.values()))
+        assert pending.task is not None
         async with timeout(1):
-            await task
+            await pending.task
         assert instance._seq is None
-        mocked_sleep.assert_awaited_once_with(pytest.approx(2.0, rel=0.1))
         _, url, kwargs = pool.requests[0]
         assert url.endswith(f"/interactions/10/{CREDENTIAL}/callback")
         assert kwargs["json"] == {"type": 5}
@@ -970,13 +1051,39 @@ async def test_interaction_fallback_io_obeys_the_absolute_deadline() -> None:
 
     pool = BlockingPool()
     instance = gateway(pool)
+    path = "/interactions/1/secret/callback"
     deadline = discord_module.get_running_loop().time() + 0.01
+    pending = discord_module._DiscordInteractionCallback({"type": 5}, deadline)
+    instance._interaction_callbacks[path] = pending
+    pending.task = create_task(instance._run_interaction_callback(path, pending))
     async with timeout(1):
-        await instance._auto_acknowledge_interaction(
-            "/interactions/1/secret/callback",
-            {"type": 5},
-            deadline,
-        )
+        await pending.task
+    assert len(pool.requests) == 1
+    assert instance._interaction_callbacks == {}
+
+
+async def test_interaction_callbacks_do_not_start_after_deadlines() -> None:
+    pool = Pool(response(204))
+    instance = gateway(pool)
+    now = discord_module.get_running_loop().time()
+    path = "/interactions/1/secret/callback"
+    pending = discord_module._DiscordInteractionCallback(
+        {"type": 5},
+        now + 0.5,
+        request=DiscordRequest(method="POST", path=path, json={"type": 4}),
+        outcome=discord_module.Future(),
+    )
+    pending.ready.set()
+
+    await instance._run_interaction_callback(path, pending)
+
+    assert pending.outcome is not None
+    with pytest.raises(TimeoutError):
+        pending.outcome.result()
+    assert [request[2]["json"] for request in pool.requests] == [{"type": 5}]
+
+    expired = discord_module._DiscordInteractionCallback({"type": 5}, now - 1)
+    await instance._run_interaction_callback(path, expired)
     assert len(pool.requests) == 1
 
 
@@ -1050,7 +1157,9 @@ async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
         pool.release.set()
 
 
-async def test_rest_caches_are_bounded_and_programming_errors_stay_visible() -> None:
+async def test_rest_caches_are_bounded_and_programming_errors_stay_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class BucketPool(Pool):
         async def request(
             self,
@@ -1065,10 +1174,12 @@ async def test_rest_caches_are_bounded_and_programming_errors_stay_visible() -> 
                 headers={"X-RateLimit-Bucket": "invites"},
             )
 
+    monkeypatch.setattr(discord_module, "_RATE_BUCKET_PRUNE_THRESHOLD", 2)
     rest = client(BucketPool())
     for index in range(discord_module._RATE_BUCKET_PRUNE_THRESHOLD + 5):
         await rest.request_discord("GET", f"/invites/code-{index}")
     assert len(rest._route_buckets) == discord_module._RATE_BUCKET_PRUNE_THRESHOLD
+    assert len(rest._rate_buckets) == 1
 
     class FailingPool(Pool):
         def __init__(self, error: Exception) -> None:
@@ -1194,26 +1305,63 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
     assert bot_headers["Authorization"] == "Bot token"
 
 
-async def test_explicit_interaction_response_cancels_scheduled_fallback(
+async def test_proactive_global_limit_separates_lanes_and_exempts_interactions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = Event()
+    clock = Clock()
+    reactive_delays: list[float] = []
 
-    async def block_fallback(_: float) -> None:
-        started.set()
-        await Event().wait()
+    class ExpiringTimeout:
+        def __init__(self, delay: float) -> None:
+            self.delay = delay
 
+        async def __aenter__(self) -> None:
+            clock.now += self.delay
+            if reactive_delays:
+                rest._global_ready_at["bot"] = clock.now + reactive_delays.pop()
+            raise TimeoutError
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object,
+        ) -> None:
+            pass
+
+    monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
+    monkeypatch.setattr(discord_module, "timeout", ExpiringTimeout)
+    rest = client(Pool())
+
+    for _ in range(discord_module._MAX_GLOBAL_REST_REQUESTS + 1):
+        await rest._wait_for_global_limit("bot")
+    assert clock.now == pytest.approx(1.0)
+    for _ in range(discord_module._MAX_GLOBAL_REST_REQUESTS + 1):
+        await rest._wait_for_global_limit("authless")
+    assert clock.now == pytest.approx(2.0)
+    for _ in range(100):
+        await rest._wait_for_global_limit("interaction")
+    assert clock.now == pytest.approx(2.0)
+
+    rest._global_send_times["bot"].clear()
+    rest._global_send_times["bot"].extend(
+        [clock.now] * discord_module._MAX_GLOBAL_REST_REQUESTS
+    )
+    reactive_delays.append(2.0)
+    await rest._wait_for_global_limit("bot")
+    assert clock.now == pytest.approx(5.0)
+
+
+async def test_explicit_interaction_response_has_one_owner() -> None:
     pool = Pool(response(204))
     instance = gateway(pool)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
-    monkeypatch.setattr(discord_module, "sleep", block_fallback)
     path = f"/interactions/10/{CREDENTIAL}/callback"
 
     try:
         await instance._receive_dispatch(interaction())
-        fallback = instance._interaction_callback_tasks[path]
-        async with timeout(1):
-            await started.wait()
+        pending = instance._interaction_callbacks[path]
+        assert pending.task is not None
         connection = instance.connection_for(instance._self)
         result = await connection.action(
             "discord.request",
@@ -1221,24 +1369,153 @@ async def test_explicit_interaction_response_cancels_scheduled_fallback(
             path=path,
             json={"type": 4},
         )
-        assert fallback.cancelled()
+        await pending.task
         assert isinstance(result, DiscordNoContent)
         assert pool.requests[0][2]["json"] == {"type": 4}
-        with pytest.raises(RuntimeError, match="already claimed"):
-            await connection.action(
+        assert len(pool.requests) == 1
+        assert instance._interaction_callbacks == {}
+    finally:
+        await instance.close()
+
+
+@pytest.mark.parametrize("cancel_caller", [False, True])
+async def test_failed_or_cancelled_interaction_response_falls_back(
+    cancel_caller: bool,
+) -> None:
+    started = Event()
+    release = Event()
+
+    class FailingOncePool(Pool):
+        async def request(
+            self,
+            method: str,
+            url: str,
+            **kwargs: object,
+        ) -> AsyncHTTPResponse:
+            self.requests.append((method, url, kwargs))
+            if len(self.requests) == 1:
+                started.set()
+                await release.wait()
+                msg = "failed"
+                raise HTTPError(msg)
+            return response(204)
+
+    pool = FailingOncePool()
+    instance = gateway(pool)
+    instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
+    path = f"/interactions/10/{CREDENTIAL}/callback"
+
+    try:
+        await instance._receive_dispatch(interaction())
+        pending = instance._interaction_callbacks[path]
+        assert pending.task is not None
+        connection = instance.connection_for(instance._self)
+        caller = create_task(
+            connection.action(
                 "discord.request",
                 method="POST",
                 path=path,
                 json={"type": 4},
             )
-        assert len(pool.requests) == 1
+        )
+        async with timeout(1):
+            await started.wait()
+        if cancel_caller:
+            caller.cancel()
+            with pytest.raises(CancelledError):
+                await caller
+        release.set()
+        if not cancel_caller:
+            with pytest.raises(ConnectionError, match="transport failed"):
+                await caller
+        async with timeout(1):
+            await pending.task
+        assert [request[2]["json"] for request in pool.requests] == [
+            {"type": 4},
+            {"type": 5},
+        ]
+        assert instance._interaction_callbacks == {}
     finally:
         await instance.close()
 
 
-async def test_close_cancels_and_awaits_interaction_fallback(
+async def test_slow_interaction_response_is_cancelled_then_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    started = Event()
+
+    class BlockingPool(Pool):
+        async def request(
+            self,
+            method: str,
+            url: str,
+            **kwargs: object,
+        ) -> AsyncHTTPResponse:
+            self.requests.append((method, url, kwargs))
+            if len(self.requests) == 1:
+                started.set()
+                await Event().wait()
+            return response(204)
+
+    pool = BlockingPool()
+    instance = gateway(pool)
+    instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
+    monkeypatch.setattr(discord_module, "_INTERACTION_AUTO_ACK_DELAY", 0.01)
+    path = f"/interactions/10/{CREDENTIAL}/callback"
+
+    try:
+        await instance._receive_dispatch(interaction())
+        pending = instance._interaction_callbacks[path]
+        connection = instance.connection_for(instance._self)
+        async with timeout(1):
+            with pytest.raises(TimeoutError):
+                await connection.action(
+                    "discord.request",
+                    method="POST",
+                    path=path,
+                    json={"type": 4},
+                )
+        assert pending.task is not None
+        await pending.task
+        assert [request[2]["json"] for request in pool.requests] == [
+            {"type": 4},
+            {"type": 5},
+        ]
+        assert started.is_set()
+    finally:
+        await instance.close()
+
+
+async def test_callback_after_fallback_uses_discord_server_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = Pool(
+        response(204),
+        response(400, {"code": 10062, "message": "Unknown interaction"}),
+    )
+    instance = gateway(pool)
+    instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
+    monkeypatch.setattr(discord_module, "_INTERACTION_AUTO_ACK_DELAY", 0.0)
+    path = f"/interactions/10/{CREDENTIAL}/callback"
+
+    try:
+        await instance._receive_dispatch(interaction())
+        pending = instance._interaction_callbacks[path]
+        assert pending.task is not None
+        await pending.task
+        with pytest.raises(DiscordAPIError, match="10062"):
+            await instance.connection_for(instance._self).action(
+                "discord.request",
+                method="POST",
+                path=path,
+                json={"type": 4},
+            )
+        assert len(pool.requests) == 2
+    finally:
+        await instance.close()
+
+
+async def test_close_cancels_owner_and_waiting_interaction_response() -> None:
     started = Event()
     finished = Event()
 
@@ -1260,15 +1537,28 @@ async def test_close_cancels_and_awaits_interaction_fallback(
     pool = BlockingPool()
     instance = gateway(pool)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
-    monkeypatch.setattr(discord_module, "sleep", AsyncMock())
+    path = f"/interactions/10/{CREDENTIAL}/callback"
 
     try:
         await instance._receive_dispatch(interaction())
+        pending = instance._interaction_callbacks[path]
+        assert pending.task is not None
+        response_task = create_task(
+            instance.connection_for(instance._self).action(
+                "discord.request",
+                method="POST",
+                path=path,
+                json={"type": 4},
+            )
+        )
         async with timeout(1):
             await started.wait()
             await instance.close()
+        with pytest.raises(CancelledError):
+            await response_task
+        assert pending.task.cancelled()
         assert finished.is_set()
-        assert instance._interaction_callback_tasks == {}
+        assert instance._interaction_callbacks == {}
         assert len(pool.requests) == 1
     finally:
         await instance.close()
