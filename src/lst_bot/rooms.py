@@ -35,23 +35,13 @@ def format_lobby_data(data: RoomData) -> str:
 
 
 def parse_room_ids(value: str) -> list[int]:
-    items = [item.strip() for item in value.split(",") if item.strip()]
-    if not items:
-        msg = "room ids are required"
+    try:
+        room_ids = list(dict.fromkeys(map(int, value.split(","))))
+    except ValueError:
+        room_ids = []
+    if not room_ids or min(room_ids) <= 0:
+        msg = "room ids must be comma-separated positive integers"
         raise ValueError(msg)
-
-    room_ids: list[int] = []
-    for item in items:
-        if "-" not in item:
-            room_ids.append(int(item))
-            continue
-
-        start, end = map(int, item.split("-", maxsplit=1))
-        if start > end:
-            msg = f"invalid room id range: {item}"
-            raise ValueError(msg)
-        room_ids.extend(range(start, end + 1))
-
     return room_ids
 
 
@@ -88,7 +78,7 @@ def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
     except ValueError:
-        return f"用法：{cmd.raw} 1,2,4-6"
+        return f"用法：{cmd.raw} 1,2,4"
 
     lc.send_console_command(room_ids, "c_save()")
     return f"已存档 {room_ids}"
@@ -101,7 +91,7 @@ def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
         room_ids = parse_room_ids(room_ids_text)
         days = int(days_text)
     except ValueError:
-        return f"用法：{cmd.raw} 1,2,4-6 2"
+        return f"用法：{cmd.raw} 1,2,4 2"
 
     lc.send_console_command(room_ids, f"c_rollback({days})")
     return f"已回档 {days} 天 {room_ids}"
@@ -112,7 +102,7 @@ def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
     except ValueError:
-        return f"用法：{cmd.raw} 1,2,4-6"
+        return f"用法：{cmd.raw} 1,2,4"
 
     try:
         lc.restart_rooms(room_ids)
@@ -130,7 +120,7 @@ def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
     except ValueError:
-        return f"用法：{cmd.raw} 1,2,4-6"
+        return f"用法：{cmd.raw} 1,2,4"
 
     lc.send_console_command(room_ids, "c_regenerateworld()")
     return f"已重置 {room_ids}"

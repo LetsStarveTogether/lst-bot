@@ -26,9 +26,9 @@ from lst_bot.settings import Settings
     [
         ("1", [1]),
         ("1, 3,5", [1, 3, 5]),
-        ("1,3-5,8", [1, 3, 4, 5, 8]),
+        ("1,3,1,5", [1, 3, 5]),
     ],
-    ids=("single", "list", "list-and-range"),
+    ids=("single", "list", "stable-deduplication"),
 )
 def test_parse_room_ids(value: str, expected: list[int]) -> None:
     assert parse_room_ids(value) == expected
@@ -36,8 +36,8 @@ def test_parse_room_ids(value: str, expected: list[int]) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["  , ", "3-1"],
-    ids=("empty", "descending"),
+    ["  , ", "1-3", "0", "-1", "1,,2"],
+    ids=("empty", "range", "zero", "negative", "empty-item"),
 )
 def test_parse_room_ids_rejects_invalid_input(value: str) -> None:
     with pytest.raises(ValueError, match="room id"):
@@ -83,28 +83,28 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     [
         (
             save_room,
-            "1,3-4",
+            "1,3,4",
             "send_console_command",
             ([1, 3, 4], "c_save()"),
             "已存档 [1, 3, 4]",
         ),
         (
             rollback_room,
-            "1,3-4 2",
+            "1,3,4 2",
             "send_console_command",
             ([1, 3, 4], "c_rollback(2)"),
             "已回档 2 天 [1, 3, 4]",
         ),
         (
             restart_room,
-            "1,3-4",
+            "1,3,4",
             "restart_rooms",
             ([1, 3, 4],),
             "已重启 [1, 3, 4]",
         ),
         (
             regenerate_room,
-            "1,3-4",
+            "1,3,4",
             "send_console_command",
             ([1, 3, 4], "c_regenerateworld()"),
             "已重置 [1, 3, 4]",
