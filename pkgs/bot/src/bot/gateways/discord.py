@@ -250,7 +250,7 @@ class DiscordAttachment(Model):
 
 
 class DiscordMessageReference(Model):
-    type: NonNegativeInt | None = None
+    type: Literal[0, 1] | None = None
     message_id: Snowflake | None = None
     channel_id: Snowflake | None = None
     guild_id: Snowflake | None = None
@@ -2286,8 +2286,8 @@ class DiscordGateway(Gateway, DiscordRestClient):
         message: DiscordMessage,
         raw_data: JsonValue,
     ) -> MessageEvent:
-        reference = message.message_reference
-        referenced = message.referenced_message
+        reference = _discord_reply_reference(message)
+        referenced = message.referenced_message if reference is not None else None
         reply_text = None
         if referenced is not None:
             reply_text = referenced.content
@@ -2397,12 +2397,27 @@ class DiscordGateway(Gateway, DiscordRestClient):
 
 
 _MENTION_PATTERN = compile_regex(r"<@!?(?P<user>[0-9]{1,20})>|@(?P<all>everyone|here)")
+_REPLY_MESSAGE_TYPE = 19
+_VOICE_MESSAGE_FLAG = 1 << 13
+
+
+def _discord_reply_reference(
+    message: DiscordMessage,
+) -> DiscordMessageReference | None:
+    reference = message.message_reference
+    return (
+        reference
+        if message.type == _REPLY_MESSAGE_TYPE
+        and reference is not None
+        and reference.type in {None, 0}
+        else None
+    )
 
 
 def _discord_message(message: DiscordMessage) -> Msg:  # ruff: ignore[complex-structure, too-many-branches]
     segments: list[dict[str, object]] = []
-    referenced = message.referenced_message
-    reference = message.message_reference
+    reference = _discord_reply_reference(message)
+    referenced = message.referenced_message if reference is not None else None
     if referenced is not None:
         segments.append({
             "type": "reply",
@@ -2448,7 +2463,9 @@ def _discord_message(message: DiscordMessage) -> Msg:  # ruff: ignore[complex-st
         if content_type.startswith("image/"):
             segment_type = "image"
         elif content_type.startswith("audio/"):
-            segment_type = "audio"
+            segment_type = (
+                "voice" if (message.flags or 0) & _VOICE_MESSAGE_FLAG else "audio"
+            )
         elif content_type.startswith("video/"):
             segment_type = "video"
         else:

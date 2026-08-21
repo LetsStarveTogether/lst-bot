@@ -440,6 +440,7 @@ async def test_gateway_start_reaps_finished_task(
 async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
     incoming_message = {
         **message(),
+        "type": 19,
         "message_reference": {"message_id": "9"},
         "referenced_message": message(message_id="9", content="previous"),
     }
@@ -509,6 +510,33 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
         "op": 6,
         "d": {"token": "token", "session_id": "session", "seq": 3},
     }
+
+
+def test_message_conversion_distinguishes_forward_and_voice() -> None:
+    incoming = DiscordMessage.model_validate({
+        **message(),
+        "flags": 1 << 13,
+        "message_reference": {"type": 1, "message_id": "9"},
+        "referenced_message": message(message_id="9", content="forwarded"),
+        "attachments": [
+            {
+                "id": "4",
+                "filename": "voice.ogg",
+                "content_type": "audio/ogg",
+                "size": 4,
+                "url": "https://cdn.discord.example/voice.ogg",
+                "proxy_url": "https://proxy.discord.example/voice.ogg",
+                "duration_secs": 1.0,
+                "waveform": "AA==",
+            }
+        ],
+    })
+
+    assert [segment.type for segment in discord_module._discord_message(incoming)] == [
+        "text",
+        "mention",
+        "voice",
+    ]
 
 
 async def test_dispatch_models_commit_only_valid_session_and_rate_state(
