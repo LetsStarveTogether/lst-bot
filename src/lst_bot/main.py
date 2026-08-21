@@ -1,23 +1,22 @@
+import asyncio
 import logging
-from asyncio import Event as AsyncEvent
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from functools import partial
-from typing import Any
 
-import uvloop
 from bot import Bot, BotSelf
 from bot.gateways.base import connect_websocket
 from bot.gateways.discord import DiscordGateway, DiscordIntent
 from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAction
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
+from httpx import AsyncClient
 from klei import KleiClient
 from logbook.compat import redirected_logging
 from logbook.more import ColorizedStderrHandler
 from lst import LstClient
+from pydantic_ai import Agent
 from urllib3_future import AsyncProxyManager
 
-from .agent import DstQuestionAgent
+from .agent import REQUEST_TIMEOUT, build_question_agent
 from .general import report
 from .general import router as general_router
 from .question import router as question_router
@@ -25,31 +24,18 @@ from .rooms import router as rooms_router
 from .settings import Settings
 
 
-class Application:
-    def __init__(
-        self,
-        bot: Bot,
-        resources: tuple[AbstractAsyncContextManager[Any], ...] = (),
-    ) -> None:
-        self.bot = bot
-        self.resources = resources
-
-    async def run(self) -> None:
-        async with AsyncExitStack() as stack:
-            for resource in self.resources:
-                await stack.enter_async_context(resource)
-            await stack.enter_async_context(self.bot)
-            await AsyncEvent().wait()
-
-
-def build_application(settings: Settings) -> Application:
+def build_bot(
+    settings: Settings,
+    *,
+    http_pool: AsyncProxyManager,
+    question_agent: Agent,
+) -> Bot:
     bot = Bot(
         admin_ids=settings.bot_admin,
         cmd_prefixes=settings.bot_cmd_prefixes,
         dispatch_timeout=settings.bot_timeout,
         scheduler_timezone=settings.bot_timezone,
     )
-    http_pool = AsyncProxyManager(settings.http_proxy)
     if settings.onebot_ws_url:
         onebot_self = BotSelf(platform="qq", user_id=settings.onebot_self_id)
         bot.add_gateway(
@@ -95,13 +81,6 @@ def build_application(settings: Settings) -> Application:
             )
         )
 
-    question_agent = DstQuestionAgent(
-        openrouter_api_key=settings.openrouter_api_key,
-        dosu_mcp_endpoint=settings.dosu_mcp_endpoint,
-        dosu_api_key=settings.dosu_api_key,
-        http_proxy=settings.http_proxy,
-    )
-
     for instance in (
         settings,
         LstClient(),
@@ -117,10 +96,29 @@ def build_application(settings: Settings) -> Application:
     for router in (general_router, question_router, rooms_router):
         bot.add_router(router)
 
-    return Application(
-        bot,
-        resources=(http_pool, question_agent),
-    )
+    return bot
+
+
+async def run(settings: Settings) -> None:
+    async with (
+        AsyncProxyManager(settings.http_proxy) as http_pool,
+        AsyncClient(
+            proxy=settings.http_proxy or None,
+            timeout=REQUEST_TIMEOUT,
+        ) as model_http_client,
+    ):
+        question_agent = build_question_agent(
+            settings,
+            http_client=model_http_client,
+        )
+        bot = build_bot(
+            settings,
+            http_pool=http_pool,
+            question_agent=question_agent,
+        )
+
+        async with question_agent, bot:
+            await asyncio.Event().wait()
 
 
 def main() -> None:
@@ -131,7 +129,7 @@ def main() -> None:
         redirected_logging(),
         ColorizedStderrHandler(level=settings.log_level).applicationbound(),
     ):
-        uvloop.run(build_application(settings).run())
+        asyncio.run(run(settings))
 
 
 if __name__ == "__main__":

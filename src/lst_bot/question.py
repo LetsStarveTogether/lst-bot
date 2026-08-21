@@ -10,8 +10,7 @@ from bot import (
 )
 from bot.protocol.msg import ReplySegment
 from logbook import Logger
-
-from .agent import DstQuestionAgent
+from pydantic_ai import Agent
 
 GET_MESSAGE_ACTION = "get_msg"
 
@@ -88,12 +87,12 @@ async def ask_dst_question(
     cmd: Injected[Cmd],
     event: Injected[MessageEvent],
     conn: Injected[Connection],
-    agent: Injected[DstQuestionAgent],
+    agent: Injected[Agent],
 ) -> Msg:
     question = await build_question(conn, event, cmd.arg)
     if not question:
         answer = f"用法：{cmd.raw} 《饥荒联机版》相关问题"
     else:
-        answer = await agent.answer(question)
+        answer = (await agent.run(question)).output
 
     return Msg.reply(event.message_id, answer, user_id=event.user_id)

@@ -1,92 +1,43 @@
-from asyncio import CancelledError, Event, create_task, timeout
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import override
+from typing import Never
 from zoneinfo import ZoneInfo
 
 import pytest
-from bot import Bot, BotSelf, Gateway
+from bot import BotSelf
 from bot.gateways.discord import DiscordGateway, DiscordIntent
 from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
+from httpx import AsyncClient
 from klei import KleiClient
 from pydantic import SecretStr
+from pydantic_ai import Agent
+from pydantic_ai.models.test import TestModel
+from urllib3_future import AsyncProxyManager
 
-from lst_bot.main import Application, build_application
+from lst_bot.main import build_bot, run
 from lst_bot.settings import Settings
 
 
-@asynccontextmanager
-async def resource(
-    name: str,
-    events: list[str],
-    *,
-    fail: bool = False,
-) -> AsyncIterator[None]:
-    events.append(f"{name}:start")
-    if fail:
-        msg = "startup failed"
+async def test_run_closes_model_client_when_agent_build_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[AsyncClient] = []
+
+    def fail(_settings: Settings, *, http_client: AsyncClient) -> Never:
+        clients.append(http_client)
+        msg = "build failed"
         raise RuntimeError(msg)
-    try:
-        yield
-    finally:
-        events.append(f"{name}:close")
+
+    monkeypatch.setattr("lst_bot.main.build_question_agent", fail)
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        await run(Settings(_env_file=None))
+
+    assert clients[0].is_closed
 
 
-async def test_application_starts_services_before_bot_and_closes_bot_first() -> None:
-    events: list[str] = []
-    started = Event()
-    bot = Bot()
-
-    class LifecycleGateway(Gateway):
-        @override
-        async def start(self) -> None:
-            events.append("bot:start")
-            started.set()
-
-        @override
-        async def close(self) -> None:
-            events.append("bot:close")
-
-    bot.add_gateway(LifecycleGateway(bot))
-    first = resource("first", events)
-    second = resource("second", events)
-
-    task = create_task(Application(bot, (first, second)).run())
-    async with timeout(1):
-        await started.wait()
-    assert events == ["first:start", "second:start", "bot:start"]
-
-    task.cancel()
-    async with timeout(1):
-        with pytest.raises(CancelledError):
-            await task
-
-    assert events == [
-        "first:start",
-        "second:start",
-        "bot:start",
-        "bot:close",
-        "second:close",
-        "first:close",
-    ]
-
-
-async def test_application_rolls_back_started_services() -> None:
-    events: list[str] = []
-    first = resource("first", events)
-    with pytest.raises(RuntimeError, match="startup failed"):
-        await Application(
-            Bot(),
-            (first, resource("failing", events, fail=True)),
-        ).run()
-
-    assert events == ["first:start", "failing:start", "first:close"]
-
-
-def test_build_application_registers_runtime_settings() -> None:
+def test_build_bot_registers_runtime_settings() -> None:
     timeout = timedelta(minutes=5)
     timezone = ZoneInfo("UTC")
     settings = Settings(
@@ -99,44 +50,48 @@ def test_build_application_registers_runtime_settings() -> None:
         bot_admin={"qq": {"owner"}},
         telegram_bot_token=SecretStr("123:test"),
         discord_bot_token=SecretStr("discord.test"),
-        openrouter_api_key=SecretStr("test"),
-        dosu_mcp_endpoint="http://invalid.test/mcp",
         report_group_id="20000",
     )
+    http_pool = AsyncProxyManager(settings.http_proxy)
+    question_agent = Agent(TestModel())
 
-    application = build_application(settings)
+    bot = build_bot(
+        settings,
+        http_pool=http_pool,
+        question_agent=question_agent,
+    )
 
-    assert application.bot.cmd_prefixes == ("!",)
-    assert application.bot.dispatch_timeout == timeout
-    assert application.bot.scheduler.jobs[0].timezone == timezone
-    assert application.bot.admin_ids == {"qq": frozenset({"owner"})}
-    assert application.bot.container.resolve(Settings) is settings
-    hitokoto = application.bot.container.resolve(HitokotoClient)
-    klei = application.bot.container.resolve(KleiClient)
-    telegram = application.bot.resolve_gateway(TelegramGateway)
-    discord = application.bot.resolve_gateway(DiscordGateway)
+    assert bot.cmd_prefixes == ("!",)
+    assert bot.dispatch_timeout == timeout
+    assert bot.scheduler.jobs[0].timezone == timezone
+    assert bot.admin_ids == {"qq": frozenset({"owner"})}
+    assert bot.container.resolve(Settings) is settings
+    assert bot.container.resolve(Agent) is question_agent
+    hitokoto = bot.container.resolve(HitokotoClient)
+    klei = bot.container.resolve(KleiClient)
+    telegram = bot.resolve_gateway(TelegramGateway)
+    discord = bot.resolve_gateway(DiscordGateway)
     assert isinstance(telegram, TelegramGateway)
     assert isinstance(discord, DiscordGateway)
-    application.bot.resolve_gateway(OneBot11Gateway)
+    bot.resolve_gateway(OneBot11Gateway)
     assert telegram.http_pool is discord.http_pool
     assert telegram.http_pool is hitokoto.http_pool is klei.http_pool
-    assert telegram.http_pool in application.resources
+    assert telegram.http_pool is http_pool
     assert discord.intents == DiscordIntent(settings.discord_intents)
-    (report_job,) = application.bot.scheduler.jobs
+    (report_job,) = bot.scheduler.jobs
     assert report_job.gateway_type is OneBot11Gateway
     assert report_job.self_ == BotSelf(platform="qq", user_id="10000")
 
 
-def test_build_application_skips_unconfigured_gateways_and_report() -> None:
-    application = build_application(
-        Settings(
-            _env_file=None,
-            openrouter_api_key=SecretStr("test"),
-            dosu_mcp_endpoint="http://invalid.test/mcp",
-        )
+def test_build_bot_skips_unconfigured_gateways_and_report() -> None:
+    settings = Settings(_env_file=None)
+    bot = build_bot(
+        settings,
+        http_pool=AsyncProxyManager(settings.http_proxy),
+        question_agent=Agent(TestModel()),
     )
 
     for gateway_type in (OneBot11Gateway, TelegramGateway, DiscordGateway):
         with pytest.raises(LookupError, match="No gateway"):
-            application.bot.resolve_gateway(gateway_type)
-    assert application.bot.scheduler.jobs == ()
+            bot.resolve_gateway(gateway_type)
+    assert bot.scheduler.jobs == ()

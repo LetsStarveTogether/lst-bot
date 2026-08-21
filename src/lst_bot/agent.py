@@ -1,17 +1,16 @@
-from contextlib import AsyncExitStack
 from functools import partial
-from types import TracebackType
-from typing import Final, Self
+from typing import Final
 
 from fastmcp.client.transports import StreamableHttpTransport
 from httpx import AsyncClient
-from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.native_tools import WebSearchTool
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+from .settings import Settings
 
 OPENROUTER_MODEL: Final = "deepseek/deepseek-v4-pro-0813"
 DOSU_API_KEY_HEADER: Final = "X-Dosu-API-Key"
@@ -57,88 +56,35 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 """
 
 
-class DstQuestionAgent:
-    def __init__(
-        self,
-        *,
-        openrouter_api_key: SecretStr,
-        dosu_mcp_endpoint: str,
-        dosu_api_key: SecretStr,
-        http_proxy: str | None = None,
-        agent: Agent | None = None,
-    ) -> None:
-        self._exit_stack: AsyncExitStack | None = None
-        self._closed = False
-        self._http_client: AsyncClient | None = None
-
-        if agent is None:
-            proxy = http_proxy or None
-            self._http_client = AsyncClient(
-                proxy=proxy,
-                timeout=REQUEST_TIMEOUT,
-            )
-            model = OpenRouterModel(
-                OPENROUTER_MODEL,
-                provider=OpenRouterProvider(
-                    api_key=openrouter_api_key.get_secret_value(),
-                    http_client=self._http_client,
+def build_question_agent(
+    settings: Settings,
+    *,
+    http_client: AsyncClient,
+) -> Agent:
+    proxy = settings.http_proxy or None
+    return Agent(
+        OpenRouterModel(
+            OPENROUTER_MODEL,
+            provider=OpenRouterProvider(
+                api_key=settings.openrouter_api_key.get_secret_value(),
+                http_client=http_client,
+            ),
+        ),
+        instructions=DST_AGENT_INSTRUCTIONS,
+        toolsets=[
+            MCPToolset(
+                StreamableHttpTransport(
+                    settings.dosu_mcp_endpoint,
+                    headers={
+                        DOSU_API_KEY_HEADER: settings.dosu_api_key.get_secret_value()
+                    },
+                    httpx_client_factory=(
+                        partial(AsyncClient, proxy=proxy) if proxy is not None else None
+                    ),
                 ),
-            )
-            backend = Agent(
-                model,
-                instructions=DST_AGENT_INSTRUCTIONS,
-                toolsets=[
-                    MCPToolset(
-                        StreamableHttpTransport(
-                            dosu_mcp_endpoint,
-                            headers={
-                                DOSU_API_KEY_HEADER: dosu_api_key.get_secret_value()
-                            },
-                            httpx_client_factory=(
-                                partial(AsyncClient, proxy=proxy)
-                                if proxy is not None
-                                else None
-                            ),
-                        ),
-                        init_timeout=REQUEST_TIMEOUT,
-                        read_timeout=REQUEST_TIMEOUT,
-                    ).filtered(
-                        lambda _, tool_def: tool_def.name == DOSU_MCP_TOOL_NAME,
-                    )
-                ],
-                capabilities=[NativeTool(WebSearchTool())],
-            )
-        else:
-            backend = agent
-        self._agent = backend
-
-    async def __aenter__(self) -> Self:
-        if self._closed:
-            msg = "DstQuestionAgent cannot be restarted after closing"
-            raise RuntimeError(msg)
-        self._closed = True
-
-        async with AsyncExitStack() as stack:
-            if self._http_client is not None:
-                await stack.enter_async_context(self._http_client)
-            await stack.enter_async_context(self._agent)
-            self._exit_stack = stack.pop_all()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool | None:
-        stack, self._exit_stack = self._exit_stack, None
-        if stack is None:
-            return None
-        return await stack.__aexit__(exc_type, exc, traceback)
-
-    async def answer(self, question: str) -> str:
-        if self._exit_stack is None:
-            msg = "DstQuestionAgent must be started before answering"
-            raise RuntimeError(msg)
-        result = await self._agent.run(question)
-        return result.output
+                init_timeout=REQUEST_TIMEOUT,
+                read_timeout=REQUEST_TIMEOUT,
+            ).filtered(lambda _, tool_def: tool_def.name == DOSU_MCP_TOOL_NAME)
+        ],
+        capabilities=[NativeTool(WebSearchTool())],
+    )

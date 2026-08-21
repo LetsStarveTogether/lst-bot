@@ -1,10 +1,9 @@
-from unittest.mock import Mock
-
 import pytest
 from bot import ActionResponse, Bot, Msg
 from bot.testing import RecordingGateway, private_message_event, recording_gateway
+from pydantic_ai import Agent
+from pydantic_ai.models.test import TestModel
 
-from lst_bot.agent import DstQuestionAgent
 from lst_bot.question import (
     build_question,
     message_payload_text,
@@ -69,9 +68,7 @@ async def test_build_question_combines_reply_and_command_text() -> None:
 
 async def test_question_command_sends_reply_from_injected_agent() -> None:
     bot = Bot()
-    agent = Mock(spec_set=DstQuestionAgent)
-    agent.answer.return_value = "答案"
-    bot.container.add_instance(agent, provides=DstQuestionAgent)
+    bot.container.add_instance(Agent(TestModel(custom_output_text="答案")))
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
@@ -81,7 +78,6 @@ async def test_question_command_sends_reply_from_injected_agent() -> None:
             private_message_event("/问 巨鹿什么时候来？"),
         )
 
-    agent.answer.assert_awaited_once_with("用户问题：\n巨鹿什么时候来？")
     action = gateway.actions[0].model_dump(mode="json", by_alias=True)
     assert action["action"] == "send_message"
     assert action["params"]["message"][0]["type"] == "reply"
