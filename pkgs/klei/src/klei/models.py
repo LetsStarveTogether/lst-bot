@@ -60,11 +60,7 @@ _VERSIONS = TypeAdapter(list[OnErrorOmit[Version]])
 
 
 def _parse_versions(value: str) -> list[Version]:
-    return sorted(
-        _VERSIONS.validate_python(HTMLParser(value).css("li.cCmsRecord_row")),
-        key=lambda version: (version.date, version.number),
-        reverse=True,
-    )
+    return _VERSIONS.validate_python(HTMLParser(value).css("li.cCmsRecord_row"))
 
 
 class KleiDataResponse[T](BaseModel):

@@ -46,14 +46,12 @@ class KleiClient:
         access_token: SecretStr,
         *,
         http_pool: AsyncPoolManager,
-        lobby_concurrency: int = 8,
         room_concurrency: int = 24,
         http_timeout: float = 30.0,
     ) -> None:
         self.access_token = access_token
         self.http_timeout = _POSITIVE_FLOAT.validate_python(http_timeout)
         self.http_pool = http_pool
-        self._lobby_slots = Semaphore(_POSITIVE_INT.validate_python(lobby_concurrency))
         self._room_slots = Semaphore(_POSITIVE_INT.validate_python(room_concurrency))
 
     async def get_latest_versions(self) -> list[Version]:
@@ -88,11 +86,10 @@ class KleiClient:
         region: Region,
     ) -> list[LobbyData]:
         url = _LOBBY_URL.format(region=region)
-        async with self._lobby_slots:
-            data = KleiDataResponse[OnErrorOmit[LobbyData]].model_validate_json(
-                await self._request(HTTPMethod.GET, url),
-                context={"region": region},
-            )
+        data = KleiDataResponse[OnErrorOmit[LobbyData]].model_validate_json(
+            await self._request(HTTPMethod.GET, url),
+            context={"region": region},
+        )
         return data.rows
 
     async def _get_single_room(
@@ -107,7 +104,7 @@ class KleiClient:
             "query": {"__rowId": row_id},
         }
         async with self._room_slots:
-            data = KleiDataResponse[OnErrorOmit[RoomData]].model_validate_json(
+            data = KleiDataResponse[RoomData].model_validate_json(
                 await self._request(HTTPMethod.POST, url, json=payload),
             )
         return data.rows[0] if data.rows else None

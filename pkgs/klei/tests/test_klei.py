@@ -1,9 +1,9 @@
 import json as jsonlib
-from asyncio import Event, TaskGroup, timeout
+from asyncio import Event, timeout
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, cast, override
+from typing import Any, cast
 
 import pytest
 from klei import (
@@ -98,28 +98,6 @@ class RecordingPool:
         return response
 
 
-class BlockingPool(RecordingPool):
-    def __init__(self, routes: Mapping[str, bytes | Reply], limit: int) -> None:
-        super().__init__(routes)
-        self.limit = limit
-        self.active = 0
-        self.max_active = 0
-        self.saturated = Event()
-        self.release = Event()
-
-    @override
-    async def request(self, *args: Any, **kwargs: Any) -> Any:
-        self.active += 1
-        self.max_active = max(self.max_active, self.active)
-        if self.active == self.limit:
-            self.saturated.set()
-        try:
-            await self.release.wait()
-            return await super().request(*args, **kwargs)
-        finally:
-            self.active -= 1
-
-
 def lobby_row(row_id: str = "row-1") -> dict[str, JsonValue]:
     return {
         "__rowId": row_id,
@@ -152,13 +130,11 @@ def rows_payload(rows: list[JsonValue]) -> bytes:
 def client(
     pool: RecordingPool,
     *,
-    lobby_concurrency: int = 8,
     room_concurrency: int = 24,
     http_timeout: float = 1.0,
 ) -> KleiClient:
     return KleiClient(
         access_token=SecretStr("test-token"),
-        lobby_concurrency=lobby_concurrency,
         room_concurrency=room_concurrency,
         http_timeout=http_timeout,
         http_pool=cast("AsyncPoolManager", pool),
@@ -170,10 +146,11 @@ async def test_client_reads_only_consumed_version_fields() -> None:
 
     versions = await client(pool).get_latest_versions()
 
-    assert [version.number for version in versions] == [736959, 736805]
-    assert versions[0].type is VersionType.RELEASE
-    assert versions[0].date == date(2026, 6, 11)
-    assert set(versions[0].model_dump()) == {"number", "type", "date"}
+    versions_by_number = {version.number: version for version in versions}
+    assert set(versions_by_number) == {736805, 736959}
+    assert versions_by_number[736959].type is VersionType.RELEASE
+    assert versions_by_number[736959].date == date(2026, 6, 11)
+    assert set(versions_by_number[736959].model_dump()) == {"number", "type", "date"}
     assert pool.calls == [
         {
             "method": "GET",
@@ -192,7 +169,7 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
             lobby_row() | {"season": "mild", "region": "eu-west-1"},
             {"__rowId": "invalid"},
         ]),
-        room_url: rows_payload([{"__rowId": "invalid"}, room_row()]),
+        room_url: rows_payload([room_row()]),
     })
 
     value = client(pool)
@@ -226,6 +203,18 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
     assert pool.calls[1]["redirect"] is False
 
 
+async def test_client_rejects_malformed_room_details() -> None:
+    region = "us-east-1"
+    pool = RecordingPool({
+        ROOM_URL.format(region=region): rows_payload([
+            room_row() | {"port": "10999"},
+        ]),
+    })
+
+    with pytest.RaisesGroup(ValidationError):
+        await client(pool).get_room_data((("row-1", region),))
+
+
 async def test_non_success_http_status_consumes_body_before_failing() -> None:
     pool = RecordingPool({VERSION_URL: Reply(VERSION_HTML.encode(), status=500)})
 
@@ -249,14 +238,14 @@ async def test_request_has_wall_clock_timeout(stage: str) -> None:
     async with timeout(1):
         with pytest.raises(TimeoutError):
             await client(pool, http_timeout=0.01).get_latest_versions()
+    if stage == "body":
+        assert pool.responses[0].body_accessed
 
 
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"lobby_concurrency": 0},
         {"room_concurrency": 0},
-        {"lobby_concurrency": True},
         {"room_concurrency": 1.0},
         {"http_timeout": 0},
         {"http_timeout": float("nan")},
@@ -270,26 +259,6 @@ def test_client_limits_are_strict_positive_finite(kwargs: Any) -> None:
             http_pool=cast("AsyncPoolManager", RecordingPool({})),
             **kwargs,
         )
-
-
-async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
-    regions = ("us-east-1", "eu-central-1", "sa-east-1", "ca-central-1")
-    routes: dict[str, bytes] = {
-        LOBBY_URL.format(region=region): rows_payload([]) for region in regions
-    }
-    pool = BlockingPool(routes, limit=2)
-
-    value = client(pool, lobby_concurrency=2)
-    async with TaskGroup() as tasks:
-        first = tasks.create_task(value.get_lobby_data(regions=regions[:2]))
-        second = tasks.create_task(value.get_lobby_data(regions=regions[2:]))
-        async with timeout(1):
-            await pool.saturated.wait()
-        assert pool.max_active == 2
-        pool.release.set()
-
-    assert first.result() == second.result() == []
-    assert len(pool.calls) == 4
 
 
 def test_response_envelope_and_consumed_fields_are_validated() -> None:
