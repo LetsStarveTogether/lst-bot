@@ -27,6 +27,7 @@ from bot.gateways.onebot11 import (
 )
 from pydantic import JsonValue, RootModel
 from urllib3_future import AsyncPoolManager
+from websockets.asyncio.server import Server
 
 from tests.gateways.support import ActionServer
 
@@ -155,6 +156,32 @@ async def test_start_and_cleanup_failures_close_owned_http_pool() -> None:
     clear.assert_awaited_once()
     assert gateway.http_pool is None
     assert gateway._started is False  # ruff: ignore[private-member-access]
+
+
+async def test_restart_finishes_cleanup_before_opening_transports() -> None:
+    gateway = OneBot11Gateway(
+        Bot(),
+        ingress=[ReverseWebSocket(port=0)],
+        action=HttpAction("http://onebot.example"),
+    )
+    start_reverse_websocket = gateway._start_reverse_websocket  # ruff: ignore[private-member-access]
+    cleanup = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None])
+
+    async def observe_restart(ingress: ReverseWebSocket) -> Server:
+        assert cleanup.await_count == 2
+        assert gateway.http_pool is not None
+        return await start_reverse_websocket(ingress)
+
+    with (
+        patch.object(gateway, "_close_transports", cleanup),
+        patch.object(gateway, "_start_reverse_websocket", observe_restart),
+    ):
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await gateway.close()
+        await gateway.start()
+
+    assert gateway.reverse_websocket_ports
+    await gateway.close()
 
 
 async def test_http_action_timeout_covers_response_body() -> None:

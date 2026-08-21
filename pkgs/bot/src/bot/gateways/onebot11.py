@@ -559,6 +559,10 @@ class OneBot11Gateway(Gateway):
         async with self._lifecycle_lock:
             if self._started:
                 return
+            if self._closing:
+                await self._finish_close()
+            if self._owns_http_pool and self.http_pool is None:
+                self.http_pool = AsyncPoolManager()
             self._closing = False
             try:
                 for ingress in self.ingress:
@@ -581,8 +585,6 @@ class OneBot11Gateway(Gateway):
                         [startup_error, cleanup_error],
                     ) from None
                 raise
-            if self._owns_http_pool and self.http_pool is None:
-                self.http_pool = AsyncPoolManager()
             self._started = True
 
     @override
