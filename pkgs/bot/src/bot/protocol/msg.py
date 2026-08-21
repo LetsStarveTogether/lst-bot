@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Annotated, Literal, Self, cast, override
+from typing import Annotated, Literal, Self, override
 
 from pydantic import (
     BeforeValidator,
@@ -21,7 +21,7 @@ from .enums import MsgSegmentType
 
 def _tag_value(value: object, key: str) -> object:
     if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value).get(key)
+        return value.get(key)
     return getattr(value, key, None)
 
 

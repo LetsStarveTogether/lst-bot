@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from pydantic import (
     Field,
@@ -243,7 +243,7 @@ class StatusUpdateMetaEvent(MetaEvent):
 
 def _field_value(value: object, key: str) -> object:
     if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value).get(key)
+        return value.get(key)
     return getattr(value, key, None)
 
 

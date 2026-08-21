@@ -1,7 +1,7 @@
 from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
 from collections.abc import Mapping
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     AliasChoices,
@@ -222,7 +222,7 @@ class ActionResponse(Model):
 
 def _field_value(value: object, key: str) -> object:
     if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value).get(key)
+        return value.get(key)
     return getattr(value, key, None)
 
 
