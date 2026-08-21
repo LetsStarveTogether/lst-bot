@@ -212,8 +212,7 @@ class Bot(EventRouter):
         self._reject_lifecycle_reentry()
         self._lifecycle_started = True
         async with self._lifecycle_lock:
-            token = _CURRENT_LIFECYCLE.set(self)
-            try:
+            with _CURRENT_LIFECYCLE.set(self):
                 if self._pending_cleanup:
                     msg = "Bot shutdown is incomplete; call close() again"
                     raise RuntimeError(msg)
@@ -228,8 +227,6 @@ class Bot(EventRouter):
                     )
                     raise
                 self._running.set()
-            finally:
-                _CURRENT_LIFECYCLE.reset(token)
 
     async def close(self) -> None:
         if _CURRENT_DISPATCHER.get() is self:
@@ -240,8 +237,7 @@ class Bot(EventRouter):
             raise RuntimeError(msg)
         self._reject_lifecycle_reentry()
         async with self._lifecycle_lock:
-            token = _CURRENT_LIFECYCLE.set(self)
-            try:
+            with _CURRENT_LIFECYCLE.set(self):
                 if not self._running.is_set() and not self._pending_cleanup:
                     return
                 self._running.clear()
@@ -253,8 +249,6 @@ class Bot(EventRouter):
                 failed, errors = await self._run_cleanup(self._pending_cleanup)
                 self._pending_cleanup = failed
                 _raise_errors("Bot cleanup failed", errors)
-            finally:
-                _CURRENT_LIFECYCLE.reset(token)
 
     async def _start_once(self) -> None:
         gateways: list[Gateway] = []
@@ -435,16 +429,13 @@ class Bot(EventRouter):
         self,
         item: _QueuedEvent,
     ) -> None:
-        token = _CURRENT_DISPATCHER.set(self)
-        try:
+        with _CURRENT_DISPATCHER.set(self):
             await self._dispatch_event(
                 item.connection,
                 item.event,
                 gateway=item.gateway,
                 deadline=item.deadline,
             )
-        finally:
-            _CURRENT_DISPATCHER.reset(token)
 
     async def _dispatch_event(
         self,

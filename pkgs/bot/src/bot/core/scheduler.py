@@ -149,11 +149,11 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
-        token = CURRENT_SCHEDULER_BOT.set(self.bot)
+        if __debug__:
+            logger.debug("scheduled job run: {job}", job=self)
         try:
-            if __debug__:
-                logger.debug("scheduled job run: {job}", job=self)
-            await self._call_handler(gateway, connection)
+            with CURRENT_SCHEDULER_BOT.set(self.bot):
+                await self._call_handler(gateway, connection)
         except Exception as exc:
             error = str(exc)
             logger.exception(
@@ -163,8 +163,6 @@ class CronJob:
             )
         else:
             logger.info("scheduled job done: {job}", job=self)
-        finally:
-            CURRENT_SCHEDULER_BOT.reset(token)
 
     async def _call_handler(
         self,
@@ -288,11 +286,7 @@ class CronScheduler:
             return ZoneInfo(timezone)
         if self._default_timezone is not None:
             return self._default_timezone
-        local = datetime.now().astimezone().tzinfo
-        if local is None:
-            msg = "Could not determine local scheduler timezone"
-            raise RuntimeError(msg)
-        return local
+        return cast(tzinfo, datetime.now().astimezone().tzinfo)
 
 
 _Target = tuple[Gateway | None, Connection | None]
