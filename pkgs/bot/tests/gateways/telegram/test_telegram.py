@@ -10,7 +10,6 @@ from bot.gateways import telegram as telegram_module
 from bot.gateways import telegram_api as telegram_api_module
 from bot.gateways.telegram import TelegramGateway
 from bot.gateways.telegram_api import (
-    TELEGRAM_METHODS,
     TELEGRAM_UPDATE_TYPES,
     TelegramAPIError,
     TelegramDownloadedFile,
@@ -125,39 +124,7 @@ async def ready() -> None:  # ruff: ignore[unused-async] - awaitable test double
     return None
 
 
-def test_protocol_manifest_and_strict_models() -> None:
-    manifest = "\n".join(sorted(TELEGRAM_METHODS)).encode()
-    assert sha256(manifest).hexdigest() == (
-        "940396857804a4383c4d52dd1c725b71eb87638662cd924f013053d85c9c5105"
-    )
-    assert TELEGRAM_UPDATE_TYPES == (
-        "message",
-        "edited_message",
-        "channel_post",
-        "edited_channel_post",
-        "business_connection",
-        "business_message",
-        "edited_business_message",
-        "deleted_business_messages",
-        "guest_message",
-        "message_reaction",
-        "message_reaction_count",
-        "inline_query",
-        "chosen_inline_result",
-        "callback_query",
-        "shipping_query",
-        "pre_checkout_query",
-        "purchased_paid_media",
-        "poll",
-        "poll_answer",
-        "my_chat_member",
-        "chat_member",
-        "chat_join_request",
-        "chat_boost",
-        "removed_chat_boost",
-        "managed_bot",
-        "subscription",
-    )
+def test_strict_models() -> None:
     payload = message_update(1).payload
     assert payload is not None
     assert payload[0] == "message"

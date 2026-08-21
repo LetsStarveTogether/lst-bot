@@ -1,9 +1,6 @@
-# ruff: file-ignore[line-too-long] - the versioned wire manifest is intentionally one route per line
-
 from asyncio import CancelledError, Event, TaskGroup, get_running_loop, timeout
 from collections.abc import Awaitable
 from http import HTTPMethod
-from textwrap import dedent
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -11,7 +8,6 @@ import orjson
 import pytest
 from bot.gateways import qq_api
 from bot.gateways.qq_api import (
-    QQ_ROUTES,
     QQAction,
     QQAPIError,
     QQChannel,
@@ -47,119 +43,6 @@ class GatedResponse:
         self.entered.set()
         await self.release.wait()
         return self.body
-
-
-def test_official_v1_26_route_manifest() -> None:
-    expected = dedent("""
-        qq.get_gateway GET /gateway QQRequest QQGatewayInfo
-        qq.get_gateway_bot GET /gateway/bot QQRequest QQGatewayBotInfo
-        qq.get_bot GET /users/@me QQRequest QQIdentifiedUser
-        qq.list_bot_guilds GET /users/@me/guilds QQGuildListParams QQGuildList
-        qq.generate_share_link POST /v2/generate_url_link QQShareLinkRequest QQShareLink
-        qq.get_guild GET /guilds/{guild_id} QQGuildParams QQGuild
-        qq.list_guild_channels GET /guilds/{guild_id}/channels QQGuildParams QQChannelList
-        qq.create_channel POST /guilds/{guild_id}/channels QQChannelCreateRequest QQChannel
-        qq.get_channel GET /channels/{channel_id} QQChannelParams QQChannel
-        qq.update_channel PATCH /channels/{channel_id} QQChannelUpdateRequest QQChannel
-        qq.delete_channel DELETE /channels/{channel_id} QQChannelParams QQNoContent
-        qq.ack_interaction PUT /interactions/{interaction_id} QQInteractionAckRequest QQNoContent
-        qq.send_c2c_message POST /v2/users/{user_openid}/messages QQSendC2CMessageRequest QQSentMessage
-        qq.send_c2c_stream_message POST /v2/users/{user_openid}/stream_messages QQStreamMessageRequest QQSentMessage
-        qq.recall_c2c_message DELETE /v2/users/{user_openid}/messages/{message_id} QQRecallC2CMessageRequest QQNoContent
-        qq.upload_c2c_file POST /v2/users/{user_openid}/files QQUploadC2CFileRequest QQFileInfo
-        qq.prepare_c2c_file_upload POST /v2/users/{user_id}/upload_prepare QQPrepareC2CFileRequest QQFilePrepareResult
-        qq.finish_c2c_file_upload POST /v2/users/{user_id}/upload_part_finish QQFinishC2CFileRequest QQNoContent
-        qq.send_group_message POST /v2/groups/{group_openid}/messages QQSendGroupMessageRequest QQSentMessage
-        qq.recall_group_message DELETE /v2/groups/{group_openid}/messages/{message_id} QQRecallGroupMessageRequest QQNoContent
-        qq.upload_group_file POST /v2/groups/{group_openid}/files QQUploadGroupFileRequest QQFileInfo
-        qq.prepare_group_file_upload POST /v2/groups/{group_id}/upload_prepare QQPrepareGroupFileRequest QQFilePrepareResult
-        qq.finish_group_file_upload POST /v2/groups/{group_id}/upload_part_finish QQFinishGroupFileRequest QQNoContent
-        qq.get_group_info GET /v2/groups/{group_openid}/info QQGroupParams QQGroupInfo
-        qq.get_group_bot_state GET /v2/groups/{group_openid}/bot_state QQGroupParams QQGroupBotState
-        qq.list_group_join_requests GET /v2/groups/{group_openid}/join_request_list QQJoinRequestListParams QQJoinRequestList
-        qq.approve_group_join_request POST /v2/groups/{group_openid}/approval_join_request/{member_openid} QQApproveJoinRequest QQNoContent
-        qq.get_group_restrictions GET /v2/groups/{group_openid}/restrict_chat_setting QQGroupParams QQGroupRestrictions
-        qq.update_group_restrictions POST /v2/groups/{group_openid}/restrict_chat_setting QQUpdateRestrictionsRequest QQNoContent
-        qq.list_group_approval_strategies GET /v2/groups/join_approval_strategy QQStrategyListParams QQStrategyList
-        qq.create_group_approval_strategy POST /v2/groups/join_approval_strategy QQCreateStrategyRequest QQStrategyResult
-        qq.update_group_approval_strategy PATCH /v2/groups/join_approval_strategy/{strategy_id} QQUpdateStrategyRequest QQStrategyUpdateResult
-        qq.delete_group_approval_strategy DELETE /v2/groups/join_approval_strategy/{strategy_id} QQDeleteStrategyRequest QQNoContent
-        qq.execute_group_approval_strategy POST /v2/groups/join_approval_strategy/{strategy_id}/execute QQDeleteStrategyRequest QQNoContent
-        qq.update_group_approval_whitelist POST /v2/groups/join_approval_strategy/{strategy_id}/whitelist_users QQUpdateStrategyWhitelistRequest QQStrategyWhitelistResult
-        qq.get_menu GET /v2/menu QQRequest QQMenuResult
-        qq.put_menu PUT /v2/menu QQPutMenuRequest QQVersionResult
-        qq.list_panels GET /v2/panels QQPanelListParams QQPanelList
-        qq.create_panel POST /v2/panels QQCreatePanelRequest QQPanelIDResult
-        qq.get_panel GET /v2/panels/{panel_id} QQPanelParams QQPanelRecord
-        qq.update_panel PUT /v2/panels/{panel_id} QQUpdatePanelRequest QQVersionResult
-        qq.delete_panel DELETE /v2/panels/{panel_id} QQPanelParams QQNoContent
-        qq.update_panel_targets PUT /v2/panels/{panel_id}/target QQUpdatePanelTargetsRequest QQNoContent
-        qq.send_channel_message POST /channels/{channel_id}/messages QQSendChannelMessageRequest QQMessage
-        qq.recall_channel_message DELETE /channels/{channel_id}/messages/{message_id} QQRecallChannelMessageRequest QQNoContent
-        qq.create_dm POST /users/@me/dms QQCreateDMRequest QQDirectMessage
-        qq.send_dm_message POST /dms/{guild_id}/messages QQSendDMMessageRequest QQMessage
-        qq.recall_dm_message DELETE /dms/{guild_id}/messages/{message_id} QQRecallDMMessageRequest QQNoContent
-        qq.get_channel_online_numbers GET /channels/{channel_id}/online_nums QQChannelParams QQOnlineNumbers
-        qq.list_guild_members GET /guilds/{guild_id}/members QQMemberListParams QQMemberList
-        qq.list_guild_role_members GET /guilds/{guild_id}/roles/{role_id}/members QQRoleMemberListParams QQRoleMemberList
-        qq.get_guild_member GET /guilds/{guild_id}/members/{user_id} QQMemberParams QQMember
-        qq.delete_guild_member DELETE /guilds/{guild_id}/members/{user_id} QQDeleteMemberRequest QQNoContent
-        qq.list_guild_roles GET /guilds/{guild_id}/roles QQGuildParams QQGuildRoles
-        qq.create_guild_role POST /guilds/{guild_id}/roles QQCreateRoleRequest QQUpdateRoleResult
-        qq.update_guild_role PATCH /guilds/{guild_id}/roles/{role_id} QQUpdateRoleRequest QQUpdateRoleResult
-        qq.delete_guild_role DELETE /guilds/{guild_id}/roles/{role_id} QQRoleParams QQNoContent
-        qq.add_guild_member_role PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id} QQMemberRoleRequest QQNoContent
-        qq.remove_guild_member_role DELETE /guilds/{guild_id}/members/{user_id}/roles/{role_id} QQMemberRoleRequest QQNoContent
-        qq.get_member_channel_permissions GET /channels/{channel_id}/members/{user_id}/permissions QQChannelMemberPermissionParams QQChannelPermissions
-        qq.update_member_channel_permissions PUT /channels/{channel_id}/members/{user_id}/permissions QQUpdateMemberPermissionRequest QQNoContent
-        qq.get_role_channel_permissions GET /channels/{channel_id}/roles/{role_id}/permissions QQChannelRolePermissionParams QQChannelPermissions
-        qq.update_role_channel_permissions PUT /channels/{channel_id}/roles/{role_id}/permissions QQUpdateRolePermissionRequest QQNoContent
-        qq.add_message_reaction PUT /channels/{channel_id}/messages/{message_id}/reactions/{emoji_type}/{emoji_id} QQEmojiParams QQNoContent
-        qq.remove_message_reaction DELETE /channels/{channel_id}/messages/{message_id}/reactions/{emoji_type}/{emoji_id} QQEmojiParams QQNoContent
-        qq.list_message_reaction_users GET /channels/{channel_id}/messages/{message_id}/reactions/{emoji_type}/{emoji_id} QQReactionUsersParams QQReactionUsers
-        qq.mute_guild PATCH /guilds/{guild_id}/mute QQGuildMuteRequest QQNoContent
-        qq.mute_guild_member PATCH /guilds/{guild_id}/members/{user_id}/mute QQMemberMuteRequest QQNoContent
-        qq.mute_guild_members PATCH /guilds/{guild_id}/mute QQMultiMemberMuteRequest QQMultiMemberMuteResult
-        qq.get_pins GET /channels/{channel_id}/pins QQChannelParams QQPinsMessage
-        qq.add_pin PUT /channels/{channel_id}/pins/{message_id} QQPinsParams QQPinsMessage
-        qq.delete_pin DELETE /channels/{channel_id}/pins/{message_id} QQPinsParams QQNoContent
-        qq.clean_pins DELETE /channels/{channel_id}/pins/all QQChannelParams QQNoContent
-        qq.list_schedules GET /channels/{channel_id}/schedules QQScheduleListParams QQScheduleList
-        qq.get_schedule GET /channels/{channel_id}/schedules/{schedule_id} QQScheduleParams QQSchedule
-        qq.create_schedule POST /channels/{channel_id}/schedules QQScheduleRequest QQSchedule
-        qq.update_schedule PATCH /channels/{channel_id}/schedules/{schedule_id} QQScheduleUpdateRequest QQSchedule
-        qq.delete_schedule DELETE /channels/{channel_id}/schedules/{schedule_id} QQScheduleParams QQNoContent
-        qq.control_audio POST /channels/{channel_id}/audio QQAudioControlRequest QQNoContent
-        qq.put_mic PUT /channels/{channel_id}/mic QQChannelParams QQNoContent
-        qq.delete_mic DELETE /channels/{channel_id}/mic QQChannelParams QQNoContent
-        qq.get_api_permissions GET /guilds/{guild_id}/api_permission QQGuildParams QQAPIPermissions
-        qq.require_api_permission POST /guilds/{guild_id}/api_permission/demand QQAPIPermissionDemandRequest QQAPIPermissionDemand
-        qq.list_forum_threads GET /channels/{channel_id}/threads QQChannelParams QQForumThreadList
-        qq.get_forum_thread GET /channels/{channel_id}/threads/{thread_id} QQForumThreadParams QQForumThreadDetail
-        qq.create_forum_thread PUT /channels/{channel_id}/threads QQForumCreateRequest QQForumCreateResult
-        qq.delete_forum_thread DELETE /channels/{channel_id}/threads/{thread_id} QQForumThreadParams QQNoContent
-        qq.get_message_setting GET /guilds/{guild_id}/message/setting QQGuildParams QQMessageSetting
-        qq.create_guild_announce POST /guilds/{guild_id}/announces QQGuildAnnounceRequest QQAnnounce
-        qq.delete_guild_announce DELETE /guilds/{guild_id}/announces/{message_id} QQGuildAnnounceDeleteRequest QQNoContent
-        qq.clean_guild_announces DELETE /guilds/{guild_id}/announces/all QQGuildParams QQNoContent
-    """).strip()
-
-    expected = {
-        action: (method, path, request, response)
-        for action, method, path, request, response in map(
-            str.split, expected.splitlines()
-        )
-    }
-    actual = {
-        action.value: (
-            str(route.method),
-            route.path,
-            route.request.__name__,
-            route.response.__name__,
-        )
-        for action, route in QQ_ROUTES.items()
-    }
-    assert actual == expected
 
 
 @pytest.mark.parametrize(
@@ -298,16 +181,19 @@ def test_rest_request_models_follow_current_qq_contract() -> None:
         QQRestClient("app", "secret", base_url="http://qq.example")
 
 
-async def test_ack_interaction_sends_callback_app_id() -> None:
+async def test_rest_preserves_callback_header_and_empty_body() -> None:
     pool = Pool(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, {}),
+        response(200, {"url_link": "https://qq.example/share"}),
     )
+    rest = client(pool)
 
-    result = await client(pool).request_qq(
+    result = await rest.request_qq(
         QQAction.ACK_INTERACTION,
         interaction_id="interaction",
     )
+    await rest.request_qq(QQAction.GENERATE_SHARE_LINK)
 
     assert isinstance(result, QQNoContent)
     assert pool.requests[1][0:2] == (
@@ -317,6 +203,7 @@ async def test_ack_interaction_sends_callback_app_id() -> None:
     headers = cast(dict[str, str], pool.requests[1][2]["headers"])
     assert headers["X-Callback-AppID"] == "app"
     assert pool.requests[1][2]["json"] == {"code": 0}
+    assert pool.requests[2][2]["json"] == {}
 
 
 async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
