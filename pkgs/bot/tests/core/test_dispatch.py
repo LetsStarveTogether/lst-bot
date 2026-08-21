@@ -137,6 +137,27 @@ async def test_dispatch_auto_replies_string_return() -> None:
     }
 
 
+async def test_dispatch_uses_a_stable_route_snapshot() -> None:
+    bot = Bot()
+    gateway = recording_gateway(bot)
+    seen: list[str] = []
+
+    @bot.on_msg()
+    def old() -> None:
+        seen.append("old")
+        if len(seen) == 1:
+
+            @bot.on_msg(priority=0)
+            def new() -> None:
+                seen.append("new")
+
+    async with bot:
+        await bot.dispatch(gateway.connection, make_event("first"))
+        await bot.dispatch(gateway.connection, make_event("second"))
+
+    assert seen == ["old", "new", "old"]
+
+
 async def test_dispatch_executes_batch_returns_in_order() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)

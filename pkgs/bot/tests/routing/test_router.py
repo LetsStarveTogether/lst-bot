@@ -4,6 +4,7 @@ from bot import (
     Bot,
     Cmd,
     EventRouter,
+    GroupMessageEvent,
     Injected,
     InjectionContext,
     Scope,
@@ -37,14 +38,28 @@ async def test_falsey_rule_is_not_replaced() -> None:
     assert seen == []
 
 
-def test_admin_permission_rejects_non_string_sender_role() -> None:
+def test_admin_permission_rejects_untrusted_sender_roles() -> None:
     bot = Bot()
     source = private_message_event("hello")
     payload = source.model_dump(mode="json")
-    payload["sender"] = {"role": []}
+    payload["sender"] = {"user_id": source.user_id, "role": "owner"}
 
     assert not admin_permission(
         type(source).model_validate(payload),
+        InjectionContext(bot),
+    )
+    payload |= {
+        "detail_type": "group",
+        "group_id": "group",
+        "sender": {"user_id": "attacker", "role": "owner"},
+    }
+    assert not admin_permission(
+        GroupMessageEvent.model_validate(payload),
+        InjectionContext(bot),
+    )
+    payload["sender"] = {"user_id": source.user_id, "role": []}
+    assert not admin_permission(
+        GroupMessageEvent.model_validate(payload),
         InjectionContext(bot),
     )
 

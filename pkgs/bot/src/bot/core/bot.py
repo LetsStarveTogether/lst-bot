@@ -103,10 +103,17 @@ class Bot(EventRouter):
         if max_dispatches <= 0:
             msg = "max_dispatches must be greater than zero"
             raise ValueError(msg)
-        self.admin_ids: Mapping[str, frozenset[str]] = MappingProxyType({
-            platform: frozenset(user_ids)
-            for platform, user_ids in (admin_ids or {}).items()
-        })
+        admins: dict[str, frozenset[str]] = {}
+        for platform, user_ids in (admin_ids or {}).items():
+            if not isinstance(platform, str) or isinstance(user_ids, str):
+                msg = "admin_ids must map platform names to user ID iterables"
+                raise TypeError(msg)
+            users = frozenset(user_ids)
+            if not all(isinstance(user_id, str) for user_id in users):
+                msg = "admin IDs must be strings"
+                raise TypeError(msg)
+            admins[platform] = users
+        self.admin_ids: Mapping[str, frozenset[str]] = MappingProxyType(admins)
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
         self.max_dispatches = max_dispatches
@@ -434,7 +441,7 @@ class Bot(EventRouter):
         )
 
         async with self.container.enter_scope(Scope.REQUEST) as resolver:
-            for route in self.routes:
+            for route in tuple(self.routes):
                 if route.event_type is not None and route.event_type != event.type:
                     continue
                 context = InjectionContext(

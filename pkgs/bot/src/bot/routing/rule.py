@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from diwire import Injected, ResolverProtocol
 
 from bot.core.di import InjectionContext, call_with_injection, inject
-from bot.protocol.events import UserEvent
+from bot.protocol.events import GroupMessageEvent, UserEvent
 
 
 @dataclass(slots=True, match_args=False)
@@ -45,4 +45,10 @@ def admin_permission(
 
     sender = (event.model_extra or {}).get("sender")
     role = sender.get("role") if isinstance(sender, Mapping) else None
-    return isinstance(role, str) and role in {"admin", "owner"}
+    return (
+        isinstance(event, GroupMessageEvent)
+        and isinstance(sender, Mapping)
+        and sender.get("user_id") == event.user_id
+        and isinstance(role, str)
+        and role in {"admin", "owner"}
+    )
