@@ -946,6 +946,7 @@ class QQGateway(Gateway, QQRestClient):
                 "user_id": data.openid,
                 "qq_event_type": dispatch.t,
                 "qq_data": self._event_data_json(data),
+                "qq_raw": False,
             })
         if isinstance(data, QQGroupJoinRequest) and data.auto_approved is None:
             verification = data.verify_info
@@ -966,6 +967,7 @@ class QQGateway(Gateway, QQRestClient):
                 "flag": data.join_request_id,
                 "qq_event_type": dispatch.t,
                 "qq_data": self._event_data_json(data),
+                "qq_raw": False,
             })
         return NoticeEvent(
             id=self._event_id(dispatch),

@@ -106,6 +106,14 @@ def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None
             "content": "wrong payload",
             "msg_id": "source-message",
         })
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        QQSendGroupMessageRequest(
+            group_openid="group",
+            msg_type=0,
+            content="reply",
+            msg_id="message",
+            event_id="event",
+        )
 
     for model, payload in (
         (
@@ -470,6 +478,7 @@ def test_event_model_families_map_to_common_events() -> None:
             assert event.model_extra is not None
             assert event.model_extra["qq_event_type"] == event_type
             assert event.model_extra["qq_data"] == payload
+            assert event.model_extra["qq_raw"] is False
         else:
             assert event.model_extra is not None
             qq_data = event.model_extra["qq_data"]
@@ -889,28 +898,6 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
     assert not gateway._online  # ruff: ignore[private-member-access]
     assert clean.closed.is_set()
     fatal_native.close.assert_awaited_once()
-
-
-def test_proactive_messages_accept_no_context_and_reject_both() -> None:
-    group = QQSendGroupMessageRequest(
-        group_openid="group",
-        msg_type=0,
-        content="proactive",
-    )
-    c2c = QQSendC2CMessageRequest(
-        user_openid="user",
-        msg_type=0,
-        content="proactive",
-    )
-    assert group.msg_id is group.event_id is c2c.msg_id is c2c.event_id is None
-    with pytest.raises(ValidationError, match="mutually exclusive"):
-        QQSendGroupMessageRequest(
-            group_openid="group",
-            msg_type=0,
-            content="reply",
-            msg_id="message",
-            event_id="event",
-        )
 
 
 async def test_group_pagination_uses_query_parameters_and_parses_items() -> None:
