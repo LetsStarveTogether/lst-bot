@@ -33,8 +33,10 @@ from pydantic import (
     model_validator,
 )
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future.filepost import encode_multipart_formdata
 
-from bot.json import loads
+from bot.json import dumpb, loads
+from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model
 
 from .base import header_value, run_while_open, validate_https_base_url
@@ -366,7 +368,7 @@ def _validate_message_payload(
 
 
 class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
-    msg_type: Literal[0, 2, 7]
+    msg_type: Literal[0, 2, 7] = 0
 
     @model_validator(mode="after")
     def payload_matches_type(self) -> Self:
@@ -382,7 +384,7 @@ class QQSendGroupMessageRequest(QQGroupParams, QQMessageRequestBase):
 
 
 class QQSendC2CMessageRequest(QQUserParams, QQMessageRequestBase):
-    msg_type: Literal[0, 2, 6, 7]
+    msg_type: Literal[0, 2, 6, 7] = 0
     input_notify: QQInputNotify | None = None
 
     @model_validator(mode="after")
@@ -431,13 +433,25 @@ class QQSendChannelMessageRequest(QQChannelParams):
     event_id: QQID | None = None
     markdown: QQMarkdown | None = None
     keyboard: QQKeyboard | None = None
+    file_image: Annotated[WireBytes, Field(min_length=1)] | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
     @model_validator(mode="after")
     def validate_message(self) -> Self:
         if self.msg_id is not None and self.event_id is not None:
             msg = "msg_id and event_id are mutually exclusive"
             raise ValueError(msg)
-        if not any((self.content, self.embed, self.ark, self.image, self.markdown)):
+        if not any((
+            self.content,
+            self.embed,
+            self.ark,
+            self.image,
+            self.markdown,
+            self.file_image,
+        )):
             msg = "channel message content is required"
             raise ValueError(msg)
         return self
@@ -445,6 +459,7 @@ class QQSendChannelMessageRequest(QQChannelParams):
 
 class QQSendDMMessageRequest(QQSendChannelMessageRequest):
     channel_id: None = Field(default=None, exclude=True)
+    file_image: None = Field(default=None, exclude=True)
     guild_id: QQID
 
 
@@ -524,7 +539,7 @@ class QQStreamMessageRequest(QQUserParams, QQReplySourceFields):
 
 class QQFileUploadFields(QQRequest):
     file_type: Literal[1, 2, 3, 4]
-    srv_send_msg: StrictBool
+    srv_send_msg: StrictBool = False
     url: AnyHttpUrl | None = None
     file_name: StrictStr | None = None
     upload_id: QQID | None = None
@@ -1463,7 +1478,6 @@ class QQAction(StrEnum):
     GET_PINS = "qq.get_pins"
     ADD_PIN = "qq.add_pin"
     DELETE_PIN = "qq.delete_pin"
-    CLEAN_PINS = "qq.clean_pins"
     LIST_SCHEDULES = "qq.list_schedules"
     GET_SCHEDULE = "qq.get_schedule"
     CREATE_SCHEDULE = "qq.create_schedule"
@@ -1481,7 +1495,6 @@ class QQAction(StrEnum):
     GET_MESSAGE_SETTING = "qq.get_message_setting"
     CREATE_GUILD_ANNOUNCE = "qq.create_guild_announce"
     DELETE_GUILD_ANNOUNCE = "qq.delete_guild_announce"
-    CLEAN_GUILD_ANNOUNCES = "qq.clean_guild_announces"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1876,11 +1889,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/channels/{channel_id}/pins/{message_id}",
         QQPinsParams,
     ),
-    QQAction.CLEAN_PINS: QQRoute(
-        HTTPMethod.DELETE,
-        "/channels/{channel_id}/pins/all",
-        QQChannelParams,
-    ),
     QQAction.LIST_SCHEDULES: QQRoute(
         HTTPMethod.GET,
         "/channels/{channel_id}/schedules",
@@ -1974,11 +1982,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         HTTPMethod.DELETE,
         "/guilds/{guild_id}/announces/{message_id}",
         QQGuildAnnounceDeleteRequest,
-    ),
-    QQAction.CLEAN_GUILD_ANNOUNCES: QQRoute(
-        HTTPMethod.DELETE,
-        "/guilds/{guild_id}/announces/all",
-        QQGuildParams,
     ),
 }
 
@@ -2150,6 +2153,7 @@ class QQRestClient:
             url,
             body,
             closed_event,
+            file_image=getattr(request, "file_image", None),
         )
         if response.status in {HTTPStatus.CREATED, HTTPStatus.ACCEPTED}:
             return self._async_result(
@@ -2175,6 +2179,8 @@ class QQRestClient:
         url: str,
         body: dict[str, JsonValue] | None,
         closed_event: Event,
+        *,
+        file_image: bytes | None,
     ) -> tuple[AsyncHTTPResponse, JsonValue]:
         token: str | None = None
         retried_token = False
@@ -2195,6 +2201,7 @@ class QQRestClient:
                 url,
                 headers=headers,
                 json=body,
+                file_image=file_image,
             )
             self._ensure_open(closed_event)
             response_payload = self._parse_payload(data, response.status)
@@ -2268,12 +2275,29 @@ class QQRestClient:
         *,
         headers: Mapping[str, str],
         json: dict[str, JsonValue] | None,
+        file_image: bytes | None = None,
     ) -> tuple[AsyncHTTPResponse, bytes]:
+        body: bytes | None = None
+        if file_image is not None:
+            fields: list[tuple[str, str | tuple[str, bytes, str]]] = [
+                (
+                    name,
+                    value if isinstance(value, str) else dumpb(value).decode(),
+                )
+                for name, value in (json or {}).items()
+            ]
+            fields.append((
+                "file_image",
+                ("image", file_image, "application/octet-stream"),
+            ))
+            body, content_type = encode_multipart_formdata(fields)
+            headers = {**headers, "Content-Type": content_type}
         response = await self.http_pool.request(
             method,
             url,
             headers=headers,
-            json=json,
+            body=body,
+            json=json if file_image is None else None,
             retries=False,
             timeout=_HTTP_TIMEOUT,
         )

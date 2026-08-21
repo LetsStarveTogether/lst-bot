@@ -11,6 +11,7 @@ from bot.gateways.qq_api import (
     QQAPIError,
     QQChannel,
     QQFilePrepareResult,
+    QQFileUploadFields,
     QQGuildRoles,
     QQKeyboardButton,
     QQKeyboardPermission,
@@ -136,6 +137,22 @@ def test_response_models_accept_current_qq_wire_values() -> None:
 
 
 def test_rest_request_models_follow_current_qq_contract() -> None:
+    for model, target in (
+        (QQSendGroupMessageRequest, {"group_openid": "group"}),
+        (QQSendC2CMessageRequest, {"user_openid": "user"}),
+    ):
+        message = model.model_validate(target | {"content": "answer"})
+        assert message.model_dump(mode="json", exclude_none=True) == {
+            **target,
+            "content": "answer",
+            "msg_type": 0,
+        }
+
+    upload = QQFileUploadFields(file_type=1, url="https://qq.example/image.png")
+    assert upload.srv_send_msg is False
+    with pytest.raises(ValidationError):
+        QQFileUploadFields.model_validate({"url": "https://qq.example/image.png"})
+
     first_chunk = {
         "user_openid": "user",
         "input_mode": "replace",
@@ -220,6 +237,45 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
         "https://qq.example/v2/groups/group/messages/message",
     )
     assert pool.requests[3][2]["json"] == {}
+
+
+async def test_channel_file_image_uses_multipart() -> None:
+    pool = Pool(
+        response(200, {"access_token": "token", "expires_in": 7200}),
+        response(200, {"id": "message", "timestamp": "2026-08-21T00:00:00Z"}),
+    )
+    rest = client(pool)
+
+    await rest.request_qq(
+        QQAction.SEND_CHANNEL_MESSAGE,
+        channel_id="channel",
+        content="caption",
+        message_reference={"message_id": "reply"},
+        file_image="aW1hZ2U=",
+    )
+
+    method, url, request = pool.requests[1]
+    assert (method, url) == (
+        HTTPMethod.POST,
+        "https://qq.example/channels/channel/messages",
+    )
+    headers = cast(dict[str, str], request["headers"])
+    assert headers["Content-Type"].startswith("multipart/form-data; boundary=")
+    body = cast(bytes, request["body"])
+    assert b'name="file_image"; filename="image"' in body
+    assert b"Content-Type: application/octet-stream" in body
+    assert b"\r\n\r\nimage\r\n--" in body
+    assert b"aW1hZ2U=" not in body
+    assert b'{"message_id":"reply"}' in body
+    assert request["json"] is None
+
+    with pytest.raises(ValidationError):
+        await rest.request_qq(
+            QQAction.SEND_DM_MESSAGE,
+            guild_id="guild",
+            content="caption",
+            file_image="aW1hZ2U=",
+        )
 
 
 async def test_file_upload_supports_chunk_completion() -> None:
