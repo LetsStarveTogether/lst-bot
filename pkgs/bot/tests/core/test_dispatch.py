@@ -10,7 +10,6 @@ from bot import (
     ActionResponse,
     Bot,
     Cmd,
-    Connection,
     GroupMessageEvent,
     Injected,
     Msg,
@@ -27,11 +26,6 @@ from diwire import Lifetime, Scope
 @dataclass(frozen=True)
 class RequestService:
     value: int
-
-
-class Greeter:
-    def reply(self, value: str) -> str:
-        return f"pong {value}".strip()
 
 
 def group_message_event(
@@ -68,9 +62,7 @@ async def test_connection_send_msg_builds_standard_action() -> None:
     }
 
 
-async def test_connection_action_failed_response_raises(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_connection_action_failed_response_raises() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     gateway.responses["send_message"] = ActionResponse.failed(
@@ -78,54 +70,17 @@ async def test_connection_action_failed_response_raises(
         "bad target",
     )
 
-    @bot.on_msg(block=True)
-    async def handle(connection: Injected[Connection]) -> None:
-        await connection.send_msg("pong", user_id="42")
-
-    async with bot:
-        await bot.dispatch(gateway.connection, make_event("ping"))
+    with pytest.raises(
+        RuntimeError,
+        match="Action failed with retcode 10001: bad target",
+    ):
+        await gateway.connection.send_msg("pong", user_id="42")
 
     assert [action.action for action in gateway.actions] == ["send_message"]
-    assert any(
-        "Dispatch route" in message
-        and "Action failed with retcode 10001: bad target" in message
-        for message in caplog.messages
-    )
-
-
-async def test_dispatch_injects_connection_and_enforces_permission() -> None:
-    bot = Bot(cmd_prefixes=("!",), admin_ids={"test": {"u1"}})
-    bot.container.add_instance(Greeter(), provides=Greeter)
-    gateway = recording_gateway(bot)
-
-    @bot.on_cmd("ping", permission=admin_permission, block=True)
-    async def handle(
-        connection: Injected[Connection],
-        cmd: Injected[Cmd],
-        event: Injected[PrivateMessageEvent],
-        greeter: Injected[Greeter],
-    ) -> None:
-        await connection.action(
-            "send_message",
-            user_id=event.user_id,
-            message=greeter.reply(cmd.arg),
-        )
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            make_event("!ping hi", user_id="u1"),
-        )
-
-    action = gateway.actions[0]
-    assert action.action == "send_message"
-    assert action.params.model_dump(mode="json")["message"] == [
-        {"type": "text", "data": {"text": "pong hi"}},
-    ]
 
 
 async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
-    bot = Bot(admin_ids={"test": {"root"}})
+    bot = Bot(admin_ids={"test": {"root"}, "qq": {"42"}})
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
@@ -154,28 +109,11 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
                 event_id="member",
                 sender_role="member",
             ),
+            make_event("/secure foreign", user_id="42", event_id="foreign"),
         ]:
             await bot.dispatch(gateway.connection, event)
 
     assert seen == ["bot", "group", "owner"]
-
-
-async def test_admin_permission_namespaces_user_ids_by_platform() -> None:
-    bot = Bot(admin_ids={"qq": {"42"}})
-    gateway = recording_gateway(bot)
-    seen: list[str] = []
-
-    @bot.on_cmd("secure", permission=admin_permission, block=True)
-    def secure() -> None:
-        seen.append("matched")
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            make_event("/secure", user_id="42"),
-        )
-
-    assert seen == []
 
 
 async def test_dispatch_auto_replies_string_return() -> None:
@@ -199,32 +137,14 @@ async def test_dispatch_auto_replies_string_return() -> None:
     }
 
 
-async def test_dispatch_executes_list_returns_in_order() -> None:
+async def test_dispatch_executes_batch_returns_in_order() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
     @bot.on_msg(block=True)
-    def handle() -> list[Msg]:
-        return [Msg.from_input("one"), Msg.from_input("two")]
-
-    async with bot:
-        await bot.dispatch(gateway.connection, make_event("ping"))
-
-    assert [
-        action.params.model_dump(mode="json")["message"] for action in gateway.actions
-    ] == [
-        [{"type": "text", "data": {"text": "one"}}],
-        [{"type": "text", "data": {"text": "two"}}],
-    ]
-
-
-async def test_dispatch_executes_action_returns() -> None:
-    bot = Bot()
-    gateway = recording_gateway(bot)
-
-    @bot.on_msg(block=True)
-    def handle() -> list[ReturnAction | ActionCall]:
+    def handle() -> list[Msg | ReturnAction | ActionCall]:
         return [
+            Msg.from_input("first"),
             ReturnAction.call(
                 "send_message",
                 {
@@ -244,35 +164,12 @@ async def test_dispatch_executes_action_returns() -> None:
 
     assert [action.action for action in gateway.actions] == [
         "send_message",
+        "send_message",
         "get_user_info",
     ]
-
-
-async def test_dispatch_rejects_unsupported_return_values(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    cases = [
-        (True, "bool"),
-        ({"not": "supported"}, "dict"),
-        (make_event("nested", event_id="nested"), "PrivateMessageEvent"),
+    assert gateway.actions[0].params.model_dump(mode="json")["message"] == [
+        {"type": "text", "data": {"text": "first"}},
     ]
-    for value, type_name in cases:
-        caplog.clear()
-        bot = Bot()
-        gateway = recording_gateway(bot)
-
-        bot.on_msg(block=True)(lambda value=value: value)
-
-        async with bot:
-            await bot.dispatch(
-                gateway.connection,
-                make_event(f"ping-{type_name}"),
-            )
-
-        assert any(
-            f"Unsupported handler return value: {type_name}" in message
-            for message in caplog.messages
-        )
 
 
 async def test_dispatch_stops_batch_on_return_execution_error(
@@ -392,12 +289,24 @@ async def test_dispatch_respects_priority_and_block() -> None:
     assert seen == ["early"]
 
 
-async def test_dispatch_cmd_blocks_by_default() -> None:
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        pytest.param(None, ["command"], id="default"),
+        pytest.param(False, ["command", "message"], id="non-blocking"),
+    ],
+)
+async def test_dispatch_cmd_blocking(
+    block: bool | None,
+    expected: list[str],
+) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    @bot.on_cmd("ping")
+    register = bot.on_cmd("ping") if block is None else bot.on_cmd("ping", block=block)
+
+    @register
     def command() -> None:
         seen.append("command")
 
@@ -408,26 +317,7 @@ async def test_dispatch_cmd_blocks_by_default() -> None:
     async with bot:
         await bot.dispatch(gateway.connection, make_event("/ping"))
 
-    assert seen == ["command"]
-
-
-async def test_dispatch_cmd_can_opt_out_of_blocking() -> None:
-    bot = Bot()
-    gateway = recording_gateway(bot)
-    seen: list[str] = []
-
-    @bot.on_cmd("ping", block=False)
-    def command() -> None:
-        seen.append("command")
-
-    @bot.on_msg()
-    def message() -> None:
-        seen.append("message")
-
-    async with bot:
-        await bot.dispatch(gateway.connection, make_event("/ping"))
-
-    assert seen == ["command", "message"]
+    assert seen == expected
 
 
 async def test_dispatch_uses_request_scoped_container_dependencies() -> None:

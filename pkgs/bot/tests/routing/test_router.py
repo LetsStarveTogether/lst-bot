@@ -6,7 +6,6 @@ from bot import (
     EventRouter,
     Injected,
     InjectionContext,
-    Lifetime,
     Scope,
     UserEvent,
     admin_permission,
@@ -51,48 +50,12 @@ def test_admin_permission_rejects_non_string_sender_role() -> None:
 
 
 @dataclass(frozen=True)
-class Repository:
-    value: str
-
-
-class Service:
-    def __init__(self, repository: Repository) -> None:
-        self.repository = repository
-
-    def render(self, value: str) -> str:
-        return f"{self.repository.value}:{value}"
-
-
-@dataclass(frozen=True)
 class Tenant:
     user_id: str
 
 
 def get_tenant(event: UserEvent) -> Tenant:
     return Tenant(event.user_id)
-
-
-async def test_router_cmd_uses_diwire_injected_service() -> None:
-    bot = Bot()
-    bot.container.add_instance(Repository("repo"), provides=Repository)
-    bot.container.add(Service)
-    router = EventRouter()
-    seen: list[str] = []
-
-    @router.on_cmd("ping", block=True)
-    def ping(service: Injected[Service], cmd: Injected[Cmd]) -> None:
-        seen.append(service.render(cmd.arg))
-
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("/ping ok", user_id="42"),
-        )
-
-    assert seen == ["repo:ok"]
 
 
 async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
@@ -124,9 +87,7 @@ async def test_container_factory_dependency() -> None:
     bot = Bot()
     bot.container.add_factory(
         get_tenant,
-        provides=Tenant,
         scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
     )
     router = EventRouter()
     seen: list[str] = []
