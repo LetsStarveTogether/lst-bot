@@ -3,6 +3,7 @@ from logging import getLogger
 
 from bot import (
     ActionResponse,
+    ApiStatus,
     Cmd,
     Connection,
     EventRouter,
@@ -60,7 +61,7 @@ async def replied_message_text(conn: Connection, event: MessageEvent) -> str:
         return ""
 
     match response:
-        case ActionResponse(data={"message": message}):
+        case ActionResponse(status=ApiStatus.OK, data={"message": message}):
             return message_payload_text(message)
         case _:
             return ""

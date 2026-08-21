@@ -86,15 +86,18 @@ def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
 
 @router.on_cmd("房间回档", admin_permission)
 def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
+    usage = f"用法：{cmd.raw} 1,2,4 2"
     try:
-        room_ids_text, days_text = cmd.arg.split()
+        room_ids_text, snapshots_text = cmd.arg.split()
         room_ids = parse_room_ids(room_ids_text)
-        days = int(days_text)
+        snapshots = int(snapshots_text)
     except ValueError:
-        return f"用法：{cmd.raw} 1,2,4 2"
+        return usage
+    if snapshots < 0:
+        return usage
 
-    lc.send_console_command(room_ids, f"c_rollback({days})")
-    return f"已回档 {days} 天 {room_ids}"
+    lc.send_console_command(room_ids, f"c_rollback({snapshots})")
+    return f"已回档 {snapshots} 个存档点 {room_ids}"
 
 
 @router.on_cmd("房间重启", admin_permission)

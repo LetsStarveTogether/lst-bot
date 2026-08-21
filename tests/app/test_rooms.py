@@ -93,7 +93,7 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
             "1,3,4 2",
             "send_console_command",
             ([1, 3, 4], "c_rollback(2)"),
-            "已回档 2 天 [1, 3, 4]",
+            "已回档 2 个存档点 [1, 3, 4]",
         ),
         (
             restart_room,
@@ -133,7 +133,31 @@ def test_restart_room_hides_internal_error() -> None:
     assert restart_room(Cmd(raw="", arg="1"), client) == "重启失败：[1]"
 
 
-async def test_room_admin_command_rejects_non_admin() -> None:
+def test_rollback_room_rejects_negative_snapshot_counts() -> None:
+    client = Mock(spec_set=LstClient)
+
+    assert rollback_room(Cmd(raw="/房间回档", arg="1 0"), client) == (
+        "已回档 0 个存档点 [1]"
+    )
+    client.send_console_command.assert_called_once_with([1], "c_rollback(0)")
+    client.reset_mock()
+
+    assert rollback_room(Cmd(raw="/房间回档", arg="1 -1"), client) == (
+        "用法：/房间回档 1,2,4 2"
+    )
+    assert client.method_calls == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "/房间存档 1",
+        "/房间回档 1 1",
+        "/房间重启 1",
+        "/房间重置 1",
+    ],
+)
+async def test_room_admin_commands_reject_non_admin(message: str) -> None:
     bot = Bot()
     client = Mock(spec_set=LstClient)
     bot.container.add_instance(client, provides=LstClient)
@@ -143,8 +167,8 @@ async def test_room_admin_command_rejects_non_admin() -> None:
     async with bot:
         await bot.dispatch(
             gateway.connection,
-            private_message_event("/房间存档 1", user_id="member"),
+            private_message_event(message, user_id="member"),
         )
 
-    client.send_console_command.assert_not_called()
+    assert client.method_calls == []
     assert gateway.actions == []

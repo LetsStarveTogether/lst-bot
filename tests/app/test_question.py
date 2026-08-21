@@ -1,5 +1,5 @@
 import pytest
-from bot import ActionResponse, Bot, Cmd, Msg, Retcode
+from bot import ActionResponse, ApiStatus, Bot, Cmd, Msg, Retcode
 from bot.testing import RecordingGateway, private_message_event
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -75,6 +75,16 @@ async def test_build_question_combines_reply_and_command_text() -> None:
         "用户问题：\nnew question"
     )
 
+    gateway.responses["get_msg"] = ActionResponse(
+        status=ApiStatus.ASYNC,
+        retcode=1,
+        data={"message": [{"type": "text", "data": {"text": "pending"}}]},
+        message="queued",
+    )
+    assert await build_question(gateway.connection, event, "new question") == (
+        "用户问题：\nnew question"
+    )
+
 
 async def test_question_handler_replies_with_agent_output() -> None:
     bot = Bot()
@@ -88,5 +98,4 @@ async def test_question_handler_replies_with_agent_output() -> None:
         Agent(TestModel(custom_output_text="答案")),
     )
 
-    assert reply[0].type == "reply"
-    assert reply[1].data.text == "答案"
+    assert reply == Msg.reply(event.message_id, "答案", user_id=event.user_id)
