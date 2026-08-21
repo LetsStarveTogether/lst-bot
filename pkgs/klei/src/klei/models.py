@@ -79,7 +79,7 @@ def _parse_versions(value: str) -> list[Version]:
 
 
 class KleiDataResponse[T](BaseModel):
-    rows: list[T] = Field(alias="GET")
+    rows: list[T] = Field(default_factory=list, alias="GET")
 
 
 class Secondary(BaseModel):

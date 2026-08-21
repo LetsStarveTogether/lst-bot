@@ -343,8 +343,7 @@ async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
 
 
 def test_response_envelope_and_lobby_bounds_are_validated() -> None:
-    with pytest.raises(ValidationError):
-        KleiDataResponse[LobbyData].model_validate({})
+    assert KleiDataResponse[LobbyData].model_validate_json("{}").rows == []
 
     internal = LobbyData.model_validate_json(
         jsonlib.dumps(lobby_row() | {"platform": 19}),
