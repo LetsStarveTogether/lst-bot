@@ -197,6 +197,31 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
 
 async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
     uploaded = {"file_uuid": "file", "file_info": "info", "ttl": 60}
+    inline_body: dict[str, object] = {
+        "file_type": 1,
+        "file_data": "YQ==",
+        "srv_send_msg": False,
+    }
+    prepare_body: dict[str, object] = {
+        "file_type": 2,
+        "file_size": "31457280",
+        "file_name": "demo.mp4",
+        "md5": "0" * 32,
+        "sha1": "0" * 40,
+        "md5_10m": "1" * 32,
+    }
+    finish_body: dict[str, object] = {
+        "upload_id": "upload",
+        "part_index": 0,
+        "block_size": "10485760",
+        "md5": "0" * 32,
+    }
+    merge_body: dict[str, object] = {
+        "file_type": 2,
+        "srv_send_msg": False,
+        "file_name": "demo.mp4",
+        "upload_id": "upload",
+    }
     prepared_payload = {
         "upload_id": "upload",
         "block_size": "10485760",
@@ -231,61 +256,31 @@ async def test_file_upload_supports_inline_data_and_chunk_completion() -> None:
     await rest.request_qq(
         QQAction.UPLOAD_C2C_FILE,
         user_openid="user",
-        file_type=1,
-        file_data="YQ==",
-        srv_send_msg=False,
+        **inline_body,
     )
     prepared = await rest.request_qq(
         QQAction.PREPARE_GROUP_FILE_UPLOAD,
         group_id="group",
-        file_type=2,
-        file_size="31457280",
-        file_name="demo.mp4",
-        md5="d41d8cd98f00b204e9800998ecf8427e",
-        sha1="da39a3ee5e6b4b0d3255bfef95601890afd80709",
-        md5_10m="c4d8c5f3a2b1e0f9a8b7c6d5e4f3a2b1",
+        **prepare_body,
     )
     await rest.request_qq(
         QQAction.FINISH_GROUP_FILE_UPLOAD,
         group_id="group",
-        upload_id="upload",
-        part_index=0,
-        block_size="10485760",
-        md5="d41d8cd98f00b204e9800998ecf8427e",
+        **finish_body,
     )
     await rest.request_qq(
         QQAction.UPLOAD_GROUP_FILE,
         group_openid="group",
-        file_type=2,
-        srv_send_msg=False,
-        file_name="demo.mp4",
-        upload_id="upload",
+        **merge_body,
     )
 
     assert isinstance(prepared, QQFilePrepareResult)
-    assert prepared == QQFilePrepareResult.model_validate(prepared_payload)
+    assert prepared.model_dump(mode="json", exclude_none=True) == prepared_payload
     assert [request[2]["json"] for request in pool.requests[1:]] == [
-        {"file_type": 1, "file_data": "YQ==", "srv_send_msg": False},
-        {
-            "file_type": 2,
-            "file_size": "31457280",
-            "file_name": "demo.mp4",
-            "md5": "d41d8cd98f00b204e9800998ecf8427e",
-            "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
-            "md5_10m": "c4d8c5f3a2b1e0f9a8b7c6d5e4f3a2b1",
-        },
-        {
-            "upload_id": "upload",
-            "part_index": 0,
-            "block_size": "10485760",
-            "md5": "d41d8cd98f00b204e9800998ecf8427e",
-        },
-        {
-            "file_type": 2,
-            "srv_send_msg": False,
-            "file_name": "demo.mp4",
-            "upload_id": "upload",
-        },
+        inline_body,
+        prepare_body,
+        finish_body,
+        merge_body,
     ]
 
 

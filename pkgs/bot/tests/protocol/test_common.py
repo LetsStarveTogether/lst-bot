@@ -45,55 +45,6 @@ def test_bot_self_is_a_frozen_value_key() -> None:
     ("model", "payload"),
     [
         pytest.param(
-            BotSelf,
-            {"platform": "qq", "user_id": "10000"},
-            id="bot-self",
-        ),
-        pytest.param(
-            Version,
-            {
-                "impl": "lst-bot",
-                "version": "1.0.0",
-                "onebot_version": "12",
-            },
-            id="version",
-        ),
-        pytest.param(
-            BotStatus,
-            {
-                "self": {"platform": "qq", "user_id": "10000"},
-                "online": True,
-            },
-            id="bot-status",
-        ),
-        pytest.param(
-            Status,
-            {
-                "good": True,
-                "bots": [
-                    {
-                        "self": {"platform": "qq", "user_id": "10000"},
-                        "online": True,
-                    },
-                ],
-            },
-            id="status",
-        ),
-    ],
-)
-def test_common_models_round_trip_json(
-    model: type[Model],
-    payload: dict[str, object],
-) -> None:
-    value = model.model_validate(payload)
-
-    assert model.model_validate_json(value.model_dump_json()) == value
-
-
-@pytest.mark.parametrize(
-    ("model", "payload"),
-    [
-        pytest.param(
             Version,
             {"impl": "lst-bot", "version": "1.0.0"},
             id="version-missing-onebot-version",

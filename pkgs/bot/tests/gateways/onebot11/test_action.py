@@ -349,6 +349,16 @@ def test_onebot11_action_response_rejects_invalid_status_retcode_pairs(
         decode_action_response(payload)
 
 
+def test_onebot11_action_response_rejects_non_string_echo() -> None:
+    with pytest.raises(TypeError, match="echo"):
+        decode_action_response({
+            "status": "ok",
+            "retcode": 0,
+            "data": None,
+            "echo": 1,
+        })
+
+
 async def test_message_return_uses_group_action() -> None:
     event = EventPayload.model_validate({
         "id": "evt-group",

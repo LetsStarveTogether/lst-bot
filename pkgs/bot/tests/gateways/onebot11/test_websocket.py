@@ -1,4 +1,12 @@
-from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
+from asyncio import (
+    CancelledError,
+    Event,
+    QueueFull,
+    TaskGroup,
+    create_task,
+    gather,
+    timeout,
+)
 from http import HTTPStatus
 from math import inf, nan
 from types import SimpleNamespace
@@ -401,6 +409,38 @@ async def test_forward_websocket_lifecycle_restarts_real_connections() -> None:
                 await websocket.receiving.wait()
                 assert connector.await_count == index
             assert websocket.closed.is_set()
+
+
+async def test_disconnect_cancels_pending_action() -> None:
+    bot = Bot()
+    self_ = BotSelf(platform="qq", user_id="10000")
+    websocket = ScriptedWebSocket()
+    gateway = OneBot11Gateway(
+        bot,
+        ingress=[
+            ForwardWebSocket(
+                "ws://onebot.example/api",
+                role="api",
+                self_=self_,
+                reconnect_interval=60,
+            )
+        ],
+        action=WebSocketAction(timeout=60),
+        websocket_connector=AsyncMock(return_value=websocket),
+    )
+    bot.add_gateway(gateway)
+    connection = gateway.connection_for(self_)
+
+    async def disconnect() -> None:
+        await websocket.sent.get()
+        websocket.finish()
+
+    async with timeout(1), bot:
+        await websocket.receiving.wait()
+        with pytest.raises(ConnectionError, match="closed"):
+            await gather(connection.action("get_version"), disconnect())
+
+    assert websocket.closed.is_set()
 
 
 async def test_gateway_close_finishes_cleanup_before_propagating_cancellation() -> None:

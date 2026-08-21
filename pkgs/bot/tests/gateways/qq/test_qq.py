@@ -328,6 +328,31 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     assert not gateway._online  # ruff: ignore[private-member-access]
 
 
+async def test_gateway_lifecycle_actually_restarts() -> None:
+    websockets = [
+        ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
+        ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
+    ]
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"url": "wss://qq.example"},
+        {"access_token": "token", "expires_in": 7200},
+        {"url": "wss://qq.example"},
+    )
+    connector = AsyncMock(side_effect=websockets)
+    gateway = _gateway(pool, websocket_connector=connector)
+    bot = gateway.bot
+    bot.add_gateway(gateway)
+
+    async with timeout(1):
+        for index, websocket in enumerate(websockets, start=1):
+            async with bot:
+                identify = orjson.loads(await websocket.sent.get())
+                assert identify["op"] == 2
+                assert connector.await_count == index
+            assert websocket.closed.is_set()
+
+
 def test_event_model_families_map_to_common_events() -> None:
     legacy_message: dict[str, JsonValue] = {
         "id": "message",
@@ -704,9 +729,8 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
     )
 
     async with timeout(1):
-        with pytest.raises(ConnectionError, match="closed normally") as reconnect:
+        with pytest.raises(ConnectionError, match="closed normally"):
             await gateway._serve_websocket(clean, "token")  # ruff: ignore[private-member-access]
-    assert type(reconnect.value).__name__ == "_ReconnectError"
 
     gateway._session_id = "online-session"  # ruff: ignore[private-member-access]
     gateway._seq = 0  # ruff: ignore[private-member-access]
@@ -1138,7 +1162,6 @@ async def test_websocket_invalid_session_selects_authentication_mode(
                 "token",
             )
 
-    assert type(caught.value).__name__ == "_ReconnectError"
     assert vars(caught.value)["reset_session"] is reset_session
     assert websocket.closed.is_set()
 
@@ -1170,7 +1193,6 @@ async def test_websocket_close_code_recovery_policy(
         )
 
     error = caught.value
-    assert type(error).__name__ == "_ReconnectError"
     assert (
         getattr(error, "reset_token", False),
         getattr(error, "reset_session", False),

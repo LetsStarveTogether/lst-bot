@@ -128,27 +128,43 @@ def test_strict_boundaries_and_secret_repr() -> None:
 
 
 @pytest.mark.parametrize(
-    ("interaction_type", "data"),
+    ("interaction_type", "data", "valid_data"),
     [
-        (2, None),
-        (3, {"custom_id": "button"}),
-        (4, {"id": "12", "name": "query"}),
-        (5, {"custom_id": "modal"}),
+        (2, None, {"id": "12", "name": "query", "type": 1}),
+        (
+            3,
+            {"custom_id": "button"},
+            {"custom_id": "button", "component_type": 2},
+        ),
+        (
+            4,
+            {"id": "12", "name": "query"},
+            {"id": "12", "name": "query", "type": 1},
+        ),
+        (
+            5,
+            {"custom_id": "modal"},
+            {"custom_id": "modal", "components": []},
+        ),
     ],
 )
-def test_interaction_types_require_their_minimum_data(
+def test_interaction_types_require_and_accept_their_minimum_data(
     interaction_type: int,
     data: object,
+    valid_data: object,
 ) -> None:
+    payload = {
+        "id": "10",
+        "application_id": "11",
+        "type": interaction_type,
+        "token": CREDENTIAL,
+        "version": 1,
+    }
     with pytest.raises(ValidationError, match="incomplete data"):
-        DiscordInteraction.model_validate({
-            "id": "10",
-            "application_id": "11",
-            "type": interaction_type,
-            "data": data,
-            "token": CREDENTIAL,
-            "version": 1,
-        })
+        DiscordInteraction.model_validate(payload | {"data": data})
+    assert DiscordInteraction.model_validate(payload | {"data": valid_data}).type == (
+        interaction_type
+    )
 
 
 async def test_default_connector_accepts_unbounded_official_gateway_frames(

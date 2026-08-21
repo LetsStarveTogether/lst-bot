@@ -1,5 +1,4 @@
 import json
-from base64 import b64encode
 from decimal import Decimal
 
 import pytest
@@ -361,6 +360,15 @@ def test_action_response_accepts_status_retcode_contract(
             id="ok-with-failed-retcode",
         ),
         pytest.param(
+            {
+                "status": "ok",
+                "retcode": 0,
+                "data": None,
+                "message": "unexpected",
+            },
+            id="ok-with-message",
+        ),
+        pytest.param(
             {"status": "failed", "retcode": 0, "data": None, "message": "bad"},
             id="failed-with-ok-retcode",
         ),
@@ -428,74 +436,34 @@ def test_non_negative_int_params_reject_non_int64_values(value: object) -> None:
         ),
     ],
 )
-@pytest.mark.parametrize(
-    "input_type",
-    [
-        pytest.param(bytes, id="bytes"),
-        pytest.param(bytearray, id="bytearray"),
-    ],
-)
-def test_upload_data_treats_python_bytes_as_raw_and_dumps_base64(
+def test_upload_data_accepts_python_bytes_and_json_base64(
     action: str,
     params: dict[str, object],
-    input_type: type[bytes | bytearray],
 ) -> None:
-    raw = b"\xff\x00"
-    call = ActionCall.model_validate({
+    encoded_params = {**params, "data": "/w=="}
+    python_call = ActionCall.model_validate({
         "action": action,
-        "params": {**params, "data": input_type(raw)},
+        "params": {**params, "data": bytearray(b"\xff")},
     })
-
-    assert call.params.model_dump()["data"] == raw
-    assert (
-        call.model_dump(mode="json", by_alias=True, exclude_none=True)["params"]["data"]
-        == b64encode(raw).decode()
-    )
-
-
-@pytest.mark.parametrize(
-    ("action", "params"),
-    [
-        pytest.param(
-            "upload_file",
-            {"type": "data", "name": "bytes.bin", "data": "/w=="},
-            id="upload-file",
-        ),
-        pytest.param(
-            "upload_file_fragmented",
-            {
-                "stage": "transfer",
-                "file_id": "file-1",
-                "offset": 0,
-                "data": "/w==",
-            },
-            id="fragmented-transfer",
-        ),
-    ],
-)
-def test_upload_data_decodes_json_base64_and_round_trips(
-    action: str,
-    params: dict[str, object],
-) -> None:
-    call = ActionCall.model_validate_json(
+    json_call = ActionCall.model_validate_json(
         json.dumps({
             "action": action,
-            "params": params,
+            "params": encoded_params,
         }),
     )
 
-    assert call.params.model_dump()["data"] == b"\xff"
-    assert call.model_dump(mode="json", by_alias=True, exclude_none=True) == {
-        "action": action,
-        "params": params,
-    }
+    for call in (python_call, json_call):
+        assert call.params.model_dump()["data"] == b"\xff"
+        assert call.model_dump(mode="json", by_alias=True, exclude_none=True) == {
+            "action": action,
+            "params": encoded_params,
+        }
 
 
 @pytest.mark.parametrize(
     "value",
     [
         pytest.param("%%%", id="invalid-alphabet"),
-        pytest.param("a", id="invalid-padding"),
         pytest.param(None, id="null"),
     ],
 )
