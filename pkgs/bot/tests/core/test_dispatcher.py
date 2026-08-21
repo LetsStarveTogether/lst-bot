@@ -12,7 +12,7 @@ from datetime import timedelta
 from typing import override
 
 import pytest
-from bot import Bot, Injected, PrivateMessageEvent
+from bot import Bot, BotSelf, Injected, PrivateMessageEvent
 from bot.testing import RecordingGateway, private_message_event
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
@@ -52,6 +52,23 @@ async def test_submission_requires_a_running_bot() -> None:
         bot.enqueue_event(gateway.connection, message)
 
 
+async def test_submission_rejects_foreign_or_mismatched_sources() -> None:
+    bot = Bot()
+    gateway = RecordingGateway(bot)
+    alternate = RecordingGateway(bot)
+    foreign = RecordingGateway(Bot())
+    message = event("event")
+    mismatched = gateway.connection_for(BotSelf(platform="test", user_id="other"))
+
+    async with bot:
+        with pytest.raises(ValueError, match="another bot"):
+            bot.enqueue_event(foreign.connection, message)
+        with pytest.raises(ValueError, match="do not match"):
+            bot.enqueue_event(gateway.connection, message, gateway=alternate)
+        with pytest.raises(ValueError, match="event self"):
+            bot.enqueue_event(mismatched, message)
+
+
 async def test_enqueue_preserves_fifo_order_and_context() -> None:
     bot = Bot(max_dispatches=1)
     gateway = RecordingGateway(bot)
@@ -84,6 +101,9 @@ async def test_enqueue_preserves_fifo_order_and_context() -> None:
 async def test_event_subclass_defined_after_bot_is_injectable() -> None:
     bot = Bot()
     gateway = RecordingGateway(bot)
+
+    async with bot:
+        pass
 
     class CustomEvent(PrivateMessageEvent):
         pass
@@ -227,15 +247,17 @@ async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
     seen: list[Bot] = []
 
     @second.on_msg(block=True)
-    def inner(bot: Injected[Bot]) -> None:
+    async def inner(bot: Injected[Bot]) -> None:
         seen.append(bot)
+        with pytest.raises(RuntimeError, match="Recursive dispatch"):
+            await first.dispatch(first_gateway.connection, event("recursive"))
 
     @first.on_msg(block=True)
     async def outer(bot: Injected[Bot]) -> None:
         seen.append(bot)
         await second.dispatch(second_gateway.connection, event("inner"))
 
-    async with first, second:
+    async with timeout(1), first, second:
         await first.dispatch(first_gateway.connection, event("outer"))
 
     assert seen == [first, second]

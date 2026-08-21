@@ -1,4 +1,4 @@
-from asyncio import CancelledError, Event, create_task, gather, timeout
+from asyncio import CancelledError, Event, Task, create_task, gather, sleep, timeout
 from typing import override
 
 import pytest
@@ -219,9 +219,13 @@ async def test_gateways_cannot_reenter_bot_lifecycle() -> None:
     async with timeout(1):
 
         class RecursiveStartGateway(Gateway):
+            def __init__(self, bot: Bot, target: Bot | None = None) -> None:
+                super().__init__(bot)
+                self.target = target or bot
+
             @override
             async def start(self) -> None:
-                await self.bot.start()
+                await self.target.start()
 
         startup_bot = Bot()
         startup_bot.add_gateway(RecursiveStartGateway(startup_bot))
@@ -240,6 +244,14 @@ async def test_gateways_cannot_reenter_bot_lifecycle() -> None:
         with pytest.raises(RuntimeError, match="cannot be re-entered"):
             await child_bot.start()
 
+        first = Bot()
+        second = Bot()
+        first.add_gateway(RecursiveStartGateway(first, second))
+        second.add_gateway(RecursiveStartGateway(second, first))
+
+        with pytest.raises(RuntimeError, match="cannot be re-entered"):
+            await first.start()
+
         class RecursiveCloseGateway(Gateway):
             closes = 0
 
@@ -256,6 +268,58 @@ async def test_gateways_cannot_reenter_bot_lifecycle() -> None:
         with pytest.raises(RuntimeError, match="cannot be re-entered"):
             await closing_bot.close()
         await closing_bot.close()
+
+
+async def test_stale_lifecycle_context_waits_for_the_current_operation() -> None:
+    trigger = Event()
+    attempted = Event()
+    close_entered = Event()
+    close_release = Event()
+    starts = 0
+    background: Task[None] | None = None
+
+    async def start_later(bot: Bot) -> None:
+        await trigger.wait()
+        attempted.set()
+        await bot.start()
+
+    class DelayedGateway(Gateway):
+        @override
+        async def start(self) -> None:
+            nonlocal background, starts
+            starts += 1
+            if background is None:
+                background = create_task(start_later(self.bot))
+
+        @override
+        async def close(self) -> None:
+            close_entered.set()
+            await close_release.wait()
+
+    bot = Bot()
+    bot.add_gateway(DelayedGateway(bot))
+
+    async with timeout(1):
+        await bot.start()
+        task = background
+        assert task is not None
+
+        async def coordinate() -> None:
+            await close_entered.wait()
+            trigger.set()
+            await attempted.wait()
+            try:
+                await sleep(0)
+                assert not task.done()
+            finally:
+                close_release.set()
+
+        coordinator = create_task(coordinate())
+        await bot.close()
+        await coordinator
+        await task
+        assert starts == 2
+        await bot.close()
 
 
 async def test_gateway_registration_freezes_after_startup_begins() -> None:

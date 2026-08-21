@@ -1,4 +1,4 @@
-from asyncio import Event, Queue, Task, create_task, wait_for
+from asyncio import Event, Queue, Task, create_task, timeout, wait_for
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -8,6 +8,7 @@ from bot import (
     Bot,
     BotSelf,
     Connection,
+    CronScheduler,
     Injected,
 )
 from bot.testing import RecordingGateway, recording_gateway
@@ -49,7 +50,7 @@ def use_scripted_time(bot: Bot) -> ScriptedSleep:
 
 
 def test_on_cron_registers_validated_jobs_in_the_public_view() -> None:
-    bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
+    bot = Bot()
 
     @bot.scheduler.on_cron("*/5 * * * *", name="five")
     def five() -> None:
@@ -63,9 +64,11 @@ def test_on_cron_registers_validated_jobs_in_the_public_view() -> None:
 
     assert isinstance(bot.scheduler.jobs, tuple)
     assert five_job.name == "five"
-    assert str(five_job.timezone) == "UTC"
+    assert five_job.timezone is UTC
     assert tokyo_job.name == "tokyo"
     assert str(tokyo_job.timezone) == "Asia/Tokyo"
+    with pytest.raises(AttributeError):
+        bot.scheduler = CronScheduler(bot)  # ty: ignore[invalid-assignment]
 
 
 def test_on_cron_rejects_invalid_cron_expression() -> None:
@@ -94,6 +97,50 @@ async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> N
         await wait_for(started.wait(), timeout=1)
 
     assert cancelled.is_set()
+
+
+async def test_scheduler_close_cancels_all_jobs_before_awaiting_cleanup() -> None:
+    bot = Bot()
+    sleep = use_scripted_time(bot)
+    first_started = Event()
+    second_started = Event()
+    first_cancelled = Event()
+    second_cancelled = Event()
+    release_first = Event()
+
+    @bot.scheduler.on_cron("* * * * *")
+    async def first() -> None:
+        first_started.set()
+        try:
+            await Event().wait()
+        finally:
+            first_cancelled.set()
+            await release_first.wait()
+
+    @bot.scheduler.on_cron("* * * * *")
+    async def second() -> None:
+        second_started.set()
+        try:
+            await Event().wait()
+        finally:
+            second_cancelled.set()
+
+    async with timeout(1):
+        await bot.start()
+        _, first_tick = await sleep.next_call()
+        _, second_tick = await sleep.next_call()
+        first_tick.set()
+        second_tick.set()
+        await first_started.wait()
+        await second_started.wait()
+
+        closing = create_task(bot.scheduler.close())
+        await first_cancelled.wait()
+        await second_cancelled.wait()
+        assert not closing.done()
+        release_first.set()
+        await closing
+        await bot.close()
 
 
 async def test_cron_handler_cannot_close_its_bot() -> None:

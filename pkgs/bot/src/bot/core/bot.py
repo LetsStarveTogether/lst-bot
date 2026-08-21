@@ -56,20 +56,22 @@ logger = getLogger(__name__)
 
 _EVENT_QUEUE_CAPACITY = 64
 type _TaskOwner = tuple[object, Task[None]]
+type _TaskOwners = tuple[_TaskOwner, ...]
+type _LifecycleOwners = tuple[tuple[object, object], ...]
 
-_CURRENT_DISPATCHER: ContextVar[_TaskOwner | None] = ContextVar(
+_CURRENT_DISPATCHER: ContextVar[_TaskOwners] = ContextVar(
     "bot_current_dispatcher",
-    default=None,
+    default=(),
 )
-_CURRENT_LIFECYCLE: ContextVar[Bot | None] = ContextVar(
+_CURRENT_LIFECYCLE: ContextVar[_LifecycleOwners] = ContextVar(
     "bot_current_lifecycle",
-    default=None,
+    default=(),
 )
 type _CleanupCallback = Callable[[], Awaitable[None]]
 
 
-def _task_is_active_for(owner: _TaskOwner | None, bot: Bot) -> bool:
-    return owner is not None and owner[0] is bot and not owner[1].done()
+def _task_is_active_for(owners: _TaskOwners, bot: Bot) -> bool:
+    return any(owner is bot and not task.done() for owner, task in owners)
 
 
 @dataclass(slots=True)
@@ -124,8 +126,9 @@ class Bot(EventRouter):
         )
         self.container.add_instance(self, provides=Bot)
         self._gateways: list[Gateway] = []
-        self.scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
+        self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
+        self._lifecycle_owner: object | None = None
         self._lifecycle_started = False
         self._pending_cleanup: list[_CleanupCallback] = []
         self._running = AsyncEvent()
@@ -165,6 +168,10 @@ class Bot(EventRouter):
         server.shutdown_handler(self.close)
         self._mounted_server = server
 
+    @property
+    def scheduler(self) -> CronScheduler:
+        return self._scheduler
+
     def resolve_gateway(self, gateway_type: type[Gateway] | None = None) -> Gateway:
         if gateway_type is None:
             if len(self._gateways) == 1:
@@ -188,57 +195,71 @@ class Bot(EventRouter):
 
     async def start(self) -> None:
         self._reject_lifecycle_reentry()
-        if not self._lifecycle_started:
-            register_context_providers(self.container)
-            self._lifecycle_started = True
+        self._lifecycle_started = True
         async with self._lifecycle_lock:
-            with _CURRENT_LIFECYCLE.set(self):
-                if self._pending_cleanup:
-                    msg = "Bot shutdown is incomplete; call close() again"
-                    raise RuntimeError(msg)
-                if self._running.is_set():
-                    return
-                try:
-                    await self._start_once()
-                except BaseException:
-                    logger.exception(
-                        "bot startup failed: gateways=%s",
-                        len(self._gateways),
-                    )
-                    raise
-                self._running.set()
+            owner = object()
+            self._lifecycle_owner = owner
+            try:
+                with _CURRENT_LIFECYCLE.set((*_CURRENT_LIFECYCLE.get(), (self, owner))):
+                    if self._pending_cleanup:
+                        msg = "Bot shutdown is incomplete; call close() again"
+                        raise RuntimeError(msg)
+                    if self._running.is_set():
+                        return
+                    try:
+                        await self._start_once()
+                    except BaseException:
+                        logger.exception(
+                            "bot startup failed: gateways=%s",
+                            len(self._gateways),
+                        )
+                        raise
+                    self._running.set()
+            finally:
+                self._lifecycle_owner = None
 
     async def close(self) -> None:
         if _task_is_active_for(_CURRENT_DISPATCHER.get(), self):
             msg = "Bot cannot be closed from a dispatch handler"
             raise RuntimeError(msg)
-        if _task_is_active_for(CURRENT_SCHEDULER_BOT.get(), self):
+        scheduler_owner = CURRENT_SCHEDULER_BOT.get()
+        if (
+            scheduler_owner is not None
+            and scheduler_owner[0] is self
+            and not scheduler_owner[1].done()
+        ):
             msg = "Bot cannot be closed from a scheduled handler"
             raise RuntimeError(msg)
         self._reject_lifecycle_reentry()
         async with self._lifecycle_lock:
-            with _CURRENT_LIFECYCLE.set(self):
-                if not self._running.is_set() and not self._pending_cleanup:
-                    return
-                self._running.clear()
-                if not self._pending_cleanup:
-                    self._pending_cleanup = self._cleanup_callbacks(
-                        self._gateways,
-                        close_container=True,
-                    )
-                failed, errors = await self._run_cleanup(self._pending_cleanup)
-                self._pending_cleanup = failed
-                _raise_errors("Bot cleanup failed", errors)
+            owner = object()
+            self._lifecycle_owner = owner
+            try:
+                with _CURRENT_LIFECYCLE.set((*_CURRENT_LIFECYCLE.get(), (self, owner))):
+                    if not self._running.is_set() and not self._pending_cleanup:
+                        return
+                    self._running.clear()
+                    if not self._pending_cleanup:
+                        self._pending_cleanup = self._cleanup_callbacks(
+                            self._gateways,
+                            close_container=True,
+                        )
+                    failed, errors = await self._run_cleanup(self._pending_cleanup)
+                    self._pending_cleanup = failed
+                    _raise_errors("Bot cleanup failed", errors)
+            finally:
+                self._lifecycle_owner = None
 
     async def _start_once(self) -> None:
+        register_context_providers(self.container)
         gateways: list[Gateway] = []
         try:
-            await self._start_dispatcher()
+            self._start_dispatcher()
             for gateway in self._gateways:
                 gateways.append(gateway)
                 await gateway.start()
             self.container.compile()
-            self.scheduler.start()
+            self._scheduler.start()
         except BaseException as startup_error:
             callbacks = self._cleanup_callbacks(
                 gateways,
@@ -253,7 +274,10 @@ class Bot(EventRouter):
             raise
 
     def _reject_lifecycle_reentry(self) -> None:
-        if _CURRENT_LIFECYCLE.get() is self and self._lifecycle_lock.locked():
+        if any(
+            bot is self and owner is self._lifecycle_owner
+            for bot, owner in _CURRENT_LIFECYCLE.get()
+        ):
             msg = "Bot lifecycle cannot be re-entered"
             raise RuntimeError(msg)
 
@@ -264,7 +288,7 @@ class Bot(EventRouter):
         close_container: bool,
     ) -> list[_CleanupCallback]:
         callbacks: list[_CleanupCallback] = [
-            self.scheduler.close,
+            self._scheduler.close,
             self._stop_dispatcher,
         ]
         callbacks.extend(gateway.close for gateway in reversed(tuple(gateways)))
@@ -325,6 +349,18 @@ class Bot(EventRouter):
         gateway: Gateway | None,
         result: Future[None] | None = None,
     ) -> None:
+        if connection is not None:
+            if connection.self_ != event.self_:
+                msg = "Connection self does not match event self"
+                raise ValueError(msg)
+            if gateway is not None and gateway is not connection.gateway:
+                msg = "Connection and gateway do not match"
+                raise ValueError(msg)
+        active_gateway = connection.gateway if connection is not None else gateway
+        if active_gateway is not None and active_gateway.bot is not self:
+            msg = "Gateway belongs to another bot"
+            raise ValueError(msg)
+
         queue = self._event_queue
         if not self._running.is_set() or queue is None:
             msg = "Bot is not running"
@@ -346,7 +382,7 @@ class Bot(EventRouter):
             )
         )
 
-    async def _start_dispatcher(self) -> None:
+    def _start_dispatcher(self) -> None:
         queue: Queue[_QueuedEvent] = Queue(maxsize=_EVENT_QUEUE_CAPACITY)
         self._event_queue = queue
         self._event_workers = tuple(
@@ -414,7 +450,7 @@ class Bot(EventRouter):
         item: _QueuedEvent,
     ) -> None:
         owner = cast(Task[None], current_task())
-        with _CURRENT_DISPATCHER.set((self, owner)):
+        with _CURRENT_DISPATCHER.set((*_CURRENT_DISPATCHER.get(), (self, owner))):
             await self._dispatch_event(
                 item.connection,
                 item.event,

@@ -5,7 +5,7 @@ from asyncio import sleep as async_sleep
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import UTC, datetime, tzinfo
 from logging import getLogger
 from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
@@ -72,8 +72,7 @@ class CronJob:
             msg = "Scheduled jobs cannot close themselves"
             raise RuntimeError(msg)
         for task in tasks:
-            if not task.done():
-                task.cancel()
+            task.cancel()
         results = await gather(*tasks, return_exceptions=True)
         self._runner = None
         self._running = None
@@ -94,9 +93,9 @@ class CronJob:
             )
             logger.debug("scheduled job next trigger: %s @ %s", self, next_at)
             await self.sleep(max(0, next_at.timestamp() - now.timestamp()))
-            await self._trigger()
+            self._trigger()
 
-    async def _trigger(self) -> None:
+    def _trigger(self) -> None:
         logger.debug("scheduled job trigger: %s", self)
         if self._running is not None and not self._running.done():
             logger.warning("scheduled job still running: %s", self)
@@ -137,17 +136,20 @@ class CronJob:
         connection: Connection | None,
     ) -> None:
         async with self.bot.container.enter_scope(Scope.REQUEST) as resolver:
-            context = InjectionContext(
-                bot=self.bot,
-                gateway=gateway,
-                connection=connection,
+            value = await call_with_injection(
+                self.handler,
+                InjectionContext(
+                    bot=self.bot,
+                    gateway=gateway,
+                    connection=connection,
+                ),
+                resolver,
             )
-            value = await call_with_injection(self.handler, context, resolver)
         if value is not None:
             msg = "Scheduled task handlers must not return values"
             raise TypeError(msg)
 
-    def _resolve_target(self) -> _Target:
+    def _resolve_target(self) -> tuple[Gateway | None, Connection | None]:
         self_ = self.self_
         if self_ is None:
             return None, None
@@ -168,7 +170,9 @@ class CronScheduler:
         self.bot = bot
         self.clock = clock
         self.sleep = sleep
-        self._default_timezone = default_timezone
+        self._default_timezone = (
+            default_timezone if default_timezone is not None else UTC
+        )
         self._jobs: list[CronJob] = []
         self._running = False
 
@@ -195,7 +199,11 @@ class CronScheduler:
                 expr=expr,
                 handler=handler,
                 name=name or getattr(handler, "__name__", "cron_job"),
-                timezone=self._timezone(timezone),
+                timezone=(
+                    ZoneInfo(timezone)
+                    if timezone is not None
+                    else self._default_timezone
+                ),
                 self_=self_,
                 gateway_type=gateway,
                 clock=self.clock,
@@ -219,20 +227,9 @@ class CronScheduler:
             msg = "Scheduler cannot be closed from a scheduled handler"
             raise RuntimeError(msg)
         self._running = False
-        errors: list[BaseException] = []
-        for job in self._jobs:
-            try:
-                await job.close()
-            except BaseException as exc:
-                errors.append(exc)
+        results = await gather(
+            *(job.close() for job in self._jobs),
+            return_exceptions=True,
+        )
+        errors = [result for result in results if isinstance(result, BaseException)]
         _raise_errors("Scheduler shutdown failed", errors)
-
-    def _timezone(self, timezone: str | None) -> tzinfo:
-        if timezone is not None:
-            return ZoneInfo(timezone)
-        if self._default_timezone is not None:
-            return self._default_timezone
-        return cast(tzinfo, datetime.now().astimezone().tzinfo)
-
-
-_Target = tuple[Gateway | None, Connection | None]
