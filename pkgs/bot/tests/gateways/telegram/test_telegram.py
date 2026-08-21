@@ -34,8 +34,9 @@ from bot.protocol.events import (
 from bot.protocol.returns import ReturnAction
 from diwire import Injected
 from pydantic import JsonValue, ValidationError
-from tests.gateways.support import response
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+
+from tests.gateways.support import response
 
 CREDENTIAL = "opaque-token"
 SUPERGROUP_ID = -1_000_000_000_001
@@ -165,27 +166,21 @@ def test_strict_models() -> None:
             "title": "Place",
             "address": "Address",
         })
-    with pytest.raises(ValidationError):
-        TelegramUser(id=-1, is_bot=False, first_name="User")
+    maximum_id = 2**52 - 1
+    assert TelegramUser(id=maximum_id, is_bot=False, first_name="User").id == maximum_id
     for chat in (
-        TelegramChat(id=0xFF_FFFF_FFFF, type="private"),
-        TelegramChat(id=-999_999_999_999, type="group"),
-        TelegramChat(id=SUPERGROUP_ID, type="supergroup"),
-        TelegramChat(id=-4_000_000_000_000, type="channel"),
+        TelegramChat(id=maximum_id, type="private", is_direct_messages=True),
+        TelegramChat(id=-maximum_id, type="group"),
+        TelegramChat(id=1, type="supergroup"),
+        TelegramChat(id=-1, type="channel"),
     ):
         assert chat.id
-    for chat_id, chat_type in (
-        (0, "private"),
-        (0x1_00_0000_0000, "private"),
-        (-1, "private"),
-        (1, "group"),
-        (-100, "supergroup"),
-        (-2_000_000_000_000, "channel"),
-    ):
+    for user_id in (-1, maximum_id + 1):
         with pytest.raises(ValidationError):
-            TelegramChat.model_validate({"id": chat_id, "type": chat_type})
-    with pytest.raises(ValidationError, match="must be supergroups"):
-        TelegramChat(id=1, type="private", is_direct_messages=True)
+            TelegramUser(id=user_id, is_bot=False, first_name="User")
+    for chat_id in (0, -maximum_id - 1, maximum_id + 1):
+        with pytest.raises(ValidationError):
+            TelegramChat(id=chat_id, type="private")
     assert TelegramUpdate(update_id=2**31 - 1).update_id == 2**31 - 1
     for update_id in (0, 2**31):
         with pytest.raises(ValidationError):

@@ -126,8 +126,7 @@ TELEGRAM_SERVICE_MESSAGE_TYPES = tuple(
 
 _MAX_INT32 = 2**31 - 1
 _MAX_INT64 = 2**63 - 1
-_MAX_TELEGRAM_USER_ID = 0xFF_FFFF_FFFF
-_MIN_TELEGRAM_CHAT_ID = -4_000_000_000_000
+_MAX_TELEGRAM_ID = 2**52 - 1
 
 
 def _nonzero_id(value: int) -> int:
@@ -139,12 +138,12 @@ def _nonzero_id(value: int) -> int:
 
 type TelegramChatID = Annotated[
     StrictInt,
-    Field(ge=_MIN_TELEGRAM_CHAT_ID, le=_MAX_TELEGRAM_USER_ID),
+    Field(ge=-_MAX_TELEGRAM_ID, le=_MAX_TELEGRAM_ID),
     AfterValidator(_nonzero_id),
 ]
 type TelegramUserID = Annotated[
     StrictInt,
-    Field(gt=0, le=_MAX_TELEGRAM_USER_ID),
+    Field(gt=0, le=_MAX_TELEGRAM_ID),
 ]
 type TelegramUpdateOffset = Annotated[
     StrictInt,
@@ -260,28 +259,6 @@ class TelegramChat(Model):
     last_name: StrictStr | None = None
     is_forum: Literal[True] | None = None
     is_direct_messages: Literal[True] | None = None
-
-    @model_validator(mode="after")
-    def id_matches_type(self) -> Self:
-        if self.is_direct_messages and self.type != "supergroup":
-            msg = "Telegram direct-message chats must be supergroups"
-            raise ValueError(msg)
-        ranges = {
-            "private": ((1, _MAX_TELEGRAM_USER_ID),),
-            "group": ((-999_999_999_999, -1),),
-            "supergroup": (
-                (-1_997_852_516_352, -1_000_000_000_001),
-                (_MIN_TELEGRAM_CHAT_ID, -2_002_147_483_649),
-            ),
-            "channel": (
-                (-1_997_852_516_352, -1_000_000_000_001),
-                (_MIN_TELEGRAM_CHAT_ID, -2_002_147_483_649),
-            ),
-        }[self.type]
-        if not any(start <= self.id <= end for start, end in ranges):
-            msg = f"Telegram {self.type} chat ID is outside its official range"
-            raise ValueError(msg)
-        return self
 
 
 class TelegramDirectMessagesTopic(Model):
