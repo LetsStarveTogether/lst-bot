@@ -14,16 +14,12 @@ from pydantic import (
 )
 from pydantic.experimental.missing_sentinel import MISSING
 
-from .base import Model
+from .base import Model, field_value
 from .enums import MsgSegmentType
 
 
 def _segment_tag(value: object) -> MsgSegmentType:
-    segment_type = (
-        value.get("type")
-        if isinstance(value, Mapping)
-        else getattr(value, "type", None)
-    )
+    segment_type = field_value(value, "type")
     return (
         MsgSegmentType(segment_type)
         if segment_type in MsgSegmentType

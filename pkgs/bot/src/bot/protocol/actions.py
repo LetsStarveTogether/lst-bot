@@ -25,7 +25,7 @@ from pydantic import (
 )
 from pydantic.experimental.missing_sentinel import MISSING
 
-from .base import Model
+from .base import Model, field_value
 from .common import BotSelf
 from .enums import (
     Action,
@@ -150,20 +150,14 @@ class ActionResponse(Model):
         )
 
 
-def _field_value(value: object, key: str) -> object:
-    if isinstance(value, Mapping):
-        return value.get(key)
-    return getattr(value, key, None)
-
-
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
-    detail_type = _field_value(value, "detail_type")
+    detail_type = field_value(value, "detail_type")
     if detail_type is None:
-        if _field_value(value, "guild_id") and _field_value(value, "channel_id"):
+        if field_value(value, "guild_id") and field_value(value, "channel_id"):
             return MsgTargetTag.CHANNEL
-        if _field_value(value, "group_id"):
+        if field_value(value, "group_id"):
             return MsgTargetTag.GROUP
-        if _field_value(value, "user_id"):
+        if field_value(value, "user_id"):
             return MsgTargetTag.PRIVATE
     try:
         return MsgTargetTag(detail_type)
@@ -172,7 +166,7 @@ def _send_msg_params_tag(value: object) -> MsgTargetTag:
 
 
 def _upload_file_params_tag(value: object) -> UploadFileTag:
-    file_type = _field_value(value, "type")
+    file_type = field_value(value, "type")
     try:
         return UploadFileTag(file_type)
     except ValueError:
@@ -401,13 +395,6 @@ class ActionCall(Model):
         value: object,
         info: ValidationInfo,
     ) -> ActionParamModel:
-        if (
-            info.data.get("action") == Action.SEND_MESSAGE
-            and isinstance(value, Mapping)
-            and "detail_type" not in value
-            and (detail_type := _send_msg_params_tag(value)) != MsgTargetTag.EXTENSION
-        ):
-            value = {**value, "detail_type": detail_type}
         return _ACTION_PARAM_ADAPTERS.get(
             info.data.get("action"),
             _DEFAULT_ACTION_PARAMS,

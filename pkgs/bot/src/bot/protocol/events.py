@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -12,7 +11,7 @@ from pydantic import (
     field_validator,
 )
 
-from .base import Model
+from .base import Model, field_value
 from .common import BotSelf, Status, Version
 from .enums import EventDetailType, EventKind
 from .msg import Msg
@@ -221,12 +220,6 @@ class StatusUpdateMetaEvent(MetaEvent):
     status: Status
 
 
-def _field_value(value: object, key: str) -> object:
-    if isinstance(value, Mapping):
-        return value.get(key)
-    return getattr(value, key, None)
-
-
 _EVENT_MODELS: dict[str | tuple[str, str], type[Event]] = {
     (EventKind.MESSAGE, EventDetailType.PRIVATE): PrivateMessageEvent,
     (EventKind.MESSAGE, EventDetailType.GROUP): GroupMessageEvent,
@@ -286,8 +279,8 @@ class EventPayload(RootModel[SerializeAsAny[InstanceOf[Event]]]):
     @field_validator("root", mode="before")
     @classmethod
     def parse_event(cls, value: object) -> Event:
-        event_type = _field_value(value, "type")
-        detail_type = _field_value(value, "detail_type")
+        event_type = field_value(value, "type")
+        detail_type = field_value(value, "detail_type")
         model = (
             _EVENT_MODELS.get((event_type, detail_type))
             if isinstance(event_type, str) and isinstance(detail_type, str)
