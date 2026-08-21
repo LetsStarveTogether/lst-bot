@@ -35,7 +35,7 @@ from diwire import Injected
 from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
-from tests.gateways.support import Pool, response
+from tests.gateways.support import HangingBodyResponse, Pool, response
 
 CREDENTIAL = "opaque-token"
 SUPERGROUP_ID = -1_000_000_000_001
@@ -451,6 +451,14 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
 
     with pytest.raises(ValueError, match="local bug"):
         await client(BrokenPool()).call_json("getMe")
+
+
+async def test_rest_timeout_includes_response_body() -> None:
+    hanging = HangingBodyResponse()
+    async with timeout(1):
+        with pytest.raises(ConnectionError, match="request failed"):
+            await client(Pool(hanging)).call_json("getMe", request_timeout=0.01)
+    assert hanging.cancelled.is_set()
 
 
 async def test_multipart_preserves_file_metadata() -> None:

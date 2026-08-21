@@ -1,4 +1,4 @@
-from asyncio import to_thread
+from asyncio import Event, to_thread
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +28,20 @@ def response(
         status=status,
         headers=headers or {"Content-Type": "application/json"},
     )
+
+
+class HangingBodyResponse(AsyncHTTPResponse):
+    def __init__(self) -> None:
+        super().__init__(status=HTTPStatus.OK)
+        self.cancelled = Event()
+
+    @property
+    async def data(self) -> bytes:
+        try:
+            await Event().wait()
+            return b""
+        finally:
+            self.cancelled.set()
 
 
 class Pool:

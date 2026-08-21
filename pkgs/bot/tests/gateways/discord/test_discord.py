@@ -46,7 +46,7 @@ from pydantic import ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
-from tests.gateways.support import response
+from tests.gateways.support import HangingBodyResponse, response
 
 from .support import (
     CREDENTIAL,
@@ -254,6 +254,17 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
     assert b"payload_json" not in multipart
     assert b"\r\n\r\nhello\r\n" in multipart
     assert all(kwargs["retries"] is False for _, _, kwargs in pool.requests)
+
+
+async def test_rest_timeout_includes_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hanging = HangingBodyResponse()
+    monkeypatch.setattr(discord_module, "_API_TIMEOUT", 0.01)
+    async with timeout(1):
+        with pytest.raises(ConnectionError, match="transport failed"):
+            await client(Pool(hanging)).request_discord("GET", "/gateway/bot")
+    assert hanging.cancelled.is_set()
 
 
 async def test_payload_json_multipart_supports_named_files_and_nested_json() -> None:
