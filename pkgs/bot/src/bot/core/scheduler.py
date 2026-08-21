@@ -213,6 +213,10 @@ class CronScheduler:
             job.start()
 
     async def close(self) -> None:
+        owner = CURRENT_SCHEDULER_BOT.get()
+        if owner is not None and owner[0] is self.bot and not owner[1].done():
+            msg = "Scheduler cannot be closed from a scheduled handler"
+            raise RuntimeError(msg)
         self._running = False
         errors: list[BaseException] = []
         for job in self._jobs:

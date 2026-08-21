@@ -112,6 +112,9 @@ async def test_cron_handler_cannot_close_its_bot() -> None:
         nonlocal background
         with pytest.raises(RuntimeError, match="scheduled handler"):
             await bot.close()
+        with pytest.raises(RuntimeError, match="scheduled handler"):
+            await create_task(bot.scheduler.close())
+        assert bot.scheduler._running  # ruff: ignore[private-member-access]
         with pytest.raises(RuntimeError, match="cannot close themselves"):
             await bot.scheduler.jobs[0].close()
         background = create_task(close_later())
