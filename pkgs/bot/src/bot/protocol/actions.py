@@ -27,14 +27,9 @@ from pydantic import (
 
 from .base import Model
 from .common import BotSelf
-from .constants import (
-    ACTION_CALL_TAGS,
-    MAX_RETCODE,
-    SHA256_STRING_PATTERN,
-)
+from .constants import MAX_RETCODE, SHA256_STRING_PATTERN
 from .enums import (
     Action,
-    ActionCallTag,
     ApiStatus,
     FileStage,
     MsgTargetTag,
@@ -254,18 +249,6 @@ def _upload_file_params_tag(value: object) -> UploadFileTag:
         return UploadFileTag.EXTENSION
 
 
-def _action_call_tag(action: str) -> ActionCallTag:
-    try:
-        action = Action(action)
-    except ValueError:
-        return ActionCallTag.EXTENSION
-    return ACTION_CALL_TAGS.get(action, ActionCallTag.EXTENSION)
-
-
-class EmptyActionParams(ActionParamModel):
-    pass
-
-
 class LatestEventsParams(ActionParamModel):
     limit: NonNegativeStrictInt | None = None
     timeout: NonNegativeStrictInt | None = None
@@ -463,31 +446,47 @@ class GetFileParams(ActionParamModel):
     type: StrictStr
 
 
-class ExtensionActionParams(ActionParamModel):
-    pass
-
-
+_DEFAULT_ACTION_PARAMS = TypeAdapter(ActionParamModel)
 _ACTION_PARAM_ADAPTERS = {
-    ActionCallTag.EMPTY: TypeAdapter(EmptyActionParams),
-    ActionCallTag.LATEST_EVENTS: TypeAdapter(LatestEventsParams),
-    ActionCallTag.SEND_MESSAGE: TypeAdapter(SendMsgParams),
-    ActionCallTag.USER_ID: TypeAdapter(UserIdParams),
-    ActionCallTag.MESSAGE_ID: TypeAdapter(MsgIdParams),
-    ActionCallTag.GROUP_ID: TypeAdapter(GroupIdParams),
-    ActionCallTag.GROUP_USER_ID: TypeAdapter(GroupUserIdParams),
-    ActionCallTag.GROUP_NAME: TypeAdapter(GroupNameParams),
-    ActionCallTag.GUILD_ID: TypeAdapter(GuildIdParams),
-    ActionCallTag.GUILD_USER_ID: TypeAdapter(GuildUserIdParams),
-    ActionCallTag.GUILD_NAME: TypeAdapter(GuildNameParams),
-    ActionCallTag.CHANNEL_ID: TypeAdapter(ChannelIdParams),
-    ActionCallTag.CHANNEL_LIST: TypeAdapter(ChannelListParams),
-    ActionCallTag.CHANNEL_USER_ID: TypeAdapter(ChannelUserIdParams),
-    ActionCallTag.CHANNEL_NAME: TypeAdapter(ChannelNameParams),
-    ActionCallTag.GET_FILE: TypeAdapter(GetFileParams),
-    ActionCallTag.UPLOAD_FILE: TypeAdapter(UploadFileParams),
-    ActionCallTag.UPLOAD_FILE_FRAGMENTED: TypeAdapter(FragmentedUploadParams),
-    ActionCallTag.GET_FILE_FRAGMENTED: TypeAdapter(FragmentedGetParams),
-    ActionCallTag.EXTENSION: TypeAdapter(ExtensionActionParams),
+    Action.GET_LATEST_EVENTS.value: TypeAdapter(LatestEventsParams),
+    Action.SEND_MESSAGE.value: TypeAdapter(SendMsgParams),
+    Action.GET_USER_INFO.value: TypeAdapter(UserIdParams),
+    Action.DELETE_MESSAGE.value: TypeAdapter(MsgIdParams),
+    Action.GET_GROUP_MEMBER_INFO.value: TypeAdapter(GroupUserIdParams),
+    Action.SET_GROUP_NAME.value: TypeAdapter(GroupNameParams),
+    Action.GET_GUILD_MEMBER_INFO.value: TypeAdapter(GuildUserIdParams),
+    Action.SET_GUILD_NAME.value: TypeAdapter(GuildNameParams),
+    Action.GET_CHANNEL_LIST.value: TypeAdapter(ChannelListParams),
+    Action.GET_CHANNEL_MEMBER_INFO.value: TypeAdapter(ChannelUserIdParams),
+    Action.SET_CHANNEL_NAME.value: TypeAdapter(ChannelNameParams),
+    Action.GET_FILE.value: TypeAdapter(GetFileParams),
+    Action.UPLOAD_FILE.value: TypeAdapter(UploadFileParams),
+    Action.UPLOAD_FILE_FRAGMENTED.value: TypeAdapter(FragmentedUploadParams),
+    Action.GET_FILE_FRAGMENTED.value: TypeAdapter(FragmentedGetParams),
+    **dict.fromkeys(
+        (
+            Action.GET_GROUP_INFO.value,
+            Action.GET_GROUP_MEMBER_LIST.value,
+            Action.LEAVE_GROUP.value,
+        ),
+        TypeAdapter(GroupIdParams),
+    ),
+    **dict.fromkeys(
+        (
+            Action.GET_GUILD_INFO.value,
+            Action.GET_GUILD_MEMBER_LIST.value,
+            Action.LEAVE_GUILD.value,
+        ),
+        TypeAdapter(GuildIdParams),
+    ),
+    **dict.fromkeys(
+        (
+            Action.GET_CHANNEL_INFO.value,
+            Action.GET_CHANNEL_MEMBER_LIST.value,
+            Action.LEAVE_CHANNEL.value,
+        ),
+        TypeAdapter(ChannelIdParams),
+    ),
 }
 
 
@@ -503,12 +502,12 @@ class ActionCall(Model):
         info: ValidationInfo,
     ) -> ActionParamModel:
         action = info.data.get("action")
-        tag = (
-            _action_call_tag(action)
+        adapter = (
+            _ACTION_PARAM_ADAPTERS.get(action, _DEFAULT_ACTION_PARAMS)
             if isinstance(action, str)
-            else ActionCallTag.EXTENSION
+            else _DEFAULT_ACTION_PARAMS
         )
-        return _ACTION_PARAM_ADAPTERS[tag].validate_python(value)
+        return adapter.validate_python(value)
 
     def __str__(self) -> str:
         params = str(self.params)

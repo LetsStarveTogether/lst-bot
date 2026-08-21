@@ -55,29 +55,6 @@ class Action(StrEnum):
     GET_FILE_FRAGMENTED = auto()
 
 
-class ActionCallTag(StrEnum):
-    EMPTY = auto()
-    LATEST_EVENTS = auto()
-    SEND_MESSAGE = auto()
-    USER_ID = auto()
-    MESSAGE_ID = auto()
-    GROUP_ID = auto()
-    GROUP_USER_ID = auto()
-    GROUP_NAME = auto()
-    GUILD_ID = auto()
-    GUILD_USER_ID = auto()
-    GUILD_NAME = auto()
-    CHANNEL_ID = auto()
-    CHANNEL_LIST = auto()
-    CHANNEL_USER_ID = auto()
-    CHANNEL_NAME = auto()
-    GET_FILE = auto()
-    UPLOAD_FILE = auto()
-    UPLOAD_FILE_FRAGMENTED = auto()
-    GET_FILE_FRAGMENTED = auto()
-    EXTENSION = auto()
-
-
 class EventKind(StrEnum):
     MESSAGE = auto()
     NOTICE = auto()

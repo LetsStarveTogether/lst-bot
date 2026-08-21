@@ -19,7 +19,6 @@ from .protocol.actions import (
 from .protocol.common import BotSelf, BotStatus, Status, Version
 from .protocol.enums import (
     Action,
-    ActionCallTag,
     ApiStatus,
     EventDetailType,
     EventKind,
@@ -76,7 +75,6 @@ __all__ = [
     "RECENT_SELF",
     "Action",
     "ActionCall",
-    "ActionCallTag",
     "ActionParamInput",
     "ActionRequest",
     "ActionResponse",

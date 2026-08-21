@@ -96,6 +96,19 @@ def test_action_matrix_covers_every_declared_standard_action() -> None:
 
 
 @pytest.mark.parametrize(
+    "action",
+    [
+        action
+        for action, params in ACTION_CASES.items()
+        if params and action != Action.GET_LATEST_EVENTS
+    ],
+)
+def test_parameterized_standard_actions_reject_empty_params(action: str) -> None:
+    with pytest.raises(ValidationError):
+        ActionCall.model_validate({"action": action, "params": {}})
+
+
+@pytest.mark.parametrize(
     ("params", "detail_type"),
     [
         pytest.param(
