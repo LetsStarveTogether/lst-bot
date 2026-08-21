@@ -13,6 +13,7 @@ from hitokoto import HitokotoClient
 from httpx import AsyncClient as MCPHttpClient
 from httpx2 import AsyncClient
 from klei import KleiClient
+from lst import LstClient
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -113,7 +114,18 @@ def test_build_bot_registers_runtime_settings() -> None:
     assert bot.scheduler.jobs[0].timezone == timezone
     assert bot.admin_ids == {"qq": frozenset({"owner"})}
     assert bot.container.resolve(Settings) is settings
+    assert isinstance(bot.container.resolve(LstClient), LstClient)
     assert bot.container.resolve(Agent) is question_agent
+    assert {route.name for route in bot.routes} == {
+        "一言",
+        "问",
+        "房间列表",
+        "房间回档",
+        "房间存档",
+        "房间重启",
+        "房间重置",
+        "最新版本",
+    }
     hitokoto = bot.container.resolve(HitokotoClient)
     klei = bot.container.resolve(KleiClient)
     telegram = bot.resolve_gateway(TelegramGateway)

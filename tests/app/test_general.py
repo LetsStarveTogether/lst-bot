@@ -73,4 +73,6 @@ async def test_report_uses_injected_settings_for_room_and_message_targets() -> N
     assert room_refs == [("1", lobby_data().region)]
     action = gateway.actions[0].model_dump(mode="json")
     assert action["params"]["group_id"] == "group"
-    assert action["params"]["message"][0]["data"]["text"].startswith("今日一言")
+    text = action["params"]["message"][0]["data"]["text"]
+    assert text.startswith("今日一言")
+    assert "Room" in text
