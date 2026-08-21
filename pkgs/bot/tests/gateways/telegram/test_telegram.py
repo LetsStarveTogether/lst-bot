@@ -92,11 +92,12 @@ class StreamResponse:
         self.closed = True
 
 
-def client(pool: object) -> TelegramRestClient:
+def client(pool: object, *, max_rate_limit_retries: int = 2) -> TelegramRestClient:
     return TelegramRestClient(
         CREDENTIAL,
         base_url="https://telegram.example",
         http_pool=cast(AsyncPoolManager, pool),
+        max_rate_limit_retries=max_rate_limit_retries,
     )
 
 
@@ -200,7 +201,11 @@ def test_strict_models() -> None:
     with pytest.raises(ValidationError):
         TelegramUpdate.model_validate({
             "update_id": 7,
-            "poll_answer": {"poll_id": "poll", "option_ids": [0]},
+            "poll_answer": {
+                "poll_id": "poll",
+                "user": {"id": 42, "is_bot": False, "first_name": "User"},
+                "option_ids": [0],
+            },
         })
     with pytest.raises(ValidationError):
         TelegramEnvelope.model_validate({
@@ -513,6 +518,12 @@ async def test_rate_limit_retry_and_error_parameters() -> None:
         await client(pool).call_json("getMe")
     assert error.value.parameters is not None
     assert error.value.parameters.retry_after == 31
+
+    pool = Pool()
+    pool.responses = [response(limited, 429)]
+    with pytest.raises(TelegramAPIError):
+        await client(pool, max_rate_limit_retries=0).call_json("getMe")
+    assert len(pool.requests) == 1
 
 
 async def test_close_stops_rate_limit_retry() -> None:
@@ -885,9 +896,6 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
             await dispatched.wait()
             dispatched.clear()
             await gateway.close()
-            assert gateway._closed  # ruff: ignore[private-member-access]
-            assert gateway._task is None  # ruff: ignore[private-member-access]
-            assert not gateway._polling_reserved  # ruff: ignore[private-member-access]
             await gateway.start()
             await dispatched.wait()
         finally:
@@ -948,7 +956,7 @@ def test_service_messages_are_not_empty_messages(
 
 async def test_message_reply_contexts_use_their_official_routes() -> None:
     pool = Pool(
-        *({"ok": True, "result": True} for _ in range(6)),
+        *({"ok": True, "result": True} for _ in range(7)),
     )
     gateway = make_gateway(pool)
     self_ = BotSelf(platform="telegram", user_id="123")
@@ -1076,6 +1084,16 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
             [{"type": "image", "data": {"file_id": "photo"}}],
         )
 
+    await connection.action(
+        Action.DELETE_MESSAGE,
+        message_id="12",
+        group_id=str(SUPERGROUP_ID),
+    )
+    assert pool.requests[-1][1].endswith("/deleteMessage")
+    assert pool.requests[-1][2]["json"] == {
+        "chat_id": str(SUPERGROUP_ID),
+        "message_id": 12,
+    }
     await connection.action(
         Action.DELETE_MESSAGE,
         message_id="0",

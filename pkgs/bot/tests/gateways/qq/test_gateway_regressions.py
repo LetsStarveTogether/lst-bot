@@ -1,4 +1,4 @@
-from asyncio import create_task, sleep, timeout
+from asyncio import QueueFull, create_task, sleep, timeout
 from unittest.mock import AsyncMock
 
 import pytest
@@ -334,7 +334,7 @@ async def test_retry_backoff_resets_only_after_heartbeat_ack(
     assert len(events) == 1
 
 
-async def test_ready_and_resumed_do_not_reset_retry_count(
+async def test_ready_resumed_and_failed_enqueue_preserve_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway()
@@ -354,16 +354,26 @@ async def test_ready_and_resumed_do_not_reset_retry_count(
             },
         })
     )
-    await gateway._receive_dispatch(  # ruff: ignore[private-member-access] - protocol regression boundary
-        QQGatewayPayload.model_validate({
-            "op": 0,
-            "s": 2,
-            "t": "RESUMED",
-            "d": "",
-        })
-    )
+    resumed = QQGatewayPayload.model_validate({
+        "op": 0,
+        "s": 2,
+        "t": "RESUMED",
+        "d": "",
+    })
+    await gateway._receive_dispatch(resumed)  # ruff: ignore[private-member-access]
 
     assert gateway._retry_count == 4  # ruff: ignore[private-member-access]
+    gateway._seq = 7  # ruff: ignore[private-member-access]
+
+    def full(_: object) -> None:
+        raise QueueFull
+
+    monkeypatch.setattr(gateway, "enqueue_event", full)
+    with pytest.raises(ConnectionError, match="queue is full"):
+        await gateway._receive_dispatch(  # ruff: ignore[private-member-access] - sequence regression boundary
+            resumed.model_copy(update={"s": 8})
+        )
+    assert gateway._seq == 7  # ruff: ignore[private-member-access]
 
 
 async def test_start_reaps_a_finished_gateway_task() -> None:

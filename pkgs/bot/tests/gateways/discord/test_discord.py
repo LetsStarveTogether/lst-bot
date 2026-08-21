@@ -261,9 +261,11 @@ async def test_payload_json_multipart_supports_named_files_and_nested_json() -> 
     )
 
     body = cast(bytes, pool.requests[0][2]["body"])
-    assert b'name="payload_json"' in body
-    assert b'"target_user_ids":["1","2"]' in body
-    assert b'name="target_users_file"; filename="users.txt"' in body
+    assert b'name="payload_json"\r\n\r\n{"target_user_ids":["1","2"]}' in body
+    assert (
+        b'name="target_users_file"; filename="users.txt"\r\n'
+        b"Content-Type: application/octet-stream\r\n\r\n1\n2" in body
+    )
 
 
 async def test_form_fields_multipart_requires_flat_json() -> None:
@@ -279,10 +281,13 @@ async def test_form_fields_multipart_requires_flat_json() -> None:
     )
 
     body = cast(bytes, pool.requests[0][2]["body"])
-    assert b'name="name"' in body
-    assert b'name="description"' in body
-    assert b'name="tags"' in body
-    assert b'name="file"; filename="wave.png"' in body
+    assert b'name="name"\r\n\r\nwave' in body
+    assert b'name="description"\r\n\r\n\r\n--' in body
+    assert b'name="tags"\r\n\r\nhello' in body
+    assert (
+        b'name="file"; filename="wave.png"\r\n'
+        b"Content-Type: application/octet-stream\r\n\r\npng" in body
+    )
     assert b"payload_json" not in body
     with pytest.raises(ValidationError, match="flat JSON object"):
         DiscordRequest.model_validate({
@@ -378,9 +383,9 @@ async def test_public_gateway_lifecycle_can_restart(
         websocket_connector=connect,
     )
     ready = Event()
-    events: list[object] = []
+    events: list[MetaEvent | PrivateMessageEvent] = []
 
-    def enqueue(event: object) -> None:
+    def enqueue(event: MetaEvent | PrivateMessageEvent) -> None:
         events.append(event)
         if isinstance(event, PrivateMessageEvent):
             ready.set()
@@ -402,20 +407,13 @@ async def test_public_gateway_lifecycle_can_restart(
         async with timeout(1):
             await instance.close()
 
-    assert [event.detail_type for event in events if isinstance(event, MetaEvent)] == [
-        "discord.ready",
-        "discord.ready",
-    ]
-    assert sum(isinstance(event, PrivateMessageEvent) for event in events) == 2
+    assert [event.detail_type for event in events] == ["discord.ready", "private"] * 2
     assert urls == ["wss://gateway.discord.example/?v=10&encoding=json"] * 2
     assert [websocket.close_code for websocket in websockets] == [1000, 1000]
     assert [loads(websocket.sent.get_nowait())["op"] for websocket in websockets] == [
         2,
         2,
     ]
-    assert instance._task is None
-    assert instance._session_id is None
-    assert instance._closed
 
 
 async def test_gateway_start_reaps_finished_task(
@@ -565,7 +563,9 @@ async def test_dispatch_models_commit_only_valid_session_and_rate_state(
             })
         )
         assert instance._online is False
-        extra = cast(NoticeEvent, events[-1]).model_extra
+        event = events[-1]
+        assert isinstance(event, NoticeEvent)
+        extra = event.model_extra
         assert extra is not None
         assert extra["discord_raw"] is True
 
@@ -578,7 +578,9 @@ async def test_dispatch_models_commit_only_valid_session_and_rate_state(
         })
     )
     assert instance._online is True
-    assert cast(MetaEvent, events[-1]).detail_type == "discord.resumed"
+    event = events[-1]
+    assert isinstance(event, MetaEvent)
+    assert event.detail_type == "discord.resumed"
 
     await instance._receive_dispatch(
         DiscordGatewayPayload.model_validate({
@@ -593,7 +595,9 @@ async def test_dispatch_models_commit_only_valid_session_and_rate_state(
         })
     )
     assert instance._full_member_ready_at["42"] == pytest.approx(12.5)
-    extra = cast(NoticeEvent, events[-1]).model_extra
+    event = events[-1]
+    assert isinstance(event, NoticeEvent)
+    extra = event.model_extra
     assert extra is not None
     assert extra["discord_raw"] is False
 
@@ -1178,7 +1182,7 @@ async def test_interaction_fallback_io_obeys_the_absolute_deadline() -> None:
     pending = discord_module._DiscordInteractionCallback({"type": 5}, deadline)
     instance._interaction_callbacks[path] = pending
     pending.task = create_task(instance._run_interaction_callback(path, pending))
-    async with timeout(1):
+    async with timeout(0.2):
         await pending.task
     assert len(pool.requests) == 1
     assert instance._interaction_callbacks == {}

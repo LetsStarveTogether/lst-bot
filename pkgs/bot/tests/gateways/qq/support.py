@@ -48,7 +48,7 @@ def gateway(
         app_id="app",
         client_secret=CREDENTIAL,
         base_url="https://qq.example",
-        http_pool=cast(AsyncPoolManager, pool or Pool()),
+        http_pool=cast(AsyncPoolManager, pool if pool is not None else Pool()),
         websocket_connector=websocket_connector,
     )
     gateway._online = online  # ruff: ignore[private-member-access]

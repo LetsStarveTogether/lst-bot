@@ -235,49 +235,42 @@ def test_http_webhook_authentication(
 
 
 @pytest.mark.parametrize(
-    "headers",
+    ("headers", "status"),
     [
-        pytest.param({"X-Impl": "test"}, id="missing-version"),
-        pytest.param(
-            {"X-OneBot-Version": "11", "X-Impl": "test"},
-            id="wrong-version",
+        (
+            {"Content-Type": "application/json", "X-Impl": "test"},
+            HTTPStatus.BAD_REQUEST,
         ),
-        pytest.param({"X-OneBot-Version": "12"}, id="missing-implementation"),
-        pytest.param(
-            {"X-OneBot-Version": "12", "X-Impl": "BAD"},
-            id="invalid-implementation",
+        (IDENTITY_HEADERS | {"X-OneBot-Version": "11"}, HTTPStatus.BAD_REQUEST),
+        (
+            {"Content-Type": "application/json", "X-OneBot-Version": "12"},
+            HTTPStatus.BAD_REQUEST,
+        ),
+        (IDENTITY_HEADERS | {"X-Impl": "BAD"}, HTTPStatus.BAD_REQUEST),
+        (
+            {"X-OneBot-Version": "12", "X-Impl": "test"},
+            HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            IDENTITY_HEADERS | {"Content-Type": "text/plain"},
+            HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
         ),
     ],
+    ids=(
+        "missing-version",
+        "wrong-version",
+        "missing-implementation",
+        "invalid-implementation",
+        "missing-content-type",
+        "wrong-content-type",
+    ),
 )
-def test_http_webhook_requires_onebot12_identity(
+def test_http_webhook_rejects_invalid_headers(
     headers: dict[str, str],
+    status: HTTPStatus,
 ) -> None:
-    client = mounted_client(ImmediateBot())
-
-    with client:
-        response = client.post(
-            "/onebot",
-            json_data=private_message_payload(),
-            headers={"Content-Type": "application/json", **headers},
-        )
-
-    assert response.status_code == HTTPStatus.BAD_REQUEST
-
-
-@pytest.mark.parametrize(
-    "content_type",
-    [
-        pytest.param(None, id="missing"),
-        pytest.param("text/plain", id="text"),
-    ],
-)
-def test_http_webhook_requires_json_content_type(
-    content_type: str | None,
-) -> None:
-    client = mounted_client(ImmediateBot())
-    headers = {"X-OneBot-Version": "12", "X-Impl": "test"}
-    if content_type is not None:
-        headers["Content-Type"] = content_type
+    bot = ImmediateBot()
+    client = mounted_client(bot)
 
     with client:
         response = client.post(
@@ -286,7 +279,8 @@ def test_http_webhook_requires_json_content_type(
             headers=headers,
         )
 
-    assert response.status_code == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+    assert response.status_code == status
+    assert bot.events == []
 
 
 @pytest.mark.parametrize(

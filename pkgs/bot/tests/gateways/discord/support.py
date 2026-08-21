@@ -44,7 +44,7 @@ def gateway(pool: Pool | None = None) -> DiscordGateway:
         Bot(),
         token=CREDENTIAL,
         base_url="https://discord.example/api/v10",
-        http_pool=cast(AsyncPoolManager, pool or Pool()),
+        http_pool=cast(AsyncPoolManager, pool if pool is not None else Pool()),
     )
 
 
