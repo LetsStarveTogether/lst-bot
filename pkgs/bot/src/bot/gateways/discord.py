@@ -456,10 +456,6 @@ class DiscordReady(Model):
     application: DiscordApplication
 
 
-class DiscordResumed(Model):
-    pass
-
-
 class DiscordMessageDelete(Model):
     id: Snowflake
     channel_id: Snowflake
@@ -475,10 +471,6 @@ class DiscordMessageDeleteBulk(Model):
 class DiscordGuildDelete(Model):
     id: Snowflake
     unavailable: StrictBool | None = None
-
-
-class DiscordGuildCreate(RootModel[DiscordGuild | DiscordUnavailableGuild]):
-    pass
 
 
 class DiscordGuildMemberEvent(DiscordMember):
@@ -1377,13 +1369,13 @@ class DiscordGatewayCommand(DiscordRequestModel):
 
 _DISPATCH_MODELS: dict[str, type[BaseModel]] = {
     "READY": DiscordReady,
-    "RESUMED": DiscordResumed,
+    "RESUMED": Model,
     "RATE_LIMITED": DiscordRateLimited,
     "MESSAGE_CREATE": DiscordMessage,
     "MESSAGE_UPDATE": DiscordPartialMessage,
     "MESSAGE_DELETE": DiscordMessageDelete,
     "MESSAGE_DELETE_BULK": DiscordMessageDeleteBulk,
-    "GUILD_CREATE": DiscordGuildCreate,
+    "GUILD_CREATE": RootModel[DiscordGuild | DiscordUnavailableGuild],
     "GUILD_UPDATE": DiscordGuild,
     "GUILD_DELETE": DiscordGuildDelete,
     "CHANNEL_CREATE": DiscordChannel,
@@ -1442,16 +1434,9 @@ class DiscordGuildSummary(Model):
     approximate_presence_count: NonNegativeInt | None = None
 
 
-class DiscordGuildList(RootModel[list[DiscordGuildSummary]]):
-    pass
-
-
-class DiscordChannelList(RootModel[list[DiscordChannel]]):
-    pass
-
-
-class DiscordMemberList(RootModel[list[DiscordGuildMember]]):
-    pass
+DiscordGuildList = RootModel[list[DiscordGuildSummary]]
+DiscordChannelList = RootModel[list[DiscordChannel]]
+DiscordMemberList = RootModel[list[DiscordGuildMember]]
 
 
 _SUPPORTED_COMMON_ACTIONS = (
@@ -2236,7 +2221,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 discord_data=raw_data,
                 discord_raw=False,
             )
-        if event_type == "RESUMED" and isinstance(data, DiscordResumed):
+        if event_type == "RESUMED" and isinstance(data, Model):
             self._online = True
             self._retry_count = 0
             return MetaEvent(
