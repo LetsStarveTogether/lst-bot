@@ -1040,13 +1040,15 @@ async def test_group_join_request_maps_and_can_be_declined() -> None:
     ) == ("group", "member", "request", "add", "let me in")
     connection = gateway.connection_for(event.self_)
     with pytest.raises(TypeError, match="remark"):
-        await connection.execute_return_action(
+        await gateway.execute_return_action(
+            connection,
             event,
             ReturnAction.request(True, remark="unsupported"),
         )
     assert not pool.requests
 
-    response = await connection.execute_return_action(
+    response = await gateway.execute_return_action(
+        connection,
         event,
         ReturnAction.request(False, reason="declined"),
     )

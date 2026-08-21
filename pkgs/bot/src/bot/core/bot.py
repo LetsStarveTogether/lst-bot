@@ -717,7 +717,7 @@ class Bot(EventRouter):
                 connection=connection,
             )
         try:
-            outcome = await connection.execute_return_action(event, action)
+            outcome = await gateway.execute_return_action(connection, event, action)
         except Exception as exc:
             error = str(exc)
             logger.exception(

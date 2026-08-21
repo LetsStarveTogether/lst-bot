@@ -189,10 +189,6 @@ class Connection:
     def __str__(self) -> str:
         return f"{self.gateway}@{self.self_}"
 
-    @property
-    def bot(self) -> Bot:
-        return self.gateway.bot
-
     async def action(
         self,
         action: str | Action,
@@ -215,23 +211,15 @@ class Connection:
             **params,
         )
 
-    async def execute_return_action(
-        self,
-        event: Event | None,
-        action: ReturnAction,
-    ) -> BaseModel:
-        return await self.gateway.execute_return_action(self, event, action)
-
     async def execute_message_action(
         self,
         event: MessageEvent,
         msg: MsgInput,
     ) -> BaseModel:
-        action_call = ActionCall.model_validate({
-            "action": Action.SEND_MESSAGE,
-            "params": self._message_action_params(event, msg),
-        })
-        return await self.request_action(action_call.action, action_call.params)
+        return await self.action(
+            Action.SEND_MESSAGE,
+            **self._message_action_params(event, msg),
+        )
 
     async def request_action(
         self,
@@ -245,12 +233,6 @@ class Connection:
             action=action_text,
             self_=self.self_,
         )
-        if __debug__:
-            logger.debug(
-                "request action: {action} @ {self_}",
-                action=action,
-                self_=self.self_,
-            )
         response = await self.gateway.request_action(self, action, params)
         response_text = (
             str(response)
@@ -263,13 +245,6 @@ class Connection:
             self_=self.self_,
             response=response_text,
         )
-        if __debug__:
-            logger.debug(
-                "action returned: {action} @ {self_} = {response}",
-                action=action,
-                self_=self.self_,
-                response=response_text,
-            )
         self._raise_for_failed_action_response(response)
         return response
 
@@ -332,33 +307,15 @@ class Gateway:
         pass
 
     def connection_for(self, self_: BotSelf) -> Connection:
-        connection = Connection(self, self_)
-        if __debug__:
-            logger.trace(
-                "create connection : {connection}",
-                connection=connection,
-            )
-        return connection
+        return Connection(self, self_)
 
     async def dispatch_event(self, event: Event) -> list[DispatchResult]:
-        if __debug__:
-            logger.trace(
-                "gateway dispatch event : {gateway} {event}",
-                gateway=self,
-                event=event,
-            )
         connection = (
             self.connection_for(event.self_) if event.self_ is not None else None
         )
         return await self.bot.dispatch(connection, event, gateway=self)
 
     def enqueue_event(self, event: Event) -> None:
-        if __debug__:
-            logger.trace(
-                "gateway enqueue event : {gateway} {event}",
-                gateway=self,
-                event=event,
-            )
         connection = (
             self.connection_for(event.self_) if event.self_ is not None else None
         )
@@ -673,27 +630,3 @@ def token_matches(expected: str | None, actual: str | None) -> bool:
     return expected is None or (
         actual is not None and compare_digest(actual.encode(), expected.encode())
     )
-
-
-__all__ = [
-    "AccessToken",
-    "Connection",
-    "Gateway",
-    "HttpAction",
-    "WebSocketAction",
-    "WebSocketActionManager",
-    "WebSocketActionSession",
-    "WebSocketClosedError",
-    "WebSocketConnection",
-    "WebSocketConnector",
-    "WebsocketsConnection",
-    "access_token_value",
-    "bearer_or_query_token",
-    "connect_websocket",
-    "empty_response",
-    "header_value",
-    "json_response",
-    "request_target_path",
-    "text_response",
-    "token_matches",
-]

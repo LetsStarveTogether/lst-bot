@@ -639,14 +639,3 @@ def _is_onebot12_subprotocol(protocol: str) -> bool:
     return protocol.startswith("12.") and (
         NAME_PATTERN.fullmatch(protocol.removeprefix("12.")) is not None
     )
-
-
-__all__ = [
-    "ForwardWebSocket",
-    "HttpAction",
-    "HttpWebhook",
-    "OneBot12Gateway",
-    "ReverseWebSocket",
-    "WebSocketAction",
-    "WebSocketConnection",
-]

@@ -403,7 +403,8 @@ async def test_message_return_uses_group_action() -> None:
         gateway = OneBot11Gateway(Bot(), action=HttpAction(server.base_url))
         connection = gateway.connection_for(event.self_)
         async with gateway:
-            await connection.execute_return_action(
+            await gateway.execute_return_action(
+                connection,
                 event,
                 ReturnAction.message(
                     Msg.reply(

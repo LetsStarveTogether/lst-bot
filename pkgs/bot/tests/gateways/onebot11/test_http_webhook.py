@@ -162,7 +162,8 @@ async def test_http_quick_operation_context_expires_with_response() -> None:
             async def send() -> None:
                 await release.wait()
                 try:
-                    await connection.execute_return_action(
+                    await gateway.execute_return_action(
+                        connection,
                         event,
                         ReturnAction.message("late"),
                     )

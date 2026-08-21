@@ -1671,24 +1671,3 @@ def _json_value(value: object) -> JsonValue:
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [_json_value(item) for item in value]
     return cast(JsonValue, value)
-
-
-__all__ = [
-    "ForwardWebSocket",
-    "HttpAction",
-    "HttpWebhook",
-    "MsgInput",
-    "OneBot11ActionRequest",
-    "OneBot11ActionResponse",
-    "OneBot11EventPayload",
-    "OneBot11Gateway",
-    "OneBot11Message",
-    "OneBot11MessageSegment",
-    "OneBot11QuickOperation",
-    "ReverseWebSocket",
-    "WebSocketAction",
-    "WebSocketConnection",
-    "adapt_action_response",
-    "decode_action_response",
-    "decode_event",
-]

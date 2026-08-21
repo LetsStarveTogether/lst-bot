@@ -2554,6 +2554,3 @@ def _gateway_url(value: str) -> str:
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query.update({"v": "10", "encoding": "json"})
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
-
-
-__all__ = [name for name in globals() if name.startswith("Discord")]
