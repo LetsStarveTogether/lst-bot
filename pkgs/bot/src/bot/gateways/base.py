@@ -4,8 +4,8 @@ from asyncio import (
     FIRST_COMPLETED,
     CancelledError,
     Future,
-    Task,
     create_task,
+    gather,
     get_running_loop,
     timeout,
     wait,
@@ -108,12 +108,8 @@ async def run_while_open[T](
         return result
     finally:
         closed_task.cancel()
-        with suppress(CancelledError):
-            await closed_task
-        if not operation_task.done():
-            operation_task.cancel()
-        with suppress(CancelledError, Exception):
-            await operation_task
+        operation_task.cancel()
+        await await_cleanup(gather(closed_task, operation_task, return_exceptions=True))
 
 
 class RobynServer(Protocol):
@@ -136,7 +132,7 @@ type WebSocketConnector = Callable[
 ]
 
 
-async def await_cleanup(task: Task[None]) -> None:
+async def await_cleanup[T](task: Future[T]) -> None:
     cancelled: CancelledError | None = None
     while not task.done():
         try:
@@ -514,9 +510,8 @@ class WebSocketActionManager:
                 return await future
         finally:
             self._pending.pop(echo, None)
-            if not future.done():
-                future.cancel()
-            elif not future.cancelled():
+            future.cancel()
+            if not future.cancelled():
                 future.exception()
 
     def receive(

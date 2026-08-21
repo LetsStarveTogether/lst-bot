@@ -27,6 +27,7 @@ from bot.gateways.base import (
     connect_websocket,
     header_value,
     request_target_path,
+    run_while_open,
     token_matches,
     validate_https_base_url,
 )
@@ -230,6 +231,33 @@ async def test_await_cleanup_finishes_after_repeated_cancellation() -> None:
     with pytest.raises(CancelledError):
         await closing
     assert cleanup_task.result() is None
+
+
+async def test_run_while_open_preserves_cleanup_on_repeated_cancel() -> None:
+    started = Event()
+    cleaning = Event()
+    release = Event()
+    cleaned = Event()
+
+    async def operation() -> None:
+        started.set()
+        try:
+            await Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            cleaned.set()
+
+    running = create_task(run_while_open(operation(), Event(), lambda _: None))
+    await started.wait()
+    running.cancel()
+    await cleaning.wait()
+    running.cancel()
+    release.set()
+
+    with pytest.raises(CancelledError):
+        await running
+    assert cleaned.is_set()
 
 
 async def test_await_cleanup_preserves_cancellation_and_cleanup_failure(
