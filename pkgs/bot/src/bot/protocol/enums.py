@@ -85,35 +85,6 @@ class EventDetailType(StrEnum):
     STATUS_UPDATE = auto()
 
 
-class EventTag(StrEnum):
-    MESSAGE_PRIVATE = "message:private"
-    MESSAGE_GROUP = "message:group"
-    MESSAGE_CHANNEL = "message:channel"
-    MESSAGE_EXTENSION = "message:extension"
-    REQUEST_FRIEND = "request:friend"
-    REQUEST_GROUP = "request:group"
-    NOTICE_FRIEND_INCREASE = "notice:friend_increase"
-    NOTICE_FRIEND_DECREASE = "notice:friend_decrease"
-    NOTICE_PRIVATE_MESSAGE_DELETE = "notice:private_message_delete"
-    NOTICE_GROUP_MEMBER_INCREASE = "notice:group_member_increase"
-    NOTICE_GROUP_MEMBER_DECREASE = "notice:group_member_decrease"
-    NOTICE_GROUP_MESSAGE_DELETE = "notice:group_message_delete"
-    NOTICE_GUILD_MEMBER_INCREASE = "notice:guild_member_increase"
-    NOTICE_GUILD_MEMBER_DECREASE = "notice:guild_member_decrease"
-    NOTICE_CHANNEL_MEMBER_INCREASE = "notice:channel_member_increase"
-    NOTICE_CHANNEL_MEMBER_DECREASE = "notice:channel_member_decrease"
-    NOTICE_CHANNEL_MESSAGE_DELETE = "notice:channel_message_delete"
-    NOTICE_CHANNEL_CREATE = "notice:channel_create"
-    NOTICE_CHANNEL_DELETE = "notice:channel_delete"
-    META_CONNECT = "meta:connect"
-    META_HEARTBEAT = "meta:heartbeat"
-    META_STATUS_UPDATE = "meta:status_update"
-    EXTENSION = auto()
-    META_EXTENSION = auto()
-    NOTICE_EXTENSION = auto()
-    REQUEST_EXTENSION = auto()
-
-
 class FileStage(StrEnum):
     PREPARE = auto()
     TRANSFER = auto()

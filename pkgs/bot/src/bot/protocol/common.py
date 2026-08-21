@@ -26,23 +26,12 @@ class Version(Model):
     version: StrictStr
     onebot_version: Literal["12"]
 
-    def __str__(self) -> str:
-        return f"{self.impl}@{self.version} ob{self.onebot_version}"
-
 
 class BotStatus(Model):
     self_: BotSelf = Field(alias="self")
     online: StrictBool
 
-    def __str__(self) -> str:
-        state = "online" if self.online else "offline"
-        return f"{self.self_} {state}"
-
 
 class Status(Model):
     good: StrictBool
     bots: list[BotStatus]
-
-    def __str__(self) -> str:
-        state = "good" if self.good else "bad"
-        return f"{state} bots={len(self.bots)}"

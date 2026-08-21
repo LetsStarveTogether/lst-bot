@@ -69,15 +69,6 @@ class ReturnAction:
         )
 
     @classmethod
-    def from_call(
-        cls,
-        action_call: ActionCall,
-        *,
-        self_: BotSelf | None = None,
-    ) -> ReturnAction:
-        return cls(kind="call", action_call=action_call, self_=self_)
-
-    @classmethod
     def request(
         cls,
         approve: bool,

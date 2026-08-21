@@ -672,7 +672,7 @@ class Bot(EventRouter):
         if isinstance(value, str | Msg):
             return ReturnAction.message(value)
         if isinstance(value, ActionCall):
-            return ReturnAction.from_call(value)
+            return ReturnAction(kind="call", action_call=value)
 
         msg = f"Unsupported handler return value: {type(value).__name__}"
         raise TypeError(msg)

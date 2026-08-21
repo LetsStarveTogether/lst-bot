@@ -2,18 +2,19 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, cast
 
 from pydantic import (
-    Discriminator,
     Field,
+    InstanceOf,
     RootModel,
+    SerializeAsAny,
     StrictFloat,
     StrictInt,
     StrictStr,
-    Tag,
+    field_validator,
 )
 
 from .base import Model
 from .common import BotSelf, Status, Version
-from .enums import EventDetailType, EventKind, EventTag
+from .enums import EventDetailType, EventKind
 from .msg import Msg
 
 
@@ -246,97 +247,73 @@ def _field_value(value: object, key: str) -> object:
     return getattr(value, key, None)
 
 
-def _event_tag(value: object) -> EventTag:
-    event_type = _field_value(value, "type")
-    detail_type = _field_value(value, "detail_type")
-    if isinstance(event_type, str) and isinstance(detail_type, str):
-        try:
-            return EventTag(f"{event_type}:{detail_type}")
-        except ValueError:
-            pass
-    if event_type == EventKind.META:
-        return EventTag.META_EXTENSION
-    if event_type == EventKind.NOTICE:
-        return EventTag.NOTICE_EXTENSION
-    if event_type == EventKind.REQUEST:
-        return EventTag.REQUEST_EXTENSION
-    if event_type == EventKind.MESSAGE:
-        return EventTag.MESSAGE_EXTENSION
-    return EventTag.EXTENSION
+_EVENT_MODELS: dict[str | tuple[str, str], type[Event]] = {
+    (EventKind.MESSAGE, EventDetailType.PRIVATE): PrivateMessageEvent,
+    (EventKind.MESSAGE, EventDetailType.GROUP): GroupMessageEvent,
+    (EventKind.MESSAGE, EventDetailType.CHANNEL): ChannelMessageEvent,
+    (EventKind.NOTICE, EventDetailType.FRIEND_INCREASE): FriendIncreaseNoticeEvent,
+    (EventKind.NOTICE, EventDetailType.FRIEND_DECREASE): FriendDecreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.PRIVATE_MESSAGE_DELETE,
+    ): PrivateMessageDeleteNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.GROUP_MEMBER_INCREASE,
+    ): GroupMemberIncreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.GROUP_MEMBER_DECREASE,
+    ): GroupMemberDecreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.GROUP_MESSAGE_DELETE,
+    ): GroupMessageDeleteNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.GUILD_MEMBER_INCREASE,
+    ): GuildMemberIncreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.GUILD_MEMBER_DECREASE,
+    ): GuildMemberDecreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.CHANNEL_MEMBER_INCREASE,
+    ): ChannelMemberIncreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.CHANNEL_MEMBER_DECREASE,
+    ): ChannelMemberDecreaseNoticeEvent,
+    (
+        EventKind.NOTICE,
+        EventDetailType.CHANNEL_MESSAGE_DELETE,
+    ): ChannelMessageDeleteNoticeEvent,
+    (EventKind.NOTICE, EventDetailType.CHANNEL_CREATE): ChannelCreateNoticeEvent,
+    (EventKind.NOTICE, EventDetailType.CHANNEL_DELETE): ChannelDeleteNoticeEvent,
+    (EventKind.REQUEST, EventDetailType.FRIEND): FriendRequestEvent,
+    (EventKind.REQUEST, EventDetailType.GROUP): GroupRequestEvent,
+    (EventKind.META, EventDetailType.CONNECT): ConnectMetaEvent,
+    (EventKind.META, EventDetailType.HEARTBEAT): HeartbeatMetaEvent,
+    (EventKind.META, EventDetailType.STATUS_UPDATE): StatusUpdateMetaEvent,
+    EventKind.MESSAGE: MessageEvent,
+    EventKind.NOTICE: NoticeEvent,
+    EventKind.REQUEST: RequestEvent,
+    EventKind.META: MetaEvent,
+}
 
 
-type EventPayloadVariant = Annotated[
-    Annotated[PrivateMessageEvent, Tag(EventTag.MESSAGE_PRIVATE)]
-    | Annotated[GroupMessageEvent, Tag(EventTag.MESSAGE_GROUP)]
-    | Annotated[ChannelMessageEvent, Tag(EventTag.MESSAGE_CHANNEL)]
-    | Annotated[
-        FriendIncreaseNoticeEvent,
-        Tag(EventTag.NOTICE_FRIEND_INCREASE),
-    ]
-    | Annotated[
-        FriendDecreaseNoticeEvent,
-        Tag(EventTag.NOTICE_FRIEND_DECREASE),
-    ]
-    | Annotated[
-        PrivateMessageDeleteNoticeEvent,
-        Tag(EventTag.NOTICE_PRIVATE_MESSAGE_DELETE),
-    ]
-    | Annotated[
-        GroupMemberIncreaseNoticeEvent,
-        Tag(EventTag.NOTICE_GROUP_MEMBER_INCREASE),
-    ]
-    | Annotated[
-        GroupMemberDecreaseNoticeEvent,
-        Tag(EventTag.NOTICE_GROUP_MEMBER_DECREASE),
-    ]
-    | Annotated[
-        GroupMessageDeleteNoticeEvent,
-        Tag(EventTag.NOTICE_GROUP_MESSAGE_DELETE),
-    ]
-    | Annotated[
-        GuildMemberIncreaseNoticeEvent,
-        Tag(EventTag.NOTICE_GUILD_MEMBER_INCREASE),
-    ]
-    | Annotated[
-        GuildMemberDecreaseNoticeEvent,
-        Tag(EventTag.NOTICE_GUILD_MEMBER_DECREASE),
-    ]
-    | Annotated[
-        ChannelMemberIncreaseNoticeEvent,
-        Tag(EventTag.NOTICE_CHANNEL_MEMBER_INCREASE),
-    ]
-    | Annotated[
-        ChannelMemberDecreaseNoticeEvent,
-        Tag(EventTag.NOTICE_CHANNEL_MEMBER_DECREASE),
-    ]
-    | Annotated[
-        ChannelMessageDeleteNoticeEvent,
-        Tag(EventTag.NOTICE_CHANNEL_MESSAGE_DELETE),
-    ]
-    | Annotated[
-        ChannelCreateNoticeEvent,
-        Tag(EventTag.NOTICE_CHANNEL_CREATE),
-    ]
-    | Annotated[
-        ChannelDeleteNoticeEvent,
-        Tag(EventTag.NOTICE_CHANNEL_DELETE),
-    ]
-    | Annotated[FriendRequestEvent, Tag(EventTag.REQUEST_FRIEND)]
-    | Annotated[GroupRequestEvent, Tag(EventTag.REQUEST_GROUP)]
-    | Annotated[MessageEvent, Tag(EventTag.MESSAGE_EXTENSION)]
-    | Annotated[RequestEvent, Tag(EventTag.REQUEST_EXTENSION)]
-    | Annotated[NoticeEvent, Tag(EventTag.NOTICE_EXTENSION)]
-    | Annotated[ConnectMetaEvent, Tag(EventTag.META_CONNECT)]
-    | Annotated[HeartbeatMetaEvent, Tag(EventTag.META_HEARTBEAT)]
-    | Annotated[
-        StatusUpdateMetaEvent,
-        Tag(EventTag.META_STATUS_UPDATE),
-    ]
-    | Annotated[MetaEvent, Tag(EventTag.META_EXTENSION)]
-    | Annotated[Event, Tag(EventTag.EXTENSION)],
-    Discriminator(_event_tag),
-]
-
-
-class EventPayload(RootModel[EventPayloadVariant]):
-    pass
+class EventPayload(RootModel[SerializeAsAny[InstanceOf[Event]]]):
+    @field_validator("root", mode="before")
+    @classmethod
+    def parse_event(cls, value: object) -> Event:
+        event_type = _field_value(value, "type")
+        detail_type = _field_value(value, "detail_type")
+        model = (
+            _EVENT_MODELS.get((event_type, detail_type))
+            if isinstance(event_type, str) and isinstance(detail_type, str)
+            else None
+        )
+        if model is None and isinstance(event_type, str):
+            model = _EVENT_MODELS.get(event_type)
+        return (model or Event).model_validate(value)
