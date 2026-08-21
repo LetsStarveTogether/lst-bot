@@ -45,21 +45,19 @@ def test_parse_room_ids_rejects_invalid_input(value: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("data", "verbose", "expected"),
+    ("data", "expected"),
     [
-        (room_data(), False, "🟢  2/6    秋12    Room"),
+        (room_data(), "🟢  2/6    秋12    Room"),
         (
             room_data(serverpaused=True, password=True),
-            False,
             "🟧🔒 2/6    秋12    Room",
         ),
-        (room_data(connected=0), False, "🟨  0/6    秋12    Room"),
-        (room_data(), True, "🟢  2/6    秋12    Room 127.0.0.1:10999"),
+        (room_data(connected=0), "🟨  0/6    秋12    Room"),
     ],
-    ids=("active", "paused-password", "empty", "verbose"),
+    ids=("active", "paused-password", "empty"),
 )
-def test_format_lobby_data(data: RoomData, verbose: bool, expected: str) -> None:
-    assert format_lobby_data(data, verbose=verbose) == expected
+def test_format_lobby_data(data: RoomData, expected: str) -> None:
+    assert format_lobby_data(data) == expected
 
 
 async def test_rooms_command_uses_settings_and_klei_dependency() -> None:

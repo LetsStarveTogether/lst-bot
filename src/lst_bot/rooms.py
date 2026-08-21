@@ -14,7 +14,7 @@ logger = getLogger(__name__)
 router = EventRouter()
 
 
-def format_lobby_data(data: RoomData, *, verbose: bool = False) -> str:
+def format_lobby_data(data: RoomData) -> str:
     mark = ("🟧" if data.serverpaused else "🟢") if data.connected > 0 else "🟨"
 
     if data.password:
@@ -31,10 +31,7 @@ def format_lobby_data(data: RoomData, *, verbose: bool = False) -> str:
     if data.data and (match := DAY_PATTERN.search(data.data)):
         day = match[1]
 
-    value = f"{mark:3}{player_count:7}{season + day:7}{data.name}"
-    if verbose:
-        value += f" {data.addr}:{data.port}"
-    return value
+    return f"{mark:3}{player_count:7}{season + day:7}{data.name}"
 
 
 def parse_room_ids(value: str) -> list[int]:
@@ -86,7 +83,7 @@ async def rooms(
     return "\n".join(format_lobby_data(room) for room in room_data_list)
 
 
-@router.on_cmd("房间存档", rule=admin_permission)
+@router.on_cmd("房间存档", admin_permission)
 def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
@@ -97,7 +94,7 @@ def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已存档 {room_ids}"
 
 
-@router.on_cmd("房间回档", rule=admin_permission)
+@router.on_cmd("房间回档", admin_permission)
 def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids_text, days_text = cmd.arg.split()
@@ -110,7 +107,7 @@ def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已回档 {days} 天 {room_ids}"
 
 
-@router.on_cmd("房间重启", rule=admin_permission)
+@router.on_cmd("房间重启", admin_permission)
 def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
@@ -128,7 +125,7 @@ def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已重启 {room_ids}"
 
 
-@router.on_cmd("房间重置", rule=admin_permission)
+@router.on_cmd("房间重置", admin_permission)
 def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)

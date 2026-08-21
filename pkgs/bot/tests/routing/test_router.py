@@ -14,7 +14,7 @@ from bot import (
 from bot.testing import private_message_event, recording_gateway
 
 
-async def test_falsey_rule_is_not_replaced() -> None:
+async def test_falsey_predicate_is_not_replaced() -> None:
     class Deny:
         def __bool__(self) -> bool:
             return False
@@ -26,7 +26,7 @@ async def test_falsey_rule_is_not_replaced() -> None:
     router = EventRouter()
     seen: list[str] = []
 
-    @router.on_msg(rule=Deny())
+    @router.on_msg(Deny())
     def protected() -> None:
         seen.append("allowed")
 
@@ -76,9 +76,14 @@ def get_tenant(event: UserEvent) -> Tenant:
 async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
     bot = Bot(cmd_prefixes=("/", "!"))
     router = EventRouter()
+    checked: list[str] = []
     seen: list[str] = []
 
-    @router.on_cmd("ping", aliases=("p",), block=True)
+    def allow(cmd: Injected[Cmd]) -> bool:
+        checked.append(f"{cmd.raw}:{cmd.arg}")
+        return True
+
+    @router.on_cmd("ping", allow, aliases=("p",), block=True)
     def ping(cmd: Injected[Cmd]) -> None:
         seen.append(f"{cmd.raw}:{cmd.arg}")
 
@@ -95,6 +100,7 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
             private_message_event("!p\tnow", event_id="alias"),
         )
 
+    assert checked == ["!p:now"]
     assert seen == ["!p:now"]
 
 

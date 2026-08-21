@@ -84,7 +84,7 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    @bot.on_cmd("secure", rule=admin_permission, block=True)
+    @bot.on_cmd("secure", admin_permission, block=True)
     def secure(cmd: Injected[Cmd]) -> None:
         seen.append(cmd.arg)
 
@@ -250,20 +250,20 @@ async def test_dispatch_continues_after_failed_blocking_route(
     )
 
 
-async def test_dispatch_records_rule_exceptions(
+async def test_dispatch_records_predicate_exceptions(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
-    def fail_rule() -> bool:
-        msg = "rule failed"
+    def fail_predicate() -> bool:
+        msg = "predicate failed"
         raise ValueError(msg)
 
-    @bot.on_msg(rule=fail_rule)
-    def unreachable_rule() -> None:
-        seen.append("rule")
+    @bot.on_msg(fail_predicate)
+    def unreachable() -> None:
+        seen.append("unreachable")
 
     @bot.on_msg(block=True)
     def recover() -> None:
@@ -277,7 +277,7 @@ async def test_dispatch_records_rule_exceptions(
         message.rsplit("(", 1)[-1].rstrip(")")
         for message in caplog.messages
         if "Dispatch route failed" in message
-    ] == ["ValueError: rule failed"]
+    ] == ["ValueError: predicate failed"]
 
 
 async def test_dispatch_respects_priority_and_block() -> None:
@@ -422,14 +422,14 @@ async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers(
     def is_fast(event: Injected[PrivateMessageEvent]) -> bool:
         return event.message.text == "fast"
 
-    @bot.on_msg(rule=is_slow, block=True)
+    @bot.on_msg(is_slow, block=True)
     async def slow() -> None:
         try:
             await AsyncEvent().wait()
         finally:
             slow_cancelled.set()
 
-    @bot.on_msg(rule=is_fast, block=True)
+    @bot.on_msg(is_fast, block=True)
     def fast() -> None:
         seen.append("fast")
 

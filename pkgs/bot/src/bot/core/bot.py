@@ -36,7 +36,7 @@ from bot.protocol.actions import ActionCall
 from bot.protocol.events import Event
 from bot.protocol.msg import Msg
 from bot.protocol.returns import ReturnAction
-from bot.routing import EventRoute, EventRouter
+from bot.routing.router import EventRouter, _EventRoute
 
 from .di import (
     InjectionContext,
@@ -489,7 +489,7 @@ class Bot(EventRouter):
                 try:
                     if not await self._before_deadline(
                         deadline,
-                        partial(route.rule, context, resolver),
+                        partial(route.matches, context, resolver),
                     ):
                         continue
                     await self._before_deadline(
@@ -525,7 +525,7 @@ class Bot(EventRouter):
     async def _run_route(
         self,
         context: InjectionContext,
-        route: EventRoute,
+        route: _EventRoute,
         resolver: ResolverProtocol,
     ) -> None:
         value = await call_with_injection(route.handler, context, resolver)
@@ -535,7 +535,7 @@ class Bot(EventRouter):
     def _log_dispatch_exception(
         self,
         context: InjectionContext,
-        route: EventRoute,
+        route: _EventRoute,
         exc: BaseException,
     ) -> None:
         event = context.event
@@ -553,7 +553,7 @@ class Bot(EventRouter):
     def _log_dispatch_timeout(
         self,
         context: InjectionContext,
-        route: EventRoute,
+        route: _EventRoute,
     ) -> None:
         event = context.event
         gateway = context.gateway

@@ -59,9 +59,7 @@ from .protocol.msg import Msg, MsgInput, MsgSegment, MsgSegmentInput
 from .protocol.returns import ReturnAction
 from .routing import (
     Cmd,
-    EventRoute,
     EventRouter,
-    Rule,
     admin_permission,
 )
 
@@ -90,7 +88,6 @@ __all__ = [
     "EventDetailType",
     "EventKind",
     "EventPayload",
-    "EventRoute",
     "EventRouter",
     "FileStage",
     "FriendDecreaseNoticeEvent",
@@ -122,7 +119,6 @@ __all__ = [
     "RequestEvent",
     "Retcode",
     "ReturnAction",
-    "Rule",
     "Scope",
     "Status",
     "StatusUpdateMetaEvent",
