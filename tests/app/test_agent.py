@@ -20,6 +20,9 @@ async def test_agent_reuses_one_started_pydantic_agent() -> None:
 
     async with agent:
         assert await agent.answer("问题一") == "测试回答"
+        with pytest.raises(RuntimeError, match="restarted"):
+            async with agent:
+                pytest.fail("nested lifecycle should fail")
         assert await agent.answer("问题二") == "测试回答"
 
 

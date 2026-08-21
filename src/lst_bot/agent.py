@@ -109,8 +109,7 @@ class DstQuestionAgent:
         if self._closed:
             msg = "DstQuestionAgent cannot be restarted after closing"
             raise RuntimeError(msg)
-        if self._exit_stack is not None:
-            return self
+        self._closed = True
 
         async with AsyncExitStack() as stack:
             if self._http_client is not None:
@@ -126,7 +125,6 @@ class DstQuestionAgent:
         traceback: TracebackType | None,
     ) -> bool | None:
         stack, self._exit_stack = self._exit_stack, None
-        self._closed = True
         if stack is None:
             return None
         return await stack.__aexit__(exc_type, exc, traceback)
