@@ -8,6 +8,32 @@ from pydantic import ValidationError
 from lst_bot.settings import Settings
 
 
+def test_ai_service_settings_are_required_and_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    monkeypatch.delenv("DOSU_MCP_ENDPOINT")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            openrouter_api_key="",
+            dosu_mcp_endpoint="https://example.com/mcp",
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            openrouter_api_key="test",
+            dosu_mcp_endpoint="invalid",
+        )
+
+
+def test_empty_http_proxy_means_direct_connection() -> None:
+    assert Settings(_env_file=None, http_proxy="").http_proxy is None
+
+
 def test_log_level_accepts_names_and_numbers() -> None:
     named = Settings(_env_file=None, log_level="info")
     numeric = Settings(_env_file=None, log_level="10")

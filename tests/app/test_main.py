@@ -13,7 +13,7 @@ from klei import KleiClient
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
-from urllib3_future import AsyncProxyManager
+from urllib3_future import AsyncPoolManager
 
 from lst_bot.main import build_bot, run
 from lst_bot.settings import Settings
@@ -29,10 +29,11 @@ async def test_run_closes_model_client_when_agent_build_fails(
         msg = "build failed"
         raise RuntimeError(msg)
 
+    monkeypatch.setenv("ALL_PROXY", "invalid://proxy")
     monkeypatch.setattr("lst_bot.main.build_question_agent", fail)
 
     with pytest.raises(RuntimeError, match="build failed"):
-        await run(Settings(_env_file=None))
+        await run(Settings(_env_file=None, http_proxy=""))
 
     assert clients[0].is_closed
 
@@ -52,7 +53,7 @@ def test_build_bot_registers_runtime_settings() -> None:
         discord_bot_token=SecretStr("discord.test"),
         report_group_id="20000",
     )
-    http_pool = AsyncProxyManager(settings.http_proxy)
+    http_pool = AsyncPoolManager()
     question_agent = Agent(TestModel())
 
     bot = build_bot(
@@ -87,7 +88,7 @@ def test_build_bot_skips_unconfigured_gateways_and_report() -> None:
     settings = Settings(_env_file=None)
     bot = build_bot(
         settings,
-        http_pool=AsyncProxyManager(settings.http_proxy),
+        http_pool=AsyncPoolManager(),
         question_agent=Agent(TestModel()),
     )
 

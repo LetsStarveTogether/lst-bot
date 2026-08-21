@@ -61,7 +61,7 @@ def build_question_agent(
     *,
     http_client: AsyncClient,
 ) -> Agent:
-    proxy = settings.http_proxy or None
+    proxy = str(settings.http_proxy) if settings.http_proxy else None
     return Agent(
         OpenRouterModel(
             OPENROUTER_MODEL,
@@ -78,8 +78,10 @@ def build_question_agent(
                     headers={
                         DOSU_API_KEY_HEADER: settings.dosu_api_key.get_secret_value()
                     },
-                    httpx_client_factory=(
-                        partial(AsyncClient, proxy=proxy) if proxy is not None else None
+                    httpx_client_factory=partial(
+                        AsyncClient,
+                        proxy=proxy,
+                        trust_env=False,
                     ),
                 ),
                 init_timeout=REQUEST_TIMEOUT,

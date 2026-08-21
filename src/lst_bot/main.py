@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from klei import KleiClient
 from lst import LstClient
 from pydantic_ai import Agent
-from urllib3_future import AsyncProxyManager
+from urllib3_future import AsyncPoolManager, AsyncProxyManager
 
 from .agent import REQUEST_TIMEOUT, build_question_agent
 from .general import report
@@ -25,9 +25,10 @@ from .settings import Settings
 def build_bot(
     settings: Settings,
     *,
-    http_pool: AsyncProxyManager,
+    http_pool: AsyncPoolManager,
     question_agent: Agent,
 ) -> Bot:
+    proxy = str(settings.http_proxy) if settings.http_proxy else None
     bot = Bot(
         admin_ids=settings.bot_admin,
         cmd_prefixes=settings.bot_cmd_prefixes,
@@ -73,7 +74,7 @@ def build_bot(
                 http_pool=http_pool,
                 websocket_connector=partial(
                     connect_websocket,
-                    proxy=settings.http_proxy,
+                    proxy=proxy,
                     max_size=None,
                 ),
             )
@@ -98,11 +99,13 @@ def build_bot(
 
 
 async def run(settings: Settings) -> None:
+    proxy = str(settings.http_proxy) if settings.http_proxy else None
     async with (
-        AsyncProxyManager(settings.http_proxy) as http_pool,
+        AsyncProxyManager(proxy) if proxy else AsyncPoolManager() as http_pool,
         AsyncClient(
-            proxy=settings.http_proxy or None,
+            proxy=proxy,
             timeout=REQUEST_TIMEOUT,
+            trust_env=False,
         ) as model_http_client,
     ):
         question_agent = build_question_agent(

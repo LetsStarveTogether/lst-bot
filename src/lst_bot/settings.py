@@ -1,11 +1,24 @@
 from datetime import timedelta
 from logging import DEBUG, getLevelNamesMapping
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, SecretStr, StrictInt, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BeforeValidator,
+    Field,
+    SecretStr,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOG_LEVELS = getLevelNamesMapping()
+type _OptionalHttpUrl = Annotated[
+    AnyHttpUrl | None,
+    BeforeValidator(lambda value: None if value == "" else value),
+]
 
 
 class Settings(BaseSettings):
@@ -17,7 +30,7 @@ class Settings(BaseSettings):
     bot_timezone: ZoneInfo | None = None
 
     log_level: StrictInt = DEBUG
-    http_proxy: str = "http://127.0.0.1:1080"
+    http_proxy: _OptionalHttpUrl = AnyHttpUrl("http://127.0.0.1:1080")
 
     onebot_self_id: str = ""
     onebot_ws_url: str = ""
@@ -29,8 +42,8 @@ class Settings(BaseSettings):
     klei_access_token: SecretStr = SecretStr("")
     klei_host_id: str = ""
 
-    openrouter_api_key: SecretStr = SecretStr("")
-    dosu_mcp_endpoint: str = ""
+    openrouter_api_key: SecretStr = Field(min_length=1)
+    dosu_mcp_endpoint: AnyHttpUrl
     dosu_api_key: SecretStr = SecretStr("")
 
     report_group_id: str = ""
