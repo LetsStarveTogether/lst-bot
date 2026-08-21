@@ -832,8 +832,7 @@ class TelegramRestClient:
                 else None
             )
             if (
-                error_code == HTTPStatus.TOO_MANY_REQUESTS
-                and retry_after is not None
+                retry_after is not None
                 and retry_after <= self.max_retry_after
                 and retries < self.max_rate_limit_retries
             ):

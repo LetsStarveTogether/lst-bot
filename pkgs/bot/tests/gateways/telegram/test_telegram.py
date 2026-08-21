@@ -473,7 +473,7 @@ async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
 async def test_rate_limit_retry_and_error_parameters() -> None:
     limited = {
         "ok": False,
-        "error_code": 429,
+        "error_code": 400,
         "description": "retry later",
         "parameters": {"retry_after": 0},
     }
