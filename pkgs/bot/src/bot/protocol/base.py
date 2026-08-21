@@ -1,7 +1,19 @@
 from collections.abc import Mapping
-from math import isfinite
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    model_validator,
+)
+
+_JSON_VALUE_ADAPTER = TypeAdapter(
+    JsonValue,
+    config=ConfigDict(allow_inf_nan=False),
+)
 
 
 def _field_value(value: object, key: str) -> object:
@@ -19,26 +31,7 @@ class Model(BaseModel):
         validate_by_name=True,
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def finite_json_numbers(cls, value: object) -> object:
-        pending = [value]
-        visited: set[int] = set()
-        while pending:
-            item = pending.pop()
-            if isinstance(item, float) and not isfinite(item):
-                msg = "JSON numbers must be finite"
-                raise ValueError(msg)
-            if isinstance(item, BaseModel):
-                item = item.model_dump()
-            if isinstance(item, Mapping):
-                values = item.values()
-            elif isinstance(item, list | tuple):
-                values = item
-            else:
-                continue
-            if id(item) in visited:
-                continue
-            visited.add(id(item))
-            pending.extend(values)
-        return value
+    @model_validator(mode="after")
+    def finite_json_numbers(self) -> Self:
+        _JSON_VALUE_ADAPTER.validate_python(self.model_dump(mode="json"))
+        return self
