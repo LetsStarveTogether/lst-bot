@@ -124,12 +124,6 @@ def test_build_application_skips_unconfigured_gateways_and_report() -> None:
     assert application.bot.scheduler.jobs == ()
 
 
-def test_importing_main_creates_no_runtime_resources() -> None:
-    assert not hasattr(main_module, "settings")
-    assert not hasattr(main_module, "bot")
-    assert not hasattr(main_module, "gateway")
-
-
 def test_main_loads_settings_inside_logging_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

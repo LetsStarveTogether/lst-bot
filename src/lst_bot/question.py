@@ -30,27 +30,14 @@ def reply_message_id(event: MessageEvent) -> str:
 def message_payload_text(value: object) -> str:
     if isinstance(value, str):
         return value.strip()
-    if isinstance(value, Mapping):
-        return message_segments_text((value,))
-    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray | str):
-        return message_segments_text(value)
-    return ""
-
-
-def message_segments_text(segments: Sequence[object]) -> str:
+    segments = (value,) if isinstance(value, Mapping) else value
+    if not isinstance(segments, Sequence):
+        return ""
     parts: list[str] = []
     for segment in segments:
-        if not isinstance(segment, Mapping) or segment.get("type") != "text":
-            continue
-
-        data = segment.get("data") or {}
-        if not isinstance(data, Mapping):
-            continue
-
-        text = data.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-
+        match segment:
+            case {"type": "text", "data": {"text": str(text)}}:
+                parts.append(text)
     return "".join(parts).strip()
 
 
@@ -100,11 +87,8 @@ async def ask_dst_question(
     agent: Injected[DstQuestionAgent],
     r: Injected[Reply],
 ) -> ReturnAction:
-    question = await build_question(conn, event, cmd.arg.strip())
+    question = await build_question(conn, event, cmd.arg)
     if not question:
         return r(f"用法：{cmd.raw} 《饥荒联机版》相关问题")
 
     return r(await agent.answer(question))
-
-
-__all__ = ["build_question", "router"]

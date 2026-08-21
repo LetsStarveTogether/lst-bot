@@ -150,12 +150,3 @@ def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
 
     lc.regenerate_rooms(room_ids)
     return f"已重置 {room_ids}"
-
-
-__all__ = [
-    "format_lobby_data",
-    "get_active_rooms",
-    "get_host_rooms",
-    "parse_room_ids",
-    "router",
-]

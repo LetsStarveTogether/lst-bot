@@ -78,6 +78,3 @@ def configure_logging(settings: Settings) -> Iterator[None]:
         finally:
             for logger, level in zip(library_loggers, library_levels, strict=True):
                 logger.setLevel(level)
-
-
-__all__ = ["Settings", "configure_logging"]

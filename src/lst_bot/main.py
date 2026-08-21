@@ -5,14 +5,13 @@ from types import TracebackType
 from typing import Any, Self
 
 import uvloop
-from bot import Bot, BotSelf, Event, Injected
+from bot import Bot, BotSelf
 from bot.gateways.base import connect_websocket
 from bot.gateways.discord import DiscordGateway, DiscordIntent
 from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAction
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
 from klei import KleiClient
-from logbook import Logger
 from lst import LstClient
 from urllib3_future import AsyncProxyManager
 
@@ -22,8 +21,6 @@ from .general import router as general_router
 from .question import router as question_router
 from .rooms import router as rooms_router
 from .settings import Settings, configure_logging
-
-logger = Logger(__name__)
 
 
 class Application:
@@ -140,11 +137,6 @@ def build_application(settings: Settings) -> Application:
     for router in (general_router, question_router, rooms_router):
         bot.add_router(router)
 
-    @bot.on_event()
-    def log_event(event: Injected[Event]) -> None:
-        if __debug__:
-            logger.trace("receive event : {event}", event=event)
-
     return Application(
         bot,
         resources=(http_pool, question_agent),
@@ -159,6 +151,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-__all__ = ["Application", "build_application", "main"]

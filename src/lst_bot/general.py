@@ -34,7 +34,7 @@ async def versions(kc: Injected[KleiClient]) -> str:
 
 @router.on_cmd("搜索玩家")
 async def search_player(cmd: Injected[Cmd], kc: Injected[KleiClient]) -> str:
-    target_name = cmd.arg.strip()
+    target_name = cmd.arg
     if not target_name:
         return f"用法：{cmd.raw} 玩家名"
 
@@ -66,6 +66,3 @@ async def report(
     lobby_text = "\n".join(format_lobby_data(room) for room in rooms)
     message = "\n\n".join(filter(None, (hitokoto, lobby_text)))
     await conn.send_msg(message, group_id=settings.report_group_id)
-
-
-__all__ = ["router"]

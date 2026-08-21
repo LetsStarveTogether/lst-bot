@@ -20,7 +20,7 @@ from lst_bot.question import (
         ({"type": "text", "data": {"text": "single"}}, "single"),
         (
             [
-                {"type": "mention", "data": {"user_id": "1"}},
+                {"type": "image", "data": {"file": "platform-native-id"}},
                 {"type": "text", "data": {"text": "multi"}},
                 {"type": "text", "data": {"text": " segment"}},
             ],
