@@ -1,8 +1,8 @@
 from datetime import date
 from unittest.mock import Mock
 
-from bot import Bot
-from bot.testing import RecordingGateway, private_message_event, recording_gateway
+from bot import Bot, Cmd
+from bot.testing import RecordingGateway
 from hitokoto import HitokotoClient
 from klei import (
     KleiClient,
@@ -12,7 +12,7 @@ from klei import (
 )
 from support import room_data
 
-from lst_bot.general import report, router
+from lst_bot.general import hitokoto, report, search_player, versions
 from lst_bot.settings import Settings
 
 
@@ -24,70 +24,57 @@ def version(number: int, version_type: VersionType) -> Version:
     )
 
 
-async def test_hitokoto_command_dispatches_with_injected_client() -> None:
-    bot = Bot()
+async def test_hitokoto_uses_cached_client() -> None:
     client = Mock(spec_set=HitokotoClient)
     client.get_hitokoto.return_value = "今日一言"
-    bot.container.add_instance(client, provides=HitokotoClient)
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
 
-    async with bot:
-        await bot.dispatch(gateway.connection, private_message_event("/一言"))
-
+    assert await hitokoto(client) == "今日一言"
     client.get_hitokoto.assert_awaited_once_with(use_cache=True)
-    message = gateway.actions[0].params.model_dump(mode="json")["message"]
-    assert message[0]["data"]["text"] == "今日一言"
 
 
-async def test_versions_command_dispatches_with_injected_client() -> None:
-    bot = Bot()
+async def test_versions_selects_latest_available_channels() -> None:
     client = Mock(spec_set=KleiClient)
     client.get_latest_versions.return_value = [
         version(7, VersionType.RELEASE),
         version(9, VersionType.RELEASE),
         version(8, VersionType.TEST),
     ]
-    bot.container.add_instance(client, provides=KleiClient)
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
 
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("/最新版本"),
-        )
-
-    client.get_latest_versions.assert_awaited_once_with()
-    message = gateway.actions[0].params.model_dump(mode="json")["message"]
-    assert message[0]["data"]["text"] == (
+    assert await versions(client) == (
         "发布版本：9\n发布类型：Release\n发布日期：2026-08-09\n\n\n"
         "发布版本：8\n发布类型：Test\n发布日期：2026-08-08"
     )
+    client.get_latest_versions.return_value = [version(7, VersionType.RELEASE)]
+    assert await versions(client) == (
+        "发布版本：7\n发布类型：Release\n发布日期：2026-08-07"
+    )
+    client.get_latest_versions.return_value = []
+    assert await versions(client) == "❌ 未搜索到版本信息"
 
 
-async def test_search_player_command_filters_active_rooms() -> None:
-    bot = Bot()
+async def test_search_player_filters_active_rooms() -> None:
     client = Mock(spec_set=KleiClient)
-    client.get_lobby_data.return_value = [room_data(row_id="1")]
+    client.get_lobby_data.return_value = [
+        room_data(row_id="1"),
+        room_data(row_id="2", connected=0),
+        room_data(row_id="3"),
+    ]
     client.get_room_data.return_value = [
         room_data(row_id="1", name="Alpha", players="Wilson, Wendy"),
-        room_data(row_id="2", name="Beta", players="WX-78"),
+        room_data(row_id="3", name="Beta", players="WX-78"),
     ]
-    bot.container.add_instance(client, provides=KleiClient)
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("/搜索玩家 Wendy"),
-        )
+    reply = await search_player(
+        Cmd(name="搜索玩家", raw="/搜索玩家", arg="Wendy"),
+        client,
+    )
 
     client.get_lobby_data.assert_awaited_once_with(platforms=(Platform.Steam,))
-    client.get_room_data.assert_awaited_once()
-    message = gateway.actions[0].params.model_dump(mode="json")["message"]
-    reply = message[0]["data"]["text"]
+    room_data_call = client.get_room_data.await_args
+    assert room_data_call is not None
+    assert list(room_data_call.args[0]) == [
+        ("1", room_data().region),
+        ("3", room_data().region),
+    ]
     assert reply.startswith("🔍️ 1/2\n")
     assert "Alpha" in reply
     assert "Beta" not in reply
@@ -101,6 +88,7 @@ async def test_report_uses_injected_settings_for_room_and_message_targets() -> N
     klei.get_lobby_data.return_value = [
         room_data(row_id="1", host="wanted", connected=1),
         room_data(row_id="2", host="other", connected=1),
+        room_data(row_id="3", host="wanted", connected=0),
     ]
     klei.get_room_data.return_value = [room_data(row_id="1")]
     gateway = RecordingGateway(bot)

@@ -23,13 +23,16 @@ async def versions(kc: Injected[KleiClient]) -> str:
         version = max(
             (item for item in versions if item.type is version_type),
             key=attrgetter("number"),
+            default=None,
         )
+        if version is None:
+            continue
         messages.append(
             f"发布版本：{version.number}\n"
             f"发布类型：{version.type}\n"
             f"发布日期：{version.date}",
         )
-    return "\n\n\n".join(messages)
+    return "\n\n\n".join(messages) or "❌ 未搜索到版本信息"
 
 
 @router.on_cmd("搜索玩家")

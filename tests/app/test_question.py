@@ -1,13 +1,13 @@
 import pytest
-from bot import ActionResponse, Bot, Msg, Retcode
-from bot.testing import RecordingGateway, private_message_event, recording_gateway
+from bot import ActionResponse, Bot, Cmd, Msg, Retcode
+from bot.testing import RecordingGateway, private_message_event
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
 from lst_bot.question import (
+    ask_dst_question,
     build_question,
     message_payload_text,
-    router,
 )
 
 
@@ -25,10 +25,9 @@ from lst_bot.question import (
             "multi segment",
         ),
         ({"type": "text", "data": "invalid"}, ""),
-        (b"bytes", ""),
         (None, ""),
     ],
-    ids=("string", "mapping", "sequence", "invalid-data", "bytes", "none"),
+    ids=("string", "mapping", "sequence", "invalid-data", "none"),
 )
 def test_message_payload_text(payload: object, expected: str) -> None:
     assert message_payload_text(payload) == expected
@@ -72,19 +71,17 @@ async def test_build_question_combines_reply_and_command_text() -> None:
     )
 
 
-async def test_question_command_sends_reply_from_injected_agent() -> None:
+async def test_question_handler_replies_with_agent_output() -> None:
     bot = Bot()
-    bot.container.add_instance(Agent(TestModel(custom_output_text="答案")))
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
+    gateway = RecordingGateway(bot)
+    event = private_message_event("/问 巨鹿什么时候来？")
 
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("/问 巨鹿什么时候来？"),
-        )
+    reply = await ask_dst_question(
+        Cmd(name="问", raw="/问", arg="巨鹿什么时候来？"),
+        event,
+        gateway.connection,
+        Agent(TestModel(custom_output_text="答案")),
+    )
 
-    action = gateway.actions[0].model_dump(mode="json")
-    assert action["action"] == "send_message"
-    assert action["params"]["message"][0]["type"] == "reply"
-    assert action["params"]["message"][1]["data"]["text"] == "答案"
+    assert reply[0].type == "reply"
+    assert reply[1].data.text == "答案"

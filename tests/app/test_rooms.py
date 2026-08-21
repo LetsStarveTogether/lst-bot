@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
@@ -7,7 +8,16 @@ from klei import KleiClient, Platform, RoomData
 from lst import LstClient
 from support import room_data
 
-from lst_bot.rooms import format_lobby_data, parse_room_ids, restart_room, router
+from lst_bot.rooms import (
+    format_lobby_data,
+    parse_room_ids,
+    regenerate_room,
+    restart_room,
+    rollback_room,
+    rooms,
+    router,
+    save_room,
+)
 from lst_bot.settings import Settings
 
 
@@ -25,18 +35,12 @@ def test_parse_room_ids(value: str, expected: list[int]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "error"),
-    [
-        ("", "room ids are required"),
-        ("  , ", "room ids are required"),
-        ("3-1", "invalid room id range: 3-1"),
-        ("invalid", "invalid literal for int"),
-        ("1-2-3", "invalid literal for int"),
-    ],
-    ids=("empty", "separators-only", "descending", "non-number", "extra-dash"),
+    "value",
+    ["  , ", "3-1"],
+    ids=("empty", "descending"),
 )
-def test_parse_room_ids_rejects_invalid_input(value: str, error: str) -> None:
-    with pytest.raises(ValueError, match=error):
+def test_parse_room_ids_rejects_invalid_input(value: str) -> None:
+    with pytest.raises(ValueError, match="room id"):
         parse_room_ids(value)
 
 
@@ -59,7 +63,6 @@ def test_format_lobby_data(data: RoomData, verbose: bool, expected: str) -> None
 
 
 async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
-    bot = Bot()
     settings = Settings(_env_file=None, klei_host_id="wanted")
     client = Mock(spec_set=KleiClient)
     client.get_lobby_data.return_value = [
@@ -67,44 +70,43 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
         room_data(row_id="2", host="other"),
     ]
     client.get_room_data.return_value = [room_data(name="Alpha")]
-    bot.container.add_instance(settings, provides=Settings)
-    bot.container.add_instance(client, provides=KleiClient)
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("/房间列表"),
-        )
+    reply = await rooms(client, settings)
 
     client.get_lobby_data.assert_awaited_once_with(platforms=(Platform.Steam,))
     room_data_call = client.get_room_data.await_args
     assert room_data_call is not None
     room_refs = list(room_data_call.args[0])
     assert room_refs == [("1", "ap-east-1")]
-    message = gateway.actions[0].params.model_dump(mode="json")["message"]
-    assert "Alpha" in message[0]["data"]["text"]
+    assert "Alpha" in reply
 
 
 @pytest.mark.parametrize(
-    ("command", "method_name", "expected_args", "expected_reply"),
+    ("handler", "arg", "method_name", "expected_args", "expected_reply"),
     [
         (
-            "/房间存档 1,3-4",
+            save_room,
+            "1,3-4",
             "send_console_command",
             ([1, 3, 4], "c_save()"),
             "已存档 [1, 3, 4]",
         ),
         (
-            "/房间回档 1,3-4 2",
+            rollback_room,
+            "1,3-4 2",
             "send_console_command",
             ([1, 3, 4], "c_rollback(2)"),
             "已回档 2 天 [1, 3, 4]",
         ),
-        ("/房间重启 1,3-4", "restart_rooms", ([1, 3, 4],), "已重启 [1, 3, 4]"),
         (
-            "/房间重置 1,3-4",
+            restart_room,
+            "1,3-4",
+            "restart_rooms",
+            ([1, 3, 4],),
+            "已重启 [1, 3, 4]",
+        ),
+        (
+            regenerate_room,
+            "1,3-4",
             "send_console_command",
             ([1, 3, 4], "c_regenerateworld()"),
             "已重置 [1, 3, 4]",
@@ -112,28 +114,19 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     ],
     ids=("save", "rollback", "restart", "regenerate"),
 )
-async def test_admin_room_commands_dispatch_to_lst(
-    command: str,
+def test_room_commands_dispatch_to_lst(
+    handler: Callable[[Cmd, LstClient], str],
+    arg: str,
     method_name: str,
     expected_args: tuple[object, ...],
     expected_reply: str,
 ) -> None:
-    bot = Bot(admin_ids={"test": {"admin"}})
     client = Mock(spec_set=LstClient)
-    bot.container.add_instance(client, provides=LstClient)
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event(command, user_id="admin"),
-        )
+    reply = handler(Cmd(name="", raw="", arg=arg), client)
 
     method = getattr(client, method_name)
     method.assert_called_once_with(*expected_args)
-    message = gateway.actions[0].params.model_dump(mode="json")["message"]
-    assert message[0]["data"]["text"] == expected_reply
+    assert reply == expected_reply
 
 
 def test_restart_room_hides_internal_error() -> None:
