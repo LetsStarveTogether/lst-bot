@@ -11,8 +11,8 @@ class Model(BaseModel):
         allow_inf_nan=False,
         extra="allow",
         hide_input_in_errors=True,
-        populate_by_name=True,
         serialize_by_alias=True,
+        validate_by_name=True,
     )
 
     @model_validator(mode="before")

@@ -9,9 +9,9 @@ from pydantic import (
     BeforeValidator,
     Discriminator,
     Field,
+    InstanceOf,
     JsonValue,
     PlainSerializer,
-    RootModel,
     SerializeAsAny,
     StrictBool,
     StrictBytes,
@@ -19,6 +19,8 @@ from pydantic import (
     StrictStr,
     StringConstraints,
     Tag,
+    TypeAdapter,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -252,8 +254,7 @@ def _upload_file_params_tag(value: object) -> UploadFileTag:
         return UploadFileTag.EXTENSION
 
 
-def _action_call_tag(value: object) -> ActionCallTag:
-    action = _field_value(value, "action")
+def _action_call_tag(action: str) -> ActionCallTag:
     try:
         action = Action(action)
     except ValueError:
@@ -466,165 +467,49 @@ class ExtensionActionParams(ActionParamModel):
     pass
 
 
-class ActionCallBase(Model):
+_ACTION_PARAM_ADAPTERS = {
+    ActionCallTag.EMPTY: TypeAdapter(EmptyActionParams),
+    ActionCallTag.LATEST_EVENTS: TypeAdapter(LatestEventsParams),
+    ActionCallTag.SEND_MESSAGE: TypeAdapter(SendMsgParams),
+    ActionCallTag.USER_ID: TypeAdapter(UserIdParams),
+    ActionCallTag.MESSAGE_ID: TypeAdapter(MsgIdParams),
+    ActionCallTag.GROUP_ID: TypeAdapter(GroupIdParams),
+    ActionCallTag.GROUP_USER_ID: TypeAdapter(GroupUserIdParams),
+    ActionCallTag.GROUP_NAME: TypeAdapter(GroupNameParams),
+    ActionCallTag.GUILD_ID: TypeAdapter(GuildIdParams),
+    ActionCallTag.GUILD_USER_ID: TypeAdapter(GuildUserIdParams),
+    ActionCallTag.GUILD_NAME: TypeAdapter(GuildNameParams),
+    ActionCallTag.CHANNEL_ID: TypeAdapter(ChannelIdParams),
+    ActionCallTag.CHANNEL_LIST: TypeAdapter(ChannelListParams),
+    ActionCallTag.CHANNEL_USER_ID: TypeAdapter(ChannelUserIdParams),
+    ActionCallTag.CHANNEL_NAME: TypeAdapter(ChannelNameParams),
+    ActionCallTag.GET_FILE: TypeAdapter(GetFileParams),
+    ActionCallTag.UPLOAD_FILE: TypeAdapter(UploadFileParams),
+    ActionCallTag.UPLOAD_FILE_FRAGMENTED: TypeAdapter(FragmentedUploadParams),
+    ActionCallTag.GET_FILE_FRAGMENTED: TypeAdapter(FragmentedGetParams),
+    ActionCallTag.EXTENSION: TypeAdapter(ExtensionActionParams),
+}
+
+
+class ActionCall(Model):
     action: StrictStr
-    params: ActionParamModel
+    params: SerializeAsAny[InstanceOf[ActionParamModel]]
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def params_for_action(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> ActionParamModel:
+        action = info.data.get("action")
+        tag = (
+            _action_call_tag(action)
+            if isinstance(action, str)
+            else ActionCallTag.EXTENSION
+        )
+        return _ACTION_PARAM_ADAPTERS[tag].validate_python(value)
 
     def __str__(self) -> str:
         params = str(self.params)
         return self.action if params == "-" else f"{self.action} {params}"
-
-
-class EmptyActionCall(ActionCallBase):
-    action: Literal[
-        Action.GET_SUPPORTED_ACTIONS,
-        Action.GET_STATUS,
-        Action.GET_VERSION,
-        Action.GET_SELF_INFO,
-        Action.GET_FRIEND_LIST,
-        Action.GET_GROUP_LIST,
-        Action.GET_GUILD_LIST,
-    ]
-    params: EmptyActionParams
-
-
-class LatestEventsActionCall(ActionCallBase):
-    action: Literal[Action.GET_LATEST_EVENTS] = Action.GET_LATEST_EVENTS
-    params: LatestEventsParams
-
-
-class SendMsgActionCall(ActionCallBase):
-    action: Literal[Action.SEND_MESSAGE] = Action.SEND_MESSAGE
-    params: SendMsgParams
-
-
-class UserIdActionCall(ActionCallBase):
-    action: Literal[Action.GET_USER_INFO] = Action.GET_USER_INFO
-    params: UserIdParams
-
-
-class MsgIdActionCall(ActionCallBase):
-    action: Literal[Action.DELETE_MESSAGE] = Action.DELETE_MESSAGE
-    params: MsgIdParams
-
-
-class GroupIdActionCall(ActionCallBase):
-    action: Literal[
-        Action.GET_GROUP_INFO,
-        Action.GET_GROUP_MEMBER_LIST,
-        Action.LEAVE_GROUP,
-    ]
-    params: GroupIdParams
-
-
-class GroupUserIdActionCall(ActionCallBase):
-    action: Literal[Action.GET_GROUP_MEMBER_INFO] = Action.GET_GROUP_MEMBER_INFO
-    params: GroupUserIdParams
-
-
-class GroupNameActionCall(ActionCallBase):
-    action: Literal[Action.SET_GROUP_NAME] = Action.SET_GROUP_NAME
-    params: GroupNameParams
-
-
-class GuildIdActionCall(ActionCallBase):
-    action: Literal[
-        Action.GET_GUILD_INFO,
-        Action.GET_GUILD_MEMBER_LIST,
-        Action.LEAVE_GUILD,
-    ]
-    params: GuildIdParams
-
-
-class GuildUserIdActionCall(ActionCallBase):
-    action: Literal[Action.GET_GUILD_MEMBER_INFO] = Action.GET_GUILD_MEMBER_INFO
-    params: GuildUserIdParams
-
-
-class GuildNameActionCall(ActionCallBase):
-    action: Literal[Action.SET_GUILD_NAME] = Action.SET_GUILD_NAME
-    params: GuildNameParams
-
-
-class ChannelIdActionCall(ActionCallBase):
-    action: Literal[
-        Action.GET_CHANNEL_INFO,
-        Action.GET_CHANNEL_MEMBER_LIST,
-        Action.LEAVE_CHANNEL,
-    ]
-    params: ChannelIdParams
-
-
-class ChannelListActionCall(ActionCallBase):
-    action: Literal[Action.GET_CHANNEL_LIST] = Action.GET_CHANNEL_LIST
-    params: ChannelListParams
-
-
-class ChannelUserIdActionCall(ActionCallBase):
-    action: Literal[Action.GET_CHANNEL_MEMBER_INFO] = Action.GET_CHANNEL_MEMBER_INFO
-    params: ChannelUserIdParams
-
-
-class ChannelNameActionCall(ActionCallBase):
-    action: Literal[Action.SET_CHANNEL_NAME] = Action.SET_CHANNEL_NAME
-    params: ChannelNameParams
-
-
-class GetFileActionCall(ActionCallBase):
-    action: Literal[Action.GET_FILE] = Action.GET_FILE
-    params: GetFileParams
-
-
-class UploadFileActionCall(ActionCallBase):
-    action: Literal[Action.UPLOAD_FILE] = Action.UPLOAD_FILE
-    params: UploadFileParams
-
-
-class FragmentedUploadActionCall(ActionCallBase):
-    action: Literal[Action.UPLOAD_FILE_FRAGMENTED] = Action.UPLOAD_FILE_FRAGMENTED
-    params: FragmentedUploadParams
-
-
-class FragmentedGetActionCall(ActionCallBase):
-    action: Literal[Action.GET_FILE_FRAGMENTED] = Action.GET_FILE_FRAGMENTED
-    params: FragmentedGetParams
-
-
-class ExtensionActionCall(ActionCallBase):
-    params: ExtensionActionParams
-
-
-type ActionCallVariant = Annotated[
-    Annotated[EmptyActionCall, Tag(ActionCallTag.EMPTY)]
-    | Annotated[LatestEventsActionCall, Tag(ActionCallTag.LATEST_EVENTS)]
-    | Annotated[SendMsgActionCall, Tag(ActionCallTag.SEND_MESSAGE)]
-    | Annotated[UserIdActionCall, Tag(ActionCallTag.USER_ID)]
-    | Annotated[MsgIdActionCall, Tag(ActionCallTag.MESSAGE_ID)]
-    | Annotated[GroupIdActionCall, Tag(ActionCallTag.GROUP_ID)]
-    | Annotated[GroupUserIdActionCall, Tag(ActionCallTag.GROUP_USER_ID)]
-    | Annotated[GroupNameActionCall, Tag(ActionCallTag.GROUP_NAME)]
-    | Annotated[GuildIdActionCall, Tag(ActionCallTag.GUILD_ID)]
-    | Annotated[GuildUserIdActionCall, Tag(ActionCallTag.GUILD_USER_ID)]
-    | Annotated[GuildNameActionCall, Tag(ActionCallTag.GUILD_NAME)]
-    | Annotated[ChannelIdActionCall, Tag(ActionCallTag.CHANNEL_ID)]
-    | Annotated[ChannelListActionCall, Tag(ActionCallTag.CHANNEL_LIST)]
-    | Annotated[ChannelUserIdActionCall, Tag(ActionCallTag.CHANNEL_USER_ID)]
-    | Annotated[ChannelNameActionCall, Tag(ActionCallTag.CHANNEL_NAME)]
-    | Annotated[GetFileActionCall, Tag(ActionCallTag.GET_FILE)]
-    | Annotated[UploadFileActionCall, Tag(ActionCallTag.UPLOAD_FILE)]
-    | Annotated[
-        FragmentedUploadActionCall,
-        Tag(ActionCallTag.UPLOAD_FILE_FRAGMENTED),
-    ]
-    | Annotated[
-        FragmentedGetActionCall,
-        Tag(ActionCallTag.GET_FILE_FRAGMENTED),
-    ]
-    | Annotated[ExtensionActionCall, Tag(ActionCallTag.EXTENSION)],
-    Discriminator(_action_call_tag),
-]
-
-
-class ActionCall(RootModel[ActionCallVariant]):
-    def __str__(self) -> str:
-        return str(self.root)

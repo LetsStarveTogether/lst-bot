@@ -63,7 +63,7 @@ async def test_connection_send_msg_builds_standard_action() -> None:
 
     assert isinstance(response, ActionResponse)
     assert response.data == {"status": "ok"}
-    action = gateway.actions[0].root
+    action = gateway.actions[0]
     assert action.action == "send_message"
     assert action.params.model_dump(mode="json", by_alias=True) == {
         "detail_type": "group",
@@ -125,7 +125,7 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
 
     assert len(results) == 1
     assert results[0].values == []
-    action = gateway.actions[0].root
+    action = gateway.actions[0]
     assert action.action == "send_message"
     assert action.params.model_dump(mode="json", by_alias=True)["message"] == [
         {"type": "text", "data": {"text": "pong hi"}},
@@ -202,7 +202,7 @@ async def test_dispatch_auto_replies_string_return() -> None:
     assert effect.action.msg == Msg.t("pong")
     assert isinstance(effect.outcome, ActionResponse)
     assert effect.outcome.data == {"status": "ok"}
-    assert gateway.actions[0].root.model_dump(mode="json", by_alias=True) == {
+    assert gateway.actions[0].model_dump(mode="json", by_alias=True) == {
         "action": "send_message",
         "params": {
             "detail_type": "private",
@@ -231,7 +231,7 @@ async def test_dispatch_executes_list_returns_in_order() -> None:
         "two",
     ]
     assert [
-        action.root.params.model_dump(mode="json", by_alias=True)["message"]
+        action.params.model_dump(mode="json", by_alias=True)["message"]
         for action in gateway.actions
     ] == [
         [{"type": "text", "data": {"text": "one"}}],
@@ -263,7 +263,7 @@ async def test_dispatch_executes_action_returns() -> None:
     async with bot:
         results = await bot.dispatch(gateway.connection, make_event("ping"))
 
-    assert [action.root.action for action in gateway.actions] == [
+    assert [action.action for action in gateway.actions] == [
         "send_message",
         "get_user_info",
     ]
@@ -292,7 +292,7 @@ async def test_dispatch_injects_reply_and_mention_helpers() -> None:
         "message",
     ]
     assert [
-        action.root.params.model_dump(mode="json", by_alias=True)["message"]
+        action.params.model_dump(mode="json", by_alias=True)["message"]
         for action in gateway.actions
     ] == [
         [
@@ -348,7 +348,7 @@ async def test_dispatch_stops_batch_on_return_execution_error() -> None:
     async with bot:
         results = await bot.dispatch(gateway.connection, make_event("ping"))
 
-    assert [action.root.action for action in gateway.actions] == ["send_message"]
+    assert [action.action for action in gateway.actions] == ["send_message"]
     assert len(results) == 1
     exception = results[0].exception
     assert isinstance(exception, TypeError)

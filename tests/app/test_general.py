@@ -112,6 +112,6 @@ async def test_report_uses_injected_settings_for_room_and_message_targets() -> N
     assert room_data_call is not None
     room_refs = list(room_data_call.args[0])
     assert room_refs == [("1", room_data().region)]
-    action = gateway.actions[0].root.model_dump(mode="json", by_alias=True)
+    action = gateway.actions[0].model_dump(mode="json", by_alias=True)
     assert action["params"]["group_id"] == "group"
     assert action["params"]["message"][0]["data"]["text"].startswith("今日一言")

@@ -2145,6 +2145,13 @@ class DiscordGateway(Gateway, DiscordRestClient):
         message: DiscordMessage,
         raw_data: JsonValue,
     ) -> MessageEvent:
+        reference = message.message_reference
+        referenced = message.referenced_message
+        reply_text = None
+        if referenced is not None:
+            reply_text = referenced.content
+        elif reference is not None and reference.message_id is not None:
+            reply_text = ""
         fields = {
             "id": f"discord:MESSAGE_CREATE:{message.id}",
             "time": message.timestamp.timestamp(),
@@ -2154,6 +2161,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
             "message_id": message.id,
             "message": _discord_message(message),
             "alt_message": message.content,
+            **({"reply_alt_message": reply_text} if reply_text is not None else {}),
             "discord_event_type": "MESSAGE_CREATE",
             "discord_data": raw_data,
             "discord_raw": False,

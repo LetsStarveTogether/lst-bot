@@ -54,9 +54,17 @@ async def test_build_question_combines_reply_and_command_text() -> None:
 
     assert reply_message_id(event) == "source-message"
     assert question == "被回复的消息：\nold question\n\n用户问题：\nnew question"
-    action = gateway.actions[0].root.model_dump(mode="json", by_alias=True)
+    action = gateway.actions[0].model_dump(mode="json", by_alias=True)
     assert action["action"] == "get_msg"
     assert action["params"] == {"message_id": "source-message"}
+
+    embedded = event.model_copy(update={"reply_alt_message": "embedded question"})
+    assert await build_question(gateway.connection, embedded, "new question") == (
+        "被回复的消息：\nembedded question\n\n用户问题：\nnew question"
+    )
+    empty = event.model_copy(update={"reply_alt_message": ""})
+    assert await build_question(gateway.connection, empty, "") == ""
+    assert len(gateway.actions) == 1
 
 
 async def test_question_command_dispatches_with_injected_agent_and_reply() -> None:
@@ -77,7 +85,7 @@ async def test_question_command_dispatches_with_injected_agent_and_reply() -> No
     value = results[0].values[0]
     assert isinstance(value, ReturnAction)
     assert value.kind == "message"
-    action = gateway.actions[0].root.model_dump(mode="json", by_alias=True)
+    action = gateway.actions[0].model_dump(mode="json", by_alias=True)
     assert action["action"] == "send_message"
     assert action["params"]["message"][0]["type"] == "reply"
     assert action["params"]["message"][1]["data"]["text"] == "答案"

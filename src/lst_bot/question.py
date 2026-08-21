@@ -42,6 +42,11 @@ def message_payload_text(value: object) -> str:
 
 
 async def replied_message_text(conn: Connection, event: MessageEvent) -> str:
+    extra = event.model_extra or {}
+    if "reply_alt_message" in extra:
+        value = extra["reply_alt_message"]
+        return value.strip() if isinstance(value, str) else ""
+
     message_id = reply_message_id(event)
     if not message_id:
         return ""

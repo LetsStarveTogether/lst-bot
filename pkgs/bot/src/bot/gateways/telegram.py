@@ -560,6 +560,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         message: TelegramMessage,
     ) -> MessageEvent:
         sender = message.from_ or message.sender_chat or message.chat
+        reply = message.reply_to_message
         fields = {
             **self._event_fields(update, event_type, float(message.date)),
             "sub_type": event_type,
@@ -567,6 +568,11 @@ class TelegramGateway(Gateway, TelegramRestClient):
             "message_id": str(message.message_id),
             "message": _telegram_message(message),
             "alt_message": message.text or message.caption or "",
+            **(
+                {"reply_alt_message": reply.text or reply.caption or ""}
+                if reply is not None
+                else {}
+            ),
             "telegram_chat_id": message.chat.id,
             "telegram_chat_type": message.chat.type,
             "telegram_is_direct_messages": message.chat.is_direct_messages,

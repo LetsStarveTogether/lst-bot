@@ -1059,14 +1059,21 @@ def test_offset_advances_only_after_enqueue(
         assert isinstance(event, GroupMessageEvent)
         events.append(event)
 
+    reply_update = message_update(10)
+    assert reply_update.message is not None
+    reply_update.message.reply_to_message = reply_update.message.model_copy(
+        update={"message_id": 9, "text": "previous"}
+    )
     monkeypatch.setattr(gateway, "enqueue_event", enqueue)
     with pytest.raises(QueueFull):
         gateway._accept_updates(  # ruff: ignore[private-member-access] - direct invariant check
-            [message_update(10), message_update(11)]
+            [reply_update, message_update(11)]
         )
     assert gateway._offset == 11  # ruff: ignore[private-member-access] - direct invariant check
     assert events[0].group_id == "-100"
-    raw = (events[0].model_extra or {})["telegram_raw"]
+    extra = events[0].model_extra or {}
+    assert extra["reply_alt_message"] == "previous"
+    raw = extra["telegram_raw"]
     assert isinstance(raw, dict)
     assert raw["message"]["text"] == "hello"
 

@@ -202,8 +202,7 @@ class Connection:
             "action": action,
             "params": params,
         })
-        call = action_call.root
-        return await self.request_action(call.action, call.params)
+        return await self.request_action(action_call.action, action_call.params)
 
     async def send_msg(
         self,
@@ -232,8 +231,7 @@ class Connection:
             "action": Action.SEND_MESSAGE,
             "params": self._message_action_params(event, msg),
         })
-        call = action_call.root
-        return await self.request_action(call.action, call.params)
+        return await self.request_action(action_call.action, action_call.params)
 
     async def request_action(
         self,
@@ -392,10 +390,10 @@ class Gateway:
             return await connection.execute_message_action(event, action.msg)
 
         if action.kind == "call":
-            if action.action_call is None:
+            call = action.action_call
+            if call is None:
                 msg = "Call return action requires an action call"
                 raise TypeError(msg)
-            call = action.action_call.root
             target_connection = connection
             if action.self_ is not None:
                 target_connection = self.connection_for(action.self_)

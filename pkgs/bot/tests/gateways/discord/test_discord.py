@@ -382,6 +382,11 @@ async def test_gateway_close_finishes_under_cancellation_and_restarts_done_task(
 
 
 async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
+    incoming_message = {
+        **message(),
+        "message_reference": {"message_id": "9"},
+        "referenced_message": message(message_id="9", content="previous"),
+    }
     websocket = ScriptedWebSocket(
         {"op": 10, "d": {"heartbeat_interval": 60_000}},
         {
@@ -390,7 +395,7 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
             "t": "READY",
             "d": ready_payload(),
         },
-        {"op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": message()},
+        {"op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": incoming_message},
         {"op": 0, "s": 3, "t": "MESSAGE_CREATE", "d": {"id": "broken"}},
         {"op": 7, "d": None},
     )
@@ -417,9 +422,14 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
     message_extra = events[1].model_extra
     assert message_extra is not None
     assert message_extra["channel_id"] == "20"
+    assert message_extra["reply_alt_message"] == "previous"
     assert message_extra["discord_data"]["edited_timestamp"] is None
     assert message_extra["discord_raw"] is False
-    assert [segment.type for segment in events[1].message] == ["text", "mention"]
+    assert [segment.type for segment in events[1].message] == [
+        "reply",
+        "text",
+        "mention",
+    ]
     assert isinstance(events[2], NoticeEvent)
     notice_extra = events[2].model_extra
     assert notice_extra is not None

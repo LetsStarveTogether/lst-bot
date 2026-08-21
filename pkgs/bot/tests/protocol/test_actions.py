@@ -88,7 +88,7 @@ def test_each_standard_action_round_trips_json(
 ) -> None:
     call = ActionCall.model_validate({"action": action, "params": params})
 
-    assert call.root.action == action
+    assert call.action == action
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -170,8 +170,8 @@ def test_upload_file_discriminator_selects_each_source_variant(
 ) -> None:
     call = ActionCall.model_validate({"action": "upload_file", "params": params})
 
-    assert isinstance(call.root.params, UploadFileBaseParams)
-    assert call.root.params.type == params["type"]
+    assert isinstance(call.params, UploadFileBaseParams)
+    assert call.params.type == params["type"]
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -216,14 +216,14 @@ def test_fragmented_file_discriminators_accept_each_stage(
     call = ActionCall.model_validate({"action": action, "params": params})
 
     assert isinstance(
-        call.root.params,
+        call.params,
         FragmentedUploadPrepareParams
         | FragmentedUploadTransferParams
         | FragmentedUploadFinishParams
         | FragmentedGetPrepareParams
         | FragmentedGetTransferParams,
     )
-    assert call.root.params.stage == params["stage"]
+    assert call.params.stage == params["stage"]
     assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
@@ -243,7 +243,7 @@ def test_action_request_round_trips_explicit_null_envelope_fields() -> None:
     call = ActionCall.model_validate({"action": "get_status", "params": {}})
     request = ActionRequest(
         action="get_status",
-        params=call.root.params,
+        params=call.params,
         echo=None,
         self_=None,
     )
@@ -392,8 +392,8 @@ def test_non_negative_int_params_accept_int64_boundaries(value: int) -> None:
         "params": {"limit": value},
     })
 
-    assert isinstance(call.root.params, LatestEventsParams)
-    assert call.root.params.limit == value
+    assert isinstance(call.params, LatestEventsParams)
+    assert call.params.limit == value
 
 
 @pytest.mark.parametrize(
@@ -446,7 +446,7 @@ def test_upload_data_treats_python_bytes_as_raw_and_dumps_base64(
         "params": {**params, "data": input_type(raw)},
     })
 
-    assert call.root.params.model_dump()["data"] == raw
+    assert call.params.model_dump()["data"] == raw
     assert (
         call.model_dump(mode="json", by_alias=True, exclude_none=True)["params"]["data"]
         == b64encode(raw).decode()
@@ -484,7 +484,7 @@ def test_upload_data_decodes_json_base64_and_round_trips(
         }),
     )
 
-    assert call.root.params.model_dump()["data"] == b"\xff"
+    assert call.params.model_dump()["data"] == b"\xff"
     assert call.model_dump(mode="json", by_alias=True, exclude_none=True) == {
         "action": action,
         "params": params,
@@ -529,8 +529,8 @@ def test_sha256_accepts_valid_or_null_value(
         },
     })
 
-    assert isinstance(call.root.params, UploadFileBaseParams)
-    assert call.root.params.sha256 == expected
+    assert isinstance(call.params, UploadFileBaseParams)
+    assert call.params.sha256 == expected
 
 
 @pytest.mark.parametrize(
