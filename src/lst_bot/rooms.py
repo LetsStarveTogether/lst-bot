@@ -49,9 +49,7 @@ def parse_room_ids(value: str) -> list[int]:
             room_ids.append(int(item))
             continue
 
-        start_value, end_value = item.split("-", maxsplit=1)
-        start = int(start_value)
-        end = int(end_value)
+        start, end = map(int, item.split("-", maxsplit=1))
         if start > end:
             msg = f"invalid room id range: {item}"
             raise ValueError(msg)
@@ -127,13 +125,12 @@ def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
 
     try:
         lc.restart_rooms(room_ids)
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            "restart DST rooms failed: {rooms} ({error})",
+            "restart DST rooms failed: {rooms}",
             rooms=",".join(str(item) for item in room_ids),
-            error=f"{type(exc).__name__}: {exc}",
         )
-        return f"重启失败：{exc} {room_ids}"
+        return f"重启失败：{room_ids}"
     return f"已重启 {room_ids}"
 
 

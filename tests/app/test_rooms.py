@@ -1,13 +1,13 @@
 from unittest.mock import Mock
 
 import pytest
-from bot import Bot
+from bot import Bot, Cmd
 from bot.testing import private_message_event, recording_gateway
 from klei import KleiClient, Platform, RoomData
 from lst import LstClient
 from support import room_data
 
-from lst_bot.rooms import format_lobby_data, parse_room_ids, router
+from lst_bot.rooms import format_lobby_data, parse_room_ids, restart_room, router
 from lst_bot.settings import Settings
 
 
@@ -134,6 +134,12 @@ async def test_admin_room_commands_dispatch_to_lst(
     method = getattr(client, method_name)
     method.assert_called_once_with(*expected_args)
     assert results[0].values == [expected_reply]
+
+
+def test_restart_room_hides_internal_error() -> None:
+    client = Mock(spec_set=LstClient)
+    client.restart_rooms.side_effect = RuntimeError("internal details")
+    assert restart_room(Cmd(name="", raw="", arg="1"), client) == "重启失败：[1]"
 
 
 async def test_room_admin_command_rejects_non_admin() -> None:

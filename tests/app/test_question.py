@@ -7,7 +7,6 @@ from pydantic_ai.models.test import TestModel
 from lst_bot.question import (
     build_question,
     message_payload_text,
-    reply_message_id,
     router,
 )
 
@@ -51,7 +50,6 @@ async def test_build_question_combines_reply_and_command_text() -> None:
 
     question = await build_question(gateway.connection, event, "new question")
 
-    assert reply_message_id(event) == "source-message"
     assert question == "被回复的消息：\nold question\n\n用户问题：\nnew question"
     action = gateway.actions[0].model_dump(mode="json", by_alias=True)
     assert action["action"] == "get_msg"

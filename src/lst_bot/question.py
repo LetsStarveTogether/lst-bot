@@ -12,17 +12,8 @@ from bot.protocol.msg import ReplySegment
 from logbook import Logger
 from pydantic_ai import Agent
 
-GET_MESSAGE_ACTION = "get_msg"
-
 logger = Logger(__name__)
 router = EventRouter()
-
-
-def reply_message_id(event: MessageEvent) -> str:
-    for segment in event.message:
-        if isinstance(segment, ReplySegment):
-            return segment.data.message_id
-    return ""
 
 
 def message_payload_text(value: object) -> str:
@@ -45,12 +36,19 @@ async def replied_message_text(conn: Connection, event: MessageEvent) -> str:
         value = extra["reply_alt_message"]
         return value.strip() if isinstance(value, str) else ""
 
-    message_id = reply_message_id(event)
+    message_id = next(
+        (
+            segment.data.message_id
+            for segment in event.message
+            if isinstance(segment, ReplySegment)
+        ),
+        "",
+    )
     if not message_id:
         return ""
 
     try:
-        response = await conn.action(GET_MESSAGE_ACTION, message_id=message_id)
+        response = await conn.action("get_msg", message_id=message_id)
     except Exception as exc:
         logger.warning(
             "fetch replied message failed: {message_id} ({error})",

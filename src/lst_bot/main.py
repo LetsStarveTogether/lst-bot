@@ -58,7 +58,7 @@ def build_bot(
                 self_=onebot_self,
                 gateway=OneBot11Gateway,
             )(report)
-    if settings.telegram_bot_token.get_secret_value():
+    if settings.telegram_bot_token:
         bot.add_gateway(
             TelegramGateway(
                 bot,
@@ -66,7 +66,7 @@ def build_bot(
                 http_pool=http_pool,
             )
         )
-    if settings.discord_bot_token.get_secret_value():
+    if settings.discord_bot_token:
         bot.add_gateway(
             DiscordGateway(
                 bot,

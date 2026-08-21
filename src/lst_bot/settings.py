@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     bot_cmd_prefixes: tuple[str, ...] = ("/",)
     bot_admin: dict[str, frozenset[str]] = Field(default_factory=dict)
-    bot_timeout: timedelta | None = timedelta(seconds=900)
+    bot_timeout: timedelta | None = Field(default=timedelta(seconds=900), gt=0)
     bot_timezone: ZoneInfo | None = None
 
     log_level: StrictInt = NOTSET

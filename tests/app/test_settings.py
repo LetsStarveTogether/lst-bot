@@ -54,12 +54,16 @@ def test_multi_value_environment_variables_parse_json(
     assert settings.onebot_access_token.get_secret_value() == "secret"
 
 
-def test_example_environment_loads_with_fifteen_minute_timeout() -> None:
+def test_bot_timeout_configuration() -> None:
     example = Path(__file__).parents[2] / ".env.example"
 
     settings = Settings(_env_file=example)
 
     assert settings.bot_timeout == timedelta(minutes=15)
+    assert Settings(_env_file=None, bot_timeout=None).bot_timeout is None
+    for timeout in (0, -1):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, bot_timeout=timeout)
 
 
 def test_unknown_dotenv_field_is_rejected(tmp_path: Path) -> None:
