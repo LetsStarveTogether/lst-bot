@@ -284,8 +284,13 @@ class Bot(EventRouter):
         ]
         callbacks.extend(gateway.close for gateway in reversed(tuple(gateways)))
         if close_container:
-            callbacks.append(self.container.aclose)
+            callbacks.append(self._close_container)
         return callbacks
+
+    async def _close_container(self) -> None:
+        await self.container.aclose()
+        # Re-registration discards DIWire's closed resolver, not its providers.
+        self.container.add_instance(self, provides=Bot)
 
     @staticmethod
     async def _run_cleanup(

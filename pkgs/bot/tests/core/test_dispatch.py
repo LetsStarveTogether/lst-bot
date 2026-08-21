@@ -1,5 +1,6 @@
 from asyncio import CancelledError, TaskGroup, timeout
 from asyncio import Event as AsyncEvent
+from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -471,6 +472,40 @@ async def test_dispatch_uses_request_scoped_container_dependencies() -> None:
         )
         == contract_count
     )
+
+
+async def test_restart_recreates_app_scoped_dependencies() -> None:
+    bot = Bot()
+    gateway = recording_gateway(bot)
+    created: list[RequestService] = []
+    closed: list[RequestService] = []
+    seen: list[int] = []
+
+    def build_service() -> Generator[RequestService]:
+        service = RequestService(len(created) + 1)
+        created.append(service)
+        try:
+            yield service
+        finally:
+            closed.append(service)
+
+    bot.container.add_generator(
+        build_service,
+        provides=RequestService,
+        scope=Scope.APP,
+        lifetime=Lifetime.SCOPED,
+    )
+
+    @bot.on_msg(block=True)
+    def handle(service: Injected[RequestService]) -> None:
+        seen.append(service.value)
+
+    for index in (1, 2):
+        async with bot:
+            await bot.dispatch(gateway.connection, make_event(str(index)))
+        assert len(closed) == index
+
+    assert seen == [1, 2]
 
 
 async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers(
