@@ -170,11 +170,11 @@ class QQSessionStartLimit(Model):
     total: Annotated[StrictInt, Field(ge=0)]
     remaining: Annotated[StrictInt, Field(ge=0)]
     reset_after: Annotated[StrictInt, Field(ge=0)]
-    max_concurrency: PositiveInt
+    max_concurrency: QQPositiveInt
 
 
 class QQGatewayBotInfo(QQGatewayInfo):
-    shards: PositiveInt
+    shards: QQPositiveInt
     session_start_limit: QQSessionStartLimit
 
 

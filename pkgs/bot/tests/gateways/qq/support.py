@@ -40,9 +40,10 @@ def client(pool: object) -> QQRestClient:
 def gateway(
     pool: Pool | None = None,
     *,
+    online: bool = False,
     websocket_connector: WebSocketConnector | None = None,
 ) -> QQGateway:
-    return QQGateway(
+    gateway = QQGateway(
         Bot(),
         app_id="app",
         client_secret=CREDENTIAL,
@@ -50,3 +51,5 @@ def gateway(
         http_pool=cast(AsyncPoolManager, pool or Pool()),
         websocket_connector=websocket_connector,
     )
+    gateway._online = online  # ruff: ignore[private-member-access]
+    return gateway

@@ -478,7 +478,7 @@ async def test_common_reply_sends_the_incoming_message_id(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = _gateway(pool)
+    gateway = _gateway(pool, online=True)
     event = PrivateMessageEvent.model_validate({
         "id": "event",
         "self": {"platform": "qq", "user_id": "bot"},
@@ -509,7 +509,7 @@ async def test_direct_message_reply_preserves_the_dm_target() -> None:
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = _gateway(pool)
+    gateway = _gateway(pool, online=True)
     event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - verifies inbound metadata reaches reply routing
         QQDispatch.model_validate({
             "id": "event",
@@ -534,6 +534,39 @@ async def test_direct_message_reply_preserves_the_dm_target() -> None:
         HTTPMethod.POST,
         "https://qq.example/dms/guild/messages",
     )
+
+
+async def test_message_actions_require_an_online_gateway() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"file_uuid": "file", "file_info": "uploaded", "ttl": 60},
+    )
+    gateway = _gateway(pool)
+    connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
+
+    with pytest.raises(ConnectionError, match="not connected"):
+        await connection.action(
+            Action.SEND_MESSAGE,
+            detail_type="private",
+            user_id="user",
+            message=[{"type": "image", "data": {"file_id": "https://qq/image"}}],
+        )
+    for action in (action for action in QQAction if action.name.startswith("SEND_")):
+        with pytest.raises(ConnectionError, match="not connected"):
+            await connection.action(action)
+    for action in (QQAction.UPLOAD_C2C_FILE, QQAction.UPLOAD_GROUP_FILE):
+        with pytest.raises(ConnectionError, match="not connected"):
+            await connection.action(action, srv_send_msg=True)
+    assert not pool.requests
+
+    await connection.action(
+        QQAction.UPLOAD_C2C_FILE,
+        user_openid="user",
+        file_type=1,
+        url="https://qq.example/image",
+        srv_send_msg=False,
+    )
+    assert len(pool.requests) == 2
 
 
 @pytest.mark.parametrize(
@@ -581,7 +614,9 @@ async def test_common_send_message_maps_all_qq_scenes(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    connection = _gateway(pool).connection_for(BotSelf(platform="qq", user_id="app"))
+    connection = _gateway(pool, online=True).connection_for(
+        BotSelf(platform="qq", user_id="app")
+    )
 
     await connection.action(Action.SEND_MESSAGE, **target, message="hello")
 
@@ -617,7 +652,9 @@ async def test_common_media_message_preserves_caption(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    connection = _gateway(pool).connection_for(BotSelf(platform="qq", user_id="app"))
+    connection = _gateway(pool, online=True).connection_for(
+        BotSelf(platform="qq", user_id="app")
+    )
 
     await connection.action(
         Action.SEND_MESSAGE,
@@ -667,13 +704,13 @@ async def test_common_media_reply_uploads_inbound_attachment_url(
     event_data: dict[str, object],
     resource_path: str,
 ) -> None:
-    attachment_url = "https://qq.example/image.png"
+    attachment_url = "//qq.example/image.png"
     pool = FakePool(
         {"access_token": "token", "expires_in": 7200},
         {"file_uuid": "file", "file_info": "uploaded-image", "ttl": 60},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = _gateway(pool)
+    gateway = _gateway(pool, online=True)
     event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - verifies the complete inbound-to-outbound media boundary
         QQDispatch.model_validate({
             "id": "event",
@@ -704,7 +741,7 @@ async def test_common_media_reply_uploads_inbound_attachment_url(
     assert pool.requests[1][2]["json"] == {
         "file_type": 1,
         "srv_send_msg": False,
-        "url": attachment_url,
+        "url": f"https:{attachment_url}",
     }
     assert pool.requests[2][2]["json"] == {
         "media": {"file_info": "uploaded-image"},
@@ -768,7 +805,7 @@ async def test_common_actions_translate_onebot_parameters(
 
 async def test_channel_rejects_non_image_media() -> None:
     pool = FakePool()
-    gateway = _gateway(pool)
+    gateway = _gateway(pool, online=True)
 
     with pytest.raises(ValueError, match="only support image"):
         await gateway.connection_for(BotSelf(platform="qq", user_id="bot")).action(

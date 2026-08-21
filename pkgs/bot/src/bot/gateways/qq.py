@@ -117,6 +117,15 @@ _MEDIA_UPLOADS = {
     "c2c": (QQAction.UPLOAD_C2C_FILE, "user_openid", "user_id"),
     "group": (QQAction.UPLOAD_GROUP_FILE, "group_openid", "group_id"),
 }
+_SEND_ACTIONS = {
+    Action.SEND_MESSAGE,
+    QQAction.SEND_C2C_MESSAGE,
+    QQAction.SEND_C2C_STREAM_MESSAGE,
+    QQAction.SEND_GROUP_MESSAGE,
+    QQAction.SEND_CHANNEL_MESSAGE,
+    QQAction.SEND_DM_MESSAGE,
+}
+_UPLOAD_ACTIONS = {upload[0] for upload in _MEDIA_UPLOADS.values()}
 
 
 def _valid_shard(value: tuple[int, int]) -> tuple[int, int]:
@@ -606,6 +615,12 @@ class QQGateway(Gateway, QQRestClient):
             msg = "QQ gateway is closed"
             raise RuntimeError(msg)
         data = params.model_dump(mode="python", exclude_none=True)
+        if not self._online and (
+            action in _SEND_ACTIONS
+            or (action in _UPLOAD_ACTIONS and data.get("srv_send_msg") is True)
+        ):
+            msg = "QQ Gateway is not connected"
+            raise ConnectionError(msg)
         if action == Action.SEND_MESSAGE:
             return await self._send_message(data)
         if action == Action.GET_SUPPORTED_ACTIONS:
@@ -1194,7 +1209,7 @@ def _qq_reply_segments(
     return [{"type": "reply", "data": reply_data}]
 
 
-def _qq_message(
+def _qq_message(  # ruff: ignore[complex-structure] - protocol conversion is intentionally flat
     message: QQC2CMessage | QQLegacyChannelMessage | QQMessageElement,
 ) -> Msg:
     segments = _qq_reply_segments(message)
@@ -1216,7 +1231,10 @@ def _qq_message(
             segment_type = "video"
         else:
             segment_type = "file"
-        segments.append({"type": segment_type, "data": {"file_id": attachment.url}})
+        url = attachment.url
+        if url.startswith("//"):
+            url = f"https:{url}"
+        segments.append({"type": segment_type, "data": {"file_id": url}})
     ark_data = getattr(message, "ark_data", None)
     if ark_data is not None:
         segments.append({

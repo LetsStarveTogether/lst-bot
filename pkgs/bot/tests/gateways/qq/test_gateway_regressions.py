@@ -168,7 +168,7 @@ def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
             "id": "group-event",
             "op": 0,
             "s": 2,
-            "t": "GROUP_AT_MESSAGE_CREATE",
+            "t": "GROUP_MESSAGE_CREATE",
             "d": {
                 "id": "group-message",
                 "group_openid": "group",
@@ -189,7 +189,7 @@ def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
 async def test_passive_reply_sequence_wraps_and_preserves_explicit_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gateway = _gateway()
+    gateway = _gateway(online=True)
     gateway._message_sequence = 65_534  # ruff: ignore[private-member-access]
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
@@ -220,7 +220,7 @@ async def test_passive_reply_sequence_wraps_and_preserves_explicit_value(
 async def test_mentions_use_current_wire_format_and_validate_scene(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gateway = _gateway()
+    gateway = _gateway(online=True)
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
     connection = gateway.connection_for(gateway._self)  # ruff: ignore[private-member-access]
@@ -265,7 +265,7 @@ async def test_mentions_use_current_wire_format_and_validate_scene(
 async def test_conflicting_message_target_cannot_bypass_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gateway = _gateway()
+    gateway = _gateway(online=True)
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
     connection = gateway.connection_for(gateway._self)  # ruff: ignore[private-member-access]
