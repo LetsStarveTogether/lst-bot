@@ -621,6 +621,9 @@ class QQGateway(Gateway, QQRestClient):
         if self._closing:
             msg = "QQ gateway is closed"
             raise RuntimeError(msg)
+        if connection.gateway is not self or connection.self_ != self._self:
+            msg = "QQ action connection has the wrong BotSelf"
+            raise ValueError(msg)
         data = params.model_dump(mode="python", exclude_none=True)
         if not self._online and (
             action in _SEND_ACTIONS

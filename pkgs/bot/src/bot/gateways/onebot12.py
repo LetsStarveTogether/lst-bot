@@ -316,6 +316,9 @@ class OneBot12Gateway(Gateway):
         if self._closing:
             msg = "OneBot 12 gateway is closed"
             raise RuntimeError(msg)
+        if connection.gateway is not self:
+            msg = "OneBot 12 action connection belongs to another gateway"
+            raise ValueError(msg)
         quick_actions = _HTTP_QUICK_ACTIONS.get()
         if quick_actions is not None and quick_actions.active:
             request = ActionRequest(
@@ -594,8 +597,7 @@ class OneBot12Gateway(Gateway):
             except Exception as exc:
                 if not self._closing:
                     logger.warning(
-                        "OneBot 12 forward WebSocket failed: %s retry=%ss (%s)",
-                        ingress.url,
+                        "OneBot 12 forward WebSocket failed; retry=%ss (%s)",
                         ingress.reconnect_interval,
                         (
                             exc.errors(include_url=False, include_input=False)

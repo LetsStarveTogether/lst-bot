@@ -575,6 +575,9 @@ def empty_response(status: int) -> Response:
 def access_token_value(access_token: AccessToken) -> str | None:
     if isinstance(access_token, SecretStr):
         access_token = access_token.get_secret_value()
+    if access_token is not None and not isinstance(access_token, str):
+        msg = "access token must be a string"
+        raise TypeError(msg)
     return access_token or None
 
 

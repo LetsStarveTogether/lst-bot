@@ -25,6 +25,7 @@ from bot.gateways.onebot11 import (
     adapt_action_response,
     decode_action_response,
 )
+from bot.protocol.actions import ActionParamModel
 from pydantic import JsonValue, RootModel
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server
@@ -66,6 +67,16 @@ async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None
             {"type": "at", "data": {"qq": "all"}},
         ],
     }
+
+
+async def test_action_rejects_a_connection_from_another_gateway() -> None:
+    gateway = OneBot11Gateway(Bot())
+    foreign = OneBot11Gateway(Bot()).connection_for(
+        BotSelf(platform="qq", user_id="10000")
+    )
+
+    with pytest.raises(ValueError, match="another gateway"):
+        await gateway.request_action(foreign, "get_status", ActionParamModel())
 
 
 async def test_raw_actions_preserve_name_null_and_message_array() -> None:

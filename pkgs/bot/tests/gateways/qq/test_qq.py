@@ -52,6 +52,7 @@ from bot.gateways.qq_api import (
     QQStreamMessageRequest,
 )
 from bot.json import dumpb, loads
+from bot.protocol.actions import ActionParamModel
 from bot.testing import ScriptedWebSocket
 from pydantic import JsonValue, TypeAdapter, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
@@ -521,7 +522,7 @@ async def test_common_reply_sends_the_incoming_message_id(
     gateway = _gateway(pool, online=True)
     event = PrivateMessageEvent.model_validate({
         "id": "event",
-        "self": {"platform": "qq", "user_id": "bot"},
+        "self": {"platform": "qq", "user_id": "app"},
         "time": 1.0,
         "sub_type": "",
         "message_id": "incoming-message",
@@ -607,6 +608,20 @@ async def test_message_actions_require_an_online_gateway() -> None:
         srv_send_msg=False,
     )
     assert len(pool.requests) == 2
+
+
+async def test_actions_reject_wrong_or_foreign_bot_connections() -> None:
+    gateway = _gateway(FakePool())
+    wrong_self = gateway.connection_for(BotSelf(platform="qq", user_id="wrong"))
+    foreign = _gateway(FakePool()).connection_for(gateway._self)  # ruff: ignore[private-member-access]
+
+    for connection in (wrong_self, foreign):
+        with pytest.raises(ValueError, match="wrong BotSelf"):
+            await gateway.request_action(
+                connection,
+                Action.GET_STATUS,
+                ActionParamModel(),
+            )
 
 
 @pytest.mark.parametrize(
@@ -848,7 +863,7 @@ async def test_channel_rejects_non_image_media() -> None:
     gateway = _gateway(pool, online=True)
 
     with pytest.raises(ValueError, match="only support image"):
-        await gateway.connection_for(BotSelf(platform="qq", user_id="bot")).action(
+        await gateway.connection_for(BotSelf(platform="qq", user_id="app")).action(
             Action.SEND_MESSAGE,
             detail_type="channel",
             guild_id="guild",

@@ -730,6 +730,9 @@ class OneBot11Gateway(Gateway):
         if self._closing:
             msg = "OneBot 11 gateway is closed"
             raise RuntimeError(msg)
+        if connection.gateway is not self:
+            msg = "OneBot 11 action connection belongs to another gateway"
+            raise ValueError(msg)
         action_name, payload = self._normalize_action(action, params)
         if isinstance(self.action_backend, HttpAction):
             response = await self._request_http_action(
@@ -998,8 +1001,7 @@ class OneBot11Gateway(Gateway):
             except Exception as exc:
                 if not self._closing:
                     logger.warning(
-                        "OneBot 11 forward WebSocket failed: %s retry=%ss (%s)",
-                        ingress.url,
+                        "OneBot 11 forward WebSocket failed; retry=%ss (%s)",
                         ingress.reconnect_interval,
                         (
                             exc.errors(include_url=False, include_input=False)

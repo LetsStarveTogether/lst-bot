@@ -20,6 +20,7 @@ from bot.gateways.base import (
     WebSocketActionManager,
     WebSocketClosedError,
     WebsocketsConnection,
+    access_token_value,
     await_cleanup,
     bearer_or_query_token,
     connect_websocket,
@@ -178,6 +179,12 @@ def test_header_value_rejects_repeated_headers() -> None:
 def test_token_matches_supports_unicode_credentials() -> None:
     assert token_matches("密钥", "密钥") is True
     assert token_matches("密钥", "别的") is False
+
+
+@pytest.mark.parametrize("value", [1, True, object()])
+def test_access_token_rejects_non_strings(value: object) -> None:
+    with pytest.raises(TypeError, match="must be a string"):
+        access_token_value(value)  # ty: ignore[invalid-argument-type]
 
 
 async def test_scripted_websocket_clears_receiving_after_cancellation() -> None:

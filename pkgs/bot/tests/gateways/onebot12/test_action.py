@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from bot import Action, ActionResponse, ApiStatus, Bot, Msg
 from bot.gateways.onebot12 import HttpAction, OneBot12Gateway, ReverseWebSocket
+from bot.protocol.actions import ActionParamModel
 from pydantic import ValidationError
 from urllib3_future import AsyncPoolManager
 
@@ -17,6 +18,14 @@ from .support import SELF
 
 AUTH = "test-value"
 ACTION_RESPONSE = ActionResponse.ok().model_dump(mode="json")
+
+
+async def test_action_rejects_a_connection_from_another_gateway() -> None:
+    gateway = OneBot12Gateway(Bot())
+    foreign = OneBot12Gateway(Bot()).connection_for(SELF)
+
+    with pytest.raises(ValueError, match="another gateway"):
+        await gateway.request_action(foreign, "get_status", ActionParamModel())
 
 
 async def test_http_action_preserves_wire_envelope_defaults_and_null() -> None:
