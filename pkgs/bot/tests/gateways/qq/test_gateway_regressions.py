@@ -1,3 +1,4 @@
+# ruff: file-ignore[private-member-access]
 from asyncio import QueueFull, create_task, sleep, timeout
 from unittest.mock import AsyncMock
 
@@ -80,12 +81,10 @@ async def test_malformed_known_event_is_preserved_without_blocking_sequence(
 
     with pytest.raises(ConnectionError, match="requested reconnect"):
         async with timeout(1):
-            await gateway._read_websocket(  # ruff: ignore[private-member-access] - protocol regression boundary
-                websocket, "token"
-            )
+            await gateway._read_websocket(websocket, "token")
     assert marker not in caplog.text
 
-    assert gateway._seq == 3  # ruff: ignore[private-member-access]
+    assert gateway._seq == 3
     assert isinstance(events[1], NoticeEvent)
     assert events[1].model_extra == {
         "qq_event_type": "C2C_MESSAGE_CREATE",
@@ -120,9 +119,7 @@ async def test_dispatch_envelope_and_control_frames_remain_strict() -> None:
         {"op": 0, "s": 1, "t": "READY", "d": {}},
     ):
         with pytest.raises(ValidationError):
-            await gateway._receive_dispatch(  # ruff: ignore[private-member-access] - protocol regression boundary
-                QQGatewayPayload.model_validate(payload)
-            )
+            await gateway._receive_dispatch(QQGatewayPayload.model_validate(payload))
 
     with pytest.raises(ValidationError):
         qq_gateway_module.QQReadyData.model_validate({
@@ -160,7 +157,7 @@ def test_message_models_require_scene_author_identifiers(
 
 
 def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
-    event = _gateway()._event_from_dispatch(  # ruff: ignore[private-member-access] - conversion boundary
+    event = _gateway()._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",
             "op": 0,
@@ -198,7 +195,7 @@ def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
     assert event.model_extra is not None
     assert event.model_extra["reply_alt_message"] == "quoted text must not leak"
 
-    group_event = _gateway()._event_from_dispatch(  # ruff: ignore[private-member-access] - conversion boundary
+    group_event = _gateway()._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "group-event",
             "op": 0,
@@ -225,10 +222,10 @@ async def test_passive_reply_sequence_wraps_and_preserves_explicit_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway(online=True)
-    gateway._message_sequence = 65_534  # ruff: ignore[private-member-access]
+    gateway._message_sequence = 65_534
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
-    connection = gateway.connection_for(gateway._self)  # ruff: ignore[private-member-access]
+    connection = gateway.connection_for(gateway._self)
 
     for _ in range(2):
         await connection.action(
@@ -258,7 +255,7 @@ async def test_mentions_use_current_wire_format_and_validate_scene(
     gateway = _gateway(online=True)
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
-    connection = gateway.connection_for(gateway._self)  # ruff: ignore[private-member-access]
+    connection = gateway.connection_for(gateway._self)
 
     await connection.action(
         Action.SEND_MESSAGE,
@@ -303,7 +300,7 @@ async def test_conflicting_message_target_cannot_bypass_capabilities(
     gateway = _gateway(online=True)
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
-    connection = gateway.connection_for(gateway._self)  # ruff: ignore[private-member-access]
+    connection = gateway.connection_for(gateway._self)
 
     with pytest.raises(ValueError, match="does not match detail_type"):
         await connection.action(
@@ -342,7 +339,7 @@ async def test_retry_backoff_resets_only_after_heartbeat_ack(
     )
     connector = AsyncMock(return_value=websocket)
     gateway = _gateway(websocket_connector=connector)
-    gateway._retry_count = 4  # ruff: ignore[private-member-access]
+    gateway._retry_count = 4
     events: list[object] = []
     delays: list[float] = []
     monkeypatch.setattr(gateway, "enqueue_event", events.append)
@@ -357,15 +354,15 @@ async def test_retry_backoff_resets_only_after_heartbeat_ack(
     async def stop_after_first_retry(delay: float) -> None:
         await sleep(0)
         delays.append(delay)
-        gateway._closing = True  # ruff: ignore[private-member-access]
+        gateway._closing = True
 
     monkeypatch.setattr(qq_gateway_module, "sleep", stop_after_first_retry)
 
     async with timeout(1):
-        await gateway._run_gateway()  # ruff: ignore[private-member-access] - reconnect regression boundary
+        await gateway._run_gateway()
 
     assert delays == [1.0]
-    assert gateway._retry_count == 1  # ruff: ignore[private-member-access]
+    assert gateway._retry_count == 1
     assert len(events) == 1
 
 
@@ -373,10 +370,10 @@ async def test_ready_resumed_and_failed_enqueue_preserve_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway()
-    gateway._retry_count = 4  # ruff: ignore[private-member-access]
+    gateway._retry_count = 4
     monkeypatch.setattr(gateway, "enqueue_event", lambda _: None)
 
-    await gateway._receive_dispatch(  # ruff: ignore[private-member-access] - protocol regression boundary
+    await gateway._receive_dispatch(
         QQGatewayPayload.model_validate({
             "op": 0,
             "s": 1,
@@ -395,33 +392,31 @@ async def test_ready_resumed_and_failed_enqueue_preserve_state(
         "t": "RESUMED",
         "d": "",
     })
-    await gateway._receive_dispatch(resumed)  # ruff: ignore[private-member-access]
+    await gateway._receive_dispatch(resumed)
 
-    assert gateway._retry_count == 4  # ruff: ignore[private-member-access]
-    gateway._seq = 7  # ruff: ignore[private-member-access]
+    assert gateway._retry_count == 4
+    gateway._seq = 7
 
     def full(_: object) -> None:
         raise QueueFull
 
     monkeypatch.setattr(gateway, "enqueue_event", full)
     with pytest.raises(ConnectionError, match="queue is full"):
-        await gateway._receive_dispatch(  # ruff: ignore[private-member-access] - sequence regression boundary
-            resumed.model_copy(update={"s": 8})
-        )
-    assert gateway._seq == 7  # ruff: ignore[private-member-access]
+        await gateway._receive_dispatch(resumed.model_copy(update={"s": 8}))
+    assert gateway._seq == 7
 
 
 async def test_start_reaps_a_finished_gateway_task() -> None:
     gateway = _gateway()
     finished = create_task(sleep(0))
     await finished
-    gateway._task = finished  # ruff: ignore[private-member-access]
-    gateway._session_id = "stale"  # ruff: ignore[private-member-access]
+    gateway._task = finished
+    gateway._session_id = "stale"
 
     async with timeout(1):
         await gateway.start()
-        assert gateway._task is not finished  # ruff: ignore[private-member-access]
-        assert gateway._session_id is None  # ruff: ignore[private-member-access]
+        assert gateway._task is not finished
+        assert gateway._session_id is None
         await gateway.close()
 
 
@@ -429,16 +424,16 @@ async def test_start_retries_unfinished_gateway_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = _gateway()
-    gateway._closing = True  # ruff: ignore[private-member-access]
+    gateway._closing = True
     cleanup = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None])
 
     with monkeypatch.context() as patch:
         patch.setattr(gateway, "_finish_gateway_close", cleanup)
         with pytest.raises(RuntimeError, match="cleanup failed"):
             await gateway.start()
-        assert gateway._closing  # ruff: ignore[private-member-access]
+        assert gateway._closing
         await gateway.start()
 
-    assert not gateway._closing  # ruff: ignore[private-member-access]
+    assert not gateway._closing
     assert cleanup.await_count == 2
     await gateway.close()

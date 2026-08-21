@@ -1,3 +1,4 @@
+# ruff: file-ignore[private-member-access]
 from asyncio import Event as AsyncEvent
 from asyncio import TaskGroup, timeout
 from http import HTTPMethod
@@ -61,18 +62,7 @@ from websockets.frames import Close
 
 from tests.gateways.support import response as _response
 
-from .support import (
-    CREDENTIAL,
-)
-from .support import (
-    Pool as FakePool,
-)
-from .support import (
-    client as _client,
-)
-from .support import (
-    gateway as _gateway,
-)
+from . import support
 
 
 def test_route_registry_is_well_formed() -> None:
@@ -151,12 +141,12 @@ def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None
 
 
 async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": "7200"},
         [{"id": "guild", "name": "Guild"}],
         {"id": "sent", "timestamp": "2026-08-17T00:00:00Z"},
     )
-    client = _client(pool)
+    client = support.client(pool)
 
     guilds = await client.request_qq(
         QQAction.LIST_BOT_GUILDS,
@@ -265,7 +255,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
         {"op": 1},
         {"op": 11},
     )
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
         {"url": "wss://qq.example"},
@@ -278,7 +268,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     gateway = QQGateway(
         bot,
         app_id="app",
-        client_secret=CREDENTIAL,
+        client_secret=support.CREDENTIAL,
         base_url="https://qq.example",
         http_pool=cast(AsyncPoolManager, pool),
         websocket_connector=connect,
@@ -300,7 +290,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
 
     async with timeout(3), bot:
         await all_received.wait()
-        assert gateway._online  # ruff: ignore[private-member-access]
+        assert gateway._online
         identify = loads(await first.sent.get())
         first_heartbeat = loads(await first.sent.get())
         resume = loads(await second.sent.get())
@@ -334,21 +324,21 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     }
     assert first.closed.is_set()
     assert second.closed.is_set()
-    assert not gateway._online  # ruff: ignore[private-member-access]
-    assert gateway._task is None  # ruff: ignore[private-member-access]
-    assert gateway._session_id is None  # ruff: ignore[private-member-access]
-    assert gateway._closed  # ruff: ignore[private-member-access]
+    assert not gateway._online
+    assert gateway._task is None
+    assert gateway._session_id is None
+    assert gateway._closed
 
 
 async def test_repeated_v2_messages_are_dispatched_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    instance = _gateway(FakePool())
+    instance = support.gateway(support.Pool())
     events: list[Event] = []
     monkeypatch.setattr(instance, "enqueue_event", events.append)
 
     for sequence, message_index in enumerate(("part-1", "part-1", "part-2"), 1):
-        await instance._receive_dispatch(  # ruff: ignore[private-member-access]
+        await instance._receive_dispatch(
             qq_gateway_module.QQGatewayPayload.model_validate({
                 "id": f"event-{sequence}",
                 "op": 0,
@@ -368,7 +358,7 @@ async def test_repeated_v2_messages_are_dispatched_once(
         )
 
     assert len(events) == 2
-    assert instance._seq == 3  # ruff: ignore[private-member-access]
+    assert instance._seq == 3
 
 
 async def test_gateway_lifecycle_actually_restarts() -> None:
@@ -376,14 +366,14 @@ async def test_gateway_lifecycle_actually_restarts() -> None:
         ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
         ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
     ]
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
     )
     connector = AsyncMock(side_effect=websockets)
-    gateway = _gateway(pool, websocket_connector=connector)
+    gateway = support.gateway(pool, websocket_connector=connector)
     bot = gateway.bot
     bot.add_gateway(gateway)
 
@@ -446,9 +436,9 @@ def test_event_model_families_map_to_common_events() -> None:
             "version": 1,
         },
     }
-    gateway = _gateway(FakePool())
+    gateway = support.gateway(support.Pool())
     for event_type, payload in payloads.items():
-        event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - one smoke payload per independent model family
+        event = gateway._event_from_dispatch(
             QQDispatch.model_validate({
                 "id": "event",
                 "op": 0,
@@ -522,11 +512,11 @@ async def test_common_reply_sends_the_incoming_message_id(
     reply: MsgInput,
     expected: dict[str, object],
 ) -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = _gateway(pool, online=True)
+    gateway = support.gateway(pool, online=True)
     event = PrivateMessageEvent.model_validate({
         "id": "event",
         "self": {"platform": "qq", "user_id": "app"},
@@ -553,12 +543,12 @@ async def test_common_reply_sends_the_incoming_message_id(
 
 
 async def test_direct_message_reply_preserves_the_dm_target() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = _gateway(pool, online=True)
-    event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - verifies inbound metadata reaches reply routing
+    gateway = support.gateway(pool, online=True)
+    event = gateway._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",
             "op": 0,
@@ -585,11 +575,11 @@ async def test_direct_message_reply_preserves_the_dm_target() -> None:
 
 
 async def test_message_actions_require_an_online_gateway() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"file_uuid": "file", "file_info": "uploaded", "ttl": 60},
     )
-    gateway = _gateway(pool)
+    gateway = support.gateway(pool)
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
 
     with pytest.raises(ConnectionError, match="not connected"):
@@ -618,9 +608,11 @@ async def test_message_actions_require_an_online_gateway() -> None:
 
 
 async def test_actions_reject_wrong_or_foreign_bot_connections() -> None:
-    gateway = _gateway(FakePool())
+    gateway = support.gateway(support.Pool())
     wrong_self = gateway.connection_for(BotSelf(platform="qq", user_id="wrong"))
-    foreign = _gateway(FakePool()).connection_for(BotSelf(platform="qq", user_id="app"))
+    foreign = support.gateway(support.Pool()).connection_for(
+        BotSelf(platform="qq", user_id="app")
+    )
 
     for connection in (wrong_self, foreign):
         with pytest.raises(ValueError, match="wrong BotSelf"):
@@ -672,11 +664,11 @@ async def test_common_send_message_maps_all_qq_scenes(
     target: dict[str, str],
     path: str,
 ) -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    connection = _gateway(pool, online=True).connection_for(
+    connection = support.gateway(pool, online=True).connection_for(
         BotSelf(platform="qq", user_id="app")
     )
 
@@ -710,11 +702,11 @@ async def test_common_media_message_preserves_caption(
     target: dict[str, str],
     path: str,
 ) -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    connection = _gateway(pool, online=True).connection_for(
+    connection = support.gateway(pool, online=True).connection_for(
         BotSelf(platform="qq", user_id="app")
     )
 
@@ -767,13 +759,13 @@ async def test_common_media_reply_uploads_inbound_attachment_url(
     resource_path: str,
 ) -> None:
     attachment_url = "//qq.example/image.png"
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"file_uuid": "file", "file_info": "uploaded-image", "ttl": 60},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = _gateway(pool, online=True)
-    event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - verifies the complete inbound-to-outbound media boundary
+    gateway = support.gateway(pool, online=True)
+    event = gateway._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",
             "op": 0,
@@ -853,7 +845,7 @@ async def test_common_actions_translate_onebot_parameters(
     params: dict[str, ActionParamInput],
     expected: dict[str, object],
 ) -> None:
-    gateway = _gateway(FakePool())
+    gateway = support.gateway(support.Pool())
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
 
@@ -866,8 +858,8 @@ async def test_common_actions_translate_onebot_parameters(
 
 
 async def test_channel_rejects_non_image_media() -> None:
-    pool = FakePool()
-    gateway = _gateway(pool, online=True)
+    pool = support.Pool()
+    gateway = support.gateway(pool, online=True)
 
     with pytest.raises(ValueError, match="only support image"):
         await gateway.connection_for(BotSelf(platform="qq", user_id="app")).action(
@@ -890,7 +882,7 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
         ConnectionClosedError(Close(4014, "fatal"), None),
     )
     fatal = WebsocketsConnection(fatal_native)
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
     )
@@ -900,29 +892,29 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
     gateway = QQGateway(
         bot,
         app_id="app",
-        client_secret=CREDENTIAL,
+        client_secret=support.CREDENTIAL,
         http_pool=cast(AsyncPoolManager, pool),
         websocket_connector=connect,
     )
 
     async with timeout(1):
         with pytest.raises(ConnectionError, match="closed normally"):
-            await gateway._serve_websocket(clean, "token")  # ruff: ignore[private-member-access]
+            await gateway._serve_websocket(clean, "token")
 
-    gateway._session_id = "online-session"  # ruff: ignore[private-member-access]
-    gateway._seq = 0  # ruff: ignore[private-member-access]
-    gateway._online = True  # ruff: ignore[private-member-access]
+    gateway._session_id = "online-session"
+    gateway._seq = 0
+    gateway._online = True
     async with timeout(1), bot:
-        await gateway._run_gateway()  # ruff: ignore[private-member-access]
+        await gateway._run_gateway()
 
-    assert gateway._session_id is None  # ruff: ignore[private-member-access]
-    assert not gateway._online  # ruff: ignore[private-member-access]
+    assert gateway._session_id is None
+    assert not gateway._online
     assert clean.closed.is_set()
     fatal_native.close.assert_awaited_once()
 
 
 async def test_group_pagination_uses_query_parameters_and_parses_items() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {
             "list": [
@@ -953,7 +945,7 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
         },
         {"strategies": []},
     )
-    client = _client(pool)
+    client = support.client(pool)
 
     requests = await client.request_qq(
         QQAction.LIST_GROUP_JOIN_REQUESTS,
@@ -993,7 +985,7 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
 
 
 async def test_rest_reports_business_and_token_errors() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {
             "code": 0,
@@ -1002,7 +994,7 @@ async def test_rest_reports_business_and_token_errors() -> None:
             "trace_id": "body-trace",
         },
     )
-    client = _client(pool)
+    client = support.client(pool)
 
     with pytest.raises(QQAPIError) as business_error:
         await client.request_qq(
@@ -1017,7 +1009,9 @@ async def test_rest_reports_business_and_token_errors() -> None:
         business_error.value.trace_id,
     ) == (200, 10004, "body-trace")
 
-    token_client = _client(FakePool({"code": 100007, "message": "appid invalid"}))
+    token_client = support.client(
+        support.Pool({"code": 100007, "message": "appid invalid"})
+    )
     with pytest.raises(QQAccessTokenError) as token_error:
         await token_client.access_token()
     assert (token_error.value.status, token_error.value.code) == (200, 100007)
@@ -1032,20 +1026,20 @@ async def test_gateway_retries_only_retryable_token_errors(
     code: int,
     retries: int,
 ) -> None:
-    gateway = _gateway(FakePool({"code": code, "message": "token error"}))
+    gateway = support.gateway(support.Pool({"code": code, "message": "token error"}))
     pause = AsyncMock(
         side_effect=lambda _: setattr(gateway, "_closing", True),
     )
     monkeypatch.setattr(gateway.bot, "wait_until_running", AsyncMock())
     monkeypatch.setattr(qq_gateway_module, "sleep", pause)
 
-    await gateway._run_gateway()  # ruff: ignore[private-member-access]
+    await gateway._run_gateway()
 
     assert pause.await_count == retries
 
 
 async def test_rest_maps_created_accepted_and_empty_successes() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         _response(
             201,
@@ -1059,7 +1053,7 @@ async def test_rest_maps_created_accepted_and_empty_successes() -> None:
         ),
         _response(204),
     )
-    client = _client(pool)
+    client = support.client(pool)
 
     results = [
         await client.request_qq(
@@ -1099,13 +1093,13 @@ async def test_rest_refreshes_an_expired_token_at_most_once(
     status: int,
     payload: JsonValue,
 ) -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "stale", "expires_in": 7200},
         _response(status, payload),
         {"access_token": "fresh", "expires_in": 7200},
         [],
     )
-    client = _client(pool)
+    client = support.client(pool)
 
     assert isinstance(
         await client.request_qq(QQAction.LIST_BOT_GUILDS),
@@ -1127,7 +1121,7 @@ async def test_rest_refreshes_an_expired_token_at_most_once(
 async def test_access_token_is_single_flight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = FakePool()
+    pool = support.Pool()
     started = AsyncEvent()
     joined = AsyncEvent()
     release = AsyncEvent()
@@ -1140,7 +1134,7 @@ async def test_access_token_is_single_flight(
 
     request = AsyncMock(side_effect=request_token)
     monkeypatch.setattr(pool, "request", request)
-    client = _client(pool)
+    client = support.client(pool)
 
     async def join_request() -> str:
         joined.set()
@@ -1158,11 +1152,11 @@ async def test_access_token_is_single_flight(
 
 
 async def test_group_join_request_maps_and_can_be_declined() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {},
     )
-    gateway = _gateway(pool)
+    gateway = support.gateway(pool)
     dispatch = QQDispatch.model_validate({
         "id": "event",
         "op": 0,
@@ -1181,9 +1175,7 @@ async def test_group_join_request_maps_and_can_be_declined() -> None:
             },
         },
     })
-    event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests the gateway conversion boundary
-        dispatch
-    )
+    event = gateway._event_from_dispatch(dispatch)
 
     assert isinstance(event, GroupRequestEvent)
     assert (
@@ -1231,9 +1223,7 @@ async def test_group_join_request_maps_and_can_be_declined() -> None:
             },
         },
     })
-    invite_event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests invitation and QA mapping
-        invited
-    )
+    invite_event = gateway._event_from_dispatch(invited)
     assert isinstance(invite_event, GroupRequestEvent)
     assert (invite_event.sub_type, invite_event.comment) == ("invite", "Q: A")
 
@@ -1244,19 +1234,17 @@ async def test_group_join_request_maps_and_can_be_declined() -> None:
             "auto_approved": {"strategy_id": "strategy"},
         },
     })
-    notice = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests the gateway conversion boundary
-        auto_approved
-    )
+    notice = gateway._event_from_dispatch(auto_approved)
     assert isinstance(notice, NoticeEvent)
     assert not isinstance(notice, GroupRequestEvent)
 
 
 async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> None:
-    pool = FakePool(
+    pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {},
     )
-    gateway = _gateway(pool)
+    gateway = support.gateway(pool)
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
 
     supported = await connection.action(Action.GET_SUPPORTED_ACTIONS)
@@ -1287,15 +1275,13 @@ async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> No
 async def test_websocket_hello_timeout_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gateway = _gateway(FakePool())
+    gateway = support.gateway(support.Pool())
     stalled = ScriptedWebSocket()
     monkeypatch.setattr(qq_gateway_module, "_HELLO_TIMEOUT", 0)
 
     async with timeout(1):
         with pytest.raises(TimeoutError):
-            await gateway._serve_websocket(  # ruff: ignore[private-member-access] - exercises the connection boundary
-                stalled, "token"
-            )
+            await gateway._serve_websocket(stalled, "token")
     assert stalled.closed.is_set()
 
 
@@ -1314,7 +1300,7 @@ async def test_websocket_invalid_session_follows_resume_flag(
 
     async with timeout(1):
         with pytest.raises(ConnectionError) as caught:
-            await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises the opcode boundary
+            await support.gateway(support.Pool())._serve_websocket(
                 websocket,
                 "token",
             )
@@ -1330,7 +1316,7 @@ async def test_websocket_invalid_session_requires_a_boolean() -> None:
     )
 
     with pytest.raises(ValidationError, match="valid boolean"):
-        await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises the opcode boundary
+        await support.gateway(support.Pool())._serve_websocket(
             websocket,
             "token",
         )
@@ -1359,7 +1345,7 @@ async def test_websocket_close_code_recovery_policy(
     native.recv.side_effect = closed
 
     with pytest.raises(ConnectionError) as caught:
-        await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises native close normalization and QQ policy
+        await support.gateway(support.Pool())._serve_websocket(
             WebsocketsConnection(native),
             "token",
         )
@@ -1380,7 +1366,7 @@ async def test_websocket_rejects_a_missed_heartbeat_ack() -> None:
 
     with pytest.raises(ConnectionError) as caught:
         async with timeout(1):
-            await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises heartbeat liveness
+            await support.gateway(support.Pool())._serve_websocket(
                 websocket,
                 "token",
             )
@@ -1483,8 +1469,8 @@ def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
         link="https://qq.example",
     )
 
-    gateway = _gateway(FakePool())
-    voice = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests the message conversion boundary
+    gateway = support.gateway(support.Pool())
+    voice = gateway._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",
             "op": 0,

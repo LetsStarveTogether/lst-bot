@@ -691,6 +691,7 @@ async def test_http_deadline_covers_request_and_response_body(
     phase: str,
 ) -> None:
     never = Event()
+    body_entered = Event()
     pool = Pool()
 
     async def blocked_request(*args: object, **kwargs: object) -> AsyncHTTPResponse:
@@ -698,7 +699,7 @@ async def test_http_deadline_covers_request_and_response_body(
         if phase == "request":
             await never.wait()
         if phase == "body":
-            return cast(AsyncHTTPResponse, GatedResponse(b"", Event(), never))
+            return cast(AsyncHTTPResponse, GatedResponse(b"", body_entered, never))
         return response(200, {"access_token": "token", "expires_in": 7200})
 
     monkeypatch.setattr(pool, "request", blocked_request)
@@ -707,6 +708,7 @@ async def test_http_deadline_covers_request_and_response_body(
     async with timeout(1):
         with pytest.raises(TimeoutError):
             await client(pool).access_token()
+    assert body_entered.is_set() is (phase == "body")
 
 
 @pytest.mark.parametrize("final_phase", ["request", "body"])
