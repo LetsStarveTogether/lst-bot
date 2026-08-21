@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, QueueFull, TaskGroup, create_task, gather, timeout
 from asyncio import Event as AsyncEvent
 from http import HTTPStatus
@@ -42,6 +40,10 @@ from .support import (
 )
 
 AUTH = "test-value"
+
+
+class CustomHttpWebhook(HttpWebhook):
+    pass
 
 
 def reverse_gateway(
@@ -580,6 +582,10 @@ async def test_close_finishes_cleanup_before_propagating_cancellation() -> None:
         pytest.param(
             [HttpWebhook("/events"), HttpWebhook("/events", False)],
             id="duplicate-http-path",
+        ),
+        pytest.param(
+            [HttpWebhook("/events"), CustomHttpWebhook("/events", False)],
+            id="duplicate-http-subclass-path",
         ),
         pytest.param(
             [

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from operator import attrgetter
 
 from bot import Cmd, Connection, EventRouter, Injected

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, Event, TaskGroup, create_task, sleep, timeout
 from unittest.mock import AsyncMock
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import Event, QueueFull, TaskGroup, timeout
 from hashlib import sha1
 from hmac import new

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import get_running_loop, timeout
 from http import HTTPStatus
 from types import SimpleNamespace

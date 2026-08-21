@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest
 from bot import BotSelf, BotStatus, Status, Version
 from bot.protocol.base import Model

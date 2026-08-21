@@ -28,7 +28,7 @@ from pydantic import (
     StrictStr,
     TypeAdapter,
 )
-from robyn import Headers, Response
+from robyn import Response
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
@@ -572,17 +572,15 @@ def json_response(status: int, payload: BaseModel | JsonValue) -> Response:
         )
     else:
         body = orjson.dumps(payload)
-    return Response(status, Headers({"Content-Type": "application/json"}), body)
+    return Response(status, {"Content-Type": "application/json"}, body)
 
 
 def text_response(status: int, text: str) -> Response:
-    return Response(
-        status, Headers({"Content-Type": "text/plain; charset=utf-8"}), text
-    )
+    return Response(status, {"Content-Type": "text/plain; charset=utf-8"}, text)
 
 
 def empty_response(status: int) -> Response:
-    return Response(status, Headers({}), "")
+    return Response(status, {}, "")
 
 
 def access_token_value(access_token: AccessToken) -> str | None:

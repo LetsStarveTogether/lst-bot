@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from .client import KleiClient
 from .enums import Platform, Region, Season, VersionType
 from .models import LobbyData, RoomData, Secondary, Version

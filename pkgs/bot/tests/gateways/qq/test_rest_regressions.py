@@ -1,5 +1,4 @@
 # ruff: file-ignore[line-too-long] - the versioned wire manifest is intentionally one route per line
-from __future__ import annotations
 
 from asyncio import CancelledError, Event, TaskGroup, get_running_loop, timeout
 from collections.abc import Awaitable

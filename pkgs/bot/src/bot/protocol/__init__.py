@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from .actions import ActionCall, ActionParamInput, ActionRequest, ActionResponse
 from .common import BotSelf, BotStatus, Status, Version
 from .enums import (

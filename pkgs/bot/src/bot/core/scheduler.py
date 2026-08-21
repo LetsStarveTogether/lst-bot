@@ -129,7 +129,7 @@ class CronJob:
             )
             return
 
-        if isinstance(target, _Skip):
+        if target is None:
             return
 
         gateway, connection = target
@@ -151,8 +151,6 @@ class CronJob:
             if __debug__:
                 logger.debug("scheduled job run: {job}", job=self)
             await self._call_handler(gateway, connection)
-        except CancelledError:
-            raise
         except Exception as exc:
             error = str(exc)
             logger.exception(
@@ -183,7 +181,7 @@ class CronJob:
             msg = "Scheduled task handlers must not return values"
             raise TypeError(msg)
 
-    def _resolve_target(self) -> _Target | _Skip:
+    def _resolve_target(self) -> _Target | None:
         self_ = self.self_
         if self_ is None:
             return None, None
@@ -196,7 +194,7 @@ class CronJob:
                     job=self,
                     reason="no recent bot account exists",
                 )
-                return _SKIP
+                return None
             gateway, self_ = recent
             if self.gateway_type is not None and not isinstance(
                 gateway,
@@ -208,7 +206,7 @@ class CronJob:
                     actual=type(gateway).__name__,
                     expected=self.gateway_type.__name__,
                 )
-                return _SKIP
+                return None
             return gateway, gateway.connection_for(self_)
 
         gateway = self.bot.resolve_gateway(self.gateway_type)
@@ -317,13 +315,6 @@ class CronScheduler:
 
 
 _Target = tuple[Gateway | None, Connection | None]
-
-
-class _Skip:
-    pass
-
-
-_SKIP = _Skip()
 
 
 __all__ = [

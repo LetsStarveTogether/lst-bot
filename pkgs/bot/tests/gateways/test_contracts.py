@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import gather, timeout
 from unittest.mock import AsyncMock
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json as jsonlib
 from asyncio import Event, TaskGroup, timeout
 from collections.abc import Awaitable, Mapping

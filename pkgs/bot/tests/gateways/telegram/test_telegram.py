@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
 from collections.abc import AsyncIterator, Mapping
 from hashlib import sha256

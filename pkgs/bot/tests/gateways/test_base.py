@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, create_task, gather, get_running_loop, timeout
 from contextlib import suppress
 from gc import collect

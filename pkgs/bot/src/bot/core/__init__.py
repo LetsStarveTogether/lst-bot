@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from .bot import Bot
 from .di import InjectionContext, Mention, Reply, RequestResponse, State
 from .scheduler import RECENT_SELF, CronJob, CronScheduler, RecentSelf

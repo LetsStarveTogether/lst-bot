@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from base64 import b64decode, b64encode
 from binascii import Error as Base64Error
 from collections.abc import Mapping

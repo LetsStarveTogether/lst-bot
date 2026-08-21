@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest
 from bot import Msg, MsgSegmentType
 from bot.protocol.msg import TextSegment, TextSegmentData

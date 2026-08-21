@@ -1,8 +1,5 @@
-from __future__ import annotations
-
 import re
 from asyncio import (
-    CancelledError,
     Lock,
     QueueFull,
     Task,
@@ -1045,8 +1042,6 @@ class OneBot11Gateway(Gateway):
                     self.authorization_headers,
                 )
                 await self._serve_websocket(websocket, ingress.role, ingress.self_)
-            except CancelledError:
-                raise
             except Exception as exc:
                 if not self._closing:
                     logger.warning(

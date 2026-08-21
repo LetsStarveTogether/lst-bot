@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import to_thread
 from dataclasses import dataclass
 from http import HTTPStatus

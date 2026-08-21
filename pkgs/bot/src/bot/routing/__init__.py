@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from .cmd import Cmd
 from .route import (
     DispatchEffect,

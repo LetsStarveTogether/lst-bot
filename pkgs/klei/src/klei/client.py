@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import Semaphore, TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime
 from textwrap import wrap
 from typing import Annotated, override

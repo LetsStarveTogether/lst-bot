@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, TaskGroup, timeout
 from asyncio import Event as AsyncEvent
 from dataclasses import dataclass

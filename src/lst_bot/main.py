@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import Event as AsyncEvent
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from functools import partial

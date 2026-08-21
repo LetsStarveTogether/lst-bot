@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from functools import partial
 from types import TracebackType

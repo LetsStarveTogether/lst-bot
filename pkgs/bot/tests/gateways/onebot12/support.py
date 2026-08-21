@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import Event as AsyncEvent
 from typing import override
 

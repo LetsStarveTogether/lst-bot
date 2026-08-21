@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import Event, Queue, wait_for
 from dataclasses import dataclass
 from datetime import UTC, datetime

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from diwire import Injected, Lifetime, Scope
 
 from .core import (

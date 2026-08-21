@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from bot.protocol.base import Model
 
 

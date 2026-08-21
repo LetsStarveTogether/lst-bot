@@ -138,8 +138,6 @@ class Bot:
         self._lifecycle_lock = Lock()
         self._lifecycle_started = False
         self._pending_cleanup: list[_CleanupCallback] = []
-        self._started = False
-        self._accepting_events = False
         self._running = AsyncEvent()
         self._event_queue: Queue[_QueuedEvent] | None = None
         self._event_workers: tuple[Task[None], ...] = ()
@@ -302,7 +300,7 @@ class Bot:
                 if self._pending_cleanup:
                     msg = "Bot shutdown is incomplete; call close() again"
                     raise RuntimeError(msg)
-                if self._started:
+                if self._running.is_set():
                     return
                 try:
                     await self._start_once()
@@ -312,8 +310,6 @@ class Bot:
                         gateway_count=len(self._gateways),
                     )
                     raise
-                self._started = True
-                self._accepting_events = True
                 self._running.set()
             finally:
                 _CURRENT_LIFECYCLE.reset(token)
@@ -329,9 +325,8 @@ class Bot:
         async with self._lifecycle_lock:
             token = _CURRENT_LIFECYCLE.set(self)
             try:
-                if not self._started and not self._pending_cleanup:
+                if not self._running.is_set() and not self._pending_cleanup:
                     return
-                self._accepting_events = False
                 self._running.clear()
                 if not self._pending_cleanup:
                     self._pending_cleanup = self._cleanup_callbacks(
@@ -342,7 +337,6 @@ class Bot:
                 failed, errors = await self._run_cleanup(self._pending_cleanup)
                 self._pending_cleanup = failed
                 _raise_errors("Bot cleanup failed", errors)
-                self._started = False
             finally:
                 _CURRENT_LIFECYCLE.reset(token)
 
@@ -451,7 +445,7 @@ class Bot:
         result: Future[list[DispatchResult]] | None = None,
     ) -> None:
         queue = self._event_queue
-        if not self._started or not self._accepting_events or queue is None:
+        if not self._running.is_set() or queue is None:
             msg = "Bot is not running"
             raise RuntimeError(msg)
         timeout = self.dispatch_timeout
@@ -483,7 +477,6 @@ class Bot:
         )
 
     async def _stop_dispatcher(self) -> None:
-        self._accepting_events = False
         workers = self._event_workers
         for worker in workers:
             worker.cancel()
@@ -640,29 +633,17 @@ class Bot:
         deadline: float | None,
     ) -> tuple[DispatchResult, bool] | None:
         try:
-            matched = await self._before_deadline(
+            if not await self._before_deadline(
                 deadline,
                 lambda: route.check(context, resolver),
-            )
-        except _DispatchTimeoutError:
-            exc = TimeoutError()
-            self._log_dispatch_timeout(context, route)
-            return self._failed_dispatch_result(context, route, exc), True
-        except Exception as exc:
-            self._log_dispatch_exception(context, route, exc)
-            return self._failed_dispatch_result(context, route, exc), False
-
-        if not matched:
-            return None
-
-        if __debug__:
-            logger.trace(
-                "route matched : {route!r} {event!r}",
-                route=route,
-                event=context.event,
-            )
-
-        try:
+            ):
+                return None
+            if __debug__:
+                logger.trace(
+                    "route matched : {route!r} {event!r}",
+                    route=route,
+                    event=context.event,
+                )
             result = await self._before_deadline(
                 deadline,
                 lambda: self._run_route(context, route, resolver),

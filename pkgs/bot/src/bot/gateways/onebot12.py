@@ -1,8 +1,5 @@
-from __future__ import annotations
-
 import re
 from asyncio import (
-    CancelledError,
     Lock,
     QueueFull,
     Task,
@@ -124,6 +121,14 @@ type Ingress = HttpWebhook | ReverseWebSocket | ForwardWebSocket
 type ActionBackend = HttpAction | WebSocketAction
 
 
+def _ingress_resource(ingress: Ingress) -> tuple[object, ...]:
+    if isinstance(ingress, HttpWebhook):
+        return HttpWebhook, ingress.path
+    if isinstance(ingress, ReverseWebSocket):
+        return ReverseWebSocket, ingress.host, ingress.port
+    return ForwardWebSocket, ingress.url
+
+
 @dataclass(slots=True)
 class _HttpQuickActions:
     actions: list[ActionRequest] = field(default_factory=list)
@@ -148,7 +153,10 @@ class OneBot12Gateway(Gateway):
     ) -> None:
         super().__init__(bot)
         self.ingress = tuple(ingress)
-        self._validate_ingress()
+        resources = [_ingress_resource(item) for item in self.ingress]
+        if len(set(resources)) != len(resources):
+            msg = "OneBot 12 ingress resources must be unique"
+            raise ValueError(msg)
         self.action_backend = action
         self.access_token = access_token_value(access_token)
         self._owns_http_pool = (
@@ -228,21 +236,6 @@ class OneBot12Gateway(Gateway):
         self._forward_tasks.clear()
         self._reverse_servers.clear()
         self._reverse_tasks.clear()
-
-    def _validate_ingress(self) -> None:
-        keys: set[object] = set()
-        for ingress in self.ingress:
-            match ingress:
-                case HttpWebhook(path=path):
-                    key = (HttpWebhook, path)
-                case ReverseWebSocket(host=host, port=port):
-                    key = (ReverseWebSocket, host, port)
-                case ForwardWebSocket(url=url):
-                    key = (ForwardWebSocket, url)
-            if key in keys:
-                msg = "OneBot 12 ingress endpoints must be unique"
-                raise ValueError(msg)
-            keys.add(key)
 
     def mount(self, server: Robyn) -> Robyn:
         if not self._mount_server_once(server):
@@ -611,8 +604,6 @@ class OneBot12Gateway(Gateway):
                     self._authorization_headers,
                 )
                 await self._serve_websocket(websocket)
-            except CancelledError:
-                raise
             except Exception as exc:
                 if not self._closing:
                     logger.warning(

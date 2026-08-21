@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, Event, create_task, gather, timeout
 from typing import override
 

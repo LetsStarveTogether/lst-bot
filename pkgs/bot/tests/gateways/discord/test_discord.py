@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 # ruff: file-ignore[private-member-access]
 from asyncio import (
     CancelledError,

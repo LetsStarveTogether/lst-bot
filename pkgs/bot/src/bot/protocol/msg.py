@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Annotated, Literal, Self, cast, override
 
