@@ -1,3 +1,4 @@
+from asyncio import CancelledError, Event, create_task, timeout
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -35,14 +36,27 @@ async def resource(
 
 async def test_application_starts_services_before_bot_and_closes_bot_first() -> None:
     events: list[str] = []
+    started = Event()
     bot = Bot()
-    bot.on_start(lambda: events.append("bot:start"))
+
+    def bot_started() -> None:
+        events.append("bot:start")
+        started.set()
+
+    bot.on_start(bot_started)
     bot.on_close(lambda: events.append("bot:close"))
     first = resource("first", events)
     second = resource("second", events)
 
-    async with Application(bot, (first, second)):
-        assert events == ["first:start", "second:start", "bot:start"]
+    task = create_task(Application(bot, (first, second)).run())
+    async with timeout(1):
+        await started.wait()
+    assert events == ["first:start", "second:start", "bot:start"]
+
+    task.cancel()
+    async with timeout(1):
+        with pytest.raises(CancelledError):
+            await task
 
     assert events == [
         "first:start",
@@ -57,11 +71,11 @@ async def test_application_starts_services_before_bot_and_closes_bot_first() -> 
 async def test_application_rolls_back_started_services() -> None:
     events: list[str] = []
     first = resource("first", events)
-    application = Application(Bot(), (first, resource("failing", events, fail=True)))
-
     with pytest.raises(RuntimeError, match="startup failed"):
-        async with application:
-            pytest.fail("startup should fail")
+        await Application(
+            Bot(),
+            (first, resource("failing", events, fail=True)),
+        ).run()
 
     assert events == ["first:start", "failing:start", "first:close"]
 
@@ -88,7 +102,7 @@ def test_build_application_registers_runtime_settings() -> None:
 
     assert application.bot.cmd_prefixes == ("!",)
     assert application.bot.dispatch_timeout == timeout
-    assert application.bot.scheduler_timezone == timezone
+    assert application.bot.scheduler.jobs[0].timezone == timezone
     assert application.bot.admin_ids == {"qq": frozenset({"owner"})}
     assert application.bot.container.resolve(Settings) is settings
     hitokoto = application.bot.container.resolve(HitokotoClient)

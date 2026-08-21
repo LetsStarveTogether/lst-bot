@@ -116,9 +116,6 @@ async def call_with_injection(
 
 def register_context_providers(
     container: Container,
-    gateway_provider_types: set[type[Gateway]],
-    *,
-    gateway_type: type[Gateway] | None = None,
 ) -> None:
     def bind_event_provider(event_type: type[Event]) -> Callable[[], Event]:
         def provide_event() -> Event:
@@ -130,93 +127,64 @@ def register_context_providers(
 
         return provide_event
 
-    def bind_gateway_provider(gateway_type: type[Gateway]) -> Callable[[], Gateway]:
-        def provide_gateway() -> Gateway:
-            gateway = current_injection_context().gateway
-            if not isinstance(gateway, gateway_type):
-                msg = f"Current gateway is not {gateway_type.__name__}"
-                raise TypeError(msg)
-            return gateway
-
-        return provide_gateway
-
-    if gateway_type is None:
-        from bot.routing.cmd import Cmd
-        from bot.routing.route import EventRoute
-
-        container.add_factory(
-            current_injection_context,
-            provides=InjectionContext,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.TRANSIENT,
-        )
-        container.add_factory(
-            _state_from_context,
-            provides=State,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
-        )
-        container.add_factory(
-            _msg_from_context,
-            provides=Msg,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
-        )
-        container.add_factory(
-            _cmd_from_context,
-            provides=Cmd,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.TRANSIENT,
-        )
-        container.add_factory(
-            _route_from_context,
-            provides=EventRoute,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.TRANSIENT,
-        )
-        container.add_factory(
-            _connection_from_context,
-            provides=Connection,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
-        )
-        container.add_factory(
-            _reply_from_context,
-            provides=Reply,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
-        )
-        container.add_factory(
-            _mention_from_context,
-            provides=Mention,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
-        )
-        container.add_factory(
-            _request_response_from_context,
-            provides=RequestResponse,
-            scope=Scope.REQUEST,
-            lifetime=Lifetime.SCOPED,
-        )
-        for event_type in _event_types(Event):
-            container.add_factory(
-                bind_event_provider(event_type),
-                provides=event_type,
-                scope=Scope.REQUEST,
-                lifetime=Lifetime.SCOPED,
-            )
-        gateway_type = Gateway
-
-    if gateway_type in gateway_provider_types:
-        return
-    gateway_provider_types.add(gateway_type)
+    from bot.routing.cmd import Cmd
+    from bot.routing.route import EventRoute
 
     container.add_factory(
-        bind_gateway_provider(gateway_type),
-        provides=gateway_type,
+        current_injection_context,
+        provides=InjectionContext,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.TRANSIENT,
+    )
+    container.add_factory(
+        _state_from_context,
+        provides=State,
         scope=Scope.REQUEST,
         lifetime=Lifetime.SCOPED,
     )
+    container.add_factory(
+        _cmd_from_context,
+        provides=Cmd,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.TRANSIENT,
+    )
+    container.add_factory(
+        _route_from_context,
+        provides=EventRoute,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.TRANSIENT,
+    )
+    container.add_factory(
+        _connection_from_context,
+        provides=Connection,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.SCOPED,
+    )
+    container.add_factory(
+        _reply_from_context,
+        provides=Reply,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.SCOPED,
+    )
+    container.add_factory(
+        _mention_from_context,
+        provides=Mention,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.SCOPED,
+    )
+    container.add_factory(
+        _request_response_from_context,
+        provides=RequestResponse,
+        scope=Scope.REQUEST,
+        lifetime=Lifetime.SCOPED,
+    )
+    for event_type in _event_types(Event):
+        container.add_factory(
+            bind_event_provider(event_type),
+            provides=event_type,
+            scope=Scope.REQUEST,
+            lifetime=Lifetime.SCOPED,
+        )
 
 
 def _state_from_context() -> State:
@@ -225,14 +193,6 @@ def _state_from_context() -> State:
         msg = "Injection context must carry event state"
         raise TypeError(msg)
     return state
-
-
-def _msg_from_context() -> Msg:
-    event = current_injection_context().event
-    if not isinstance(event, MessageEvent):
-        msg = "Current event has no message"
-        raise TypeError(msg)
-    return event.message
 
 
 def _cmd_from_context() -> Cmd:

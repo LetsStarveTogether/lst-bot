@@ -2,8 +2,7 @@ import logging
 from asyncio import Event as AsyncEvent
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from functools import partial
-from types import TracebackType
-from typing import Any, Self
+from typing import Any
 
 import uvloop
 from bot import Bot, BotSelf
@@ -34,33 +33,12 @@ class Application:
     ) -> None:
         self.bot = bot
         self.resources = resources
-        self._exit_stack: AsyncExitStack | None = None
 
-    async def __aenter__(self) -> Self:
-        if self._exit_stack is not None:
-            msg = "Application is already running"
-            raise RuntimeError(msg)
-
+    async def run(self) -> None:
         async with AsyncExitStack() as stack:
             for resource in self.resources:
                 await stack.enter_async_context(resource)
             await stack.enter_async_context(self.bot)
-            self._exit_stack = stack.pop_all()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool | None:
-        stack, self._exit_stack = self._exit_stack, None
-        if stack is None:
-            return None
-        return await stack.__aexit__(exc_type, exc, traceback)
-
-    async def run(self) -> None:
-        async with self:
             await AsyncEvent().wait()
 
 
@@ -117,12 +95,6 @@ def build_application(settings: Settings) -> Application:
             )
         )
 
-    lst_client = LstClient()
-    hitokoto_client = HitokotoClient(http_pool=http_pool)
-    klei_client = KleiClient(
-        access_token=settings.klei_access_token,
-        http_pool=http_pool,
-    )
     question_agent = DstQuestionAgent(
         openrouter_api_key=settings.openrouter_api_key,
         dosu_mcp_endpoint=settings.dosu_mcp_endpoint,
@@ -132,9 +104,12 @@ def build_application(settings: Settings) -> Application:
 
     for instance in (
         settings,
-        lst_client,
-        hitokoto_client,
-        klei_client,
+        LstClient(),
+        HitokotoClient(http_pool=http_pool),
+        KleiClient(
+            access_token=settings.klei_access_token,
+            http_pool=http_pool,
+        ),
         question_agent,
     ):
         bot.container.add_instance(instance)

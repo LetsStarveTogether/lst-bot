@@ -2,7 +2,7 @@ import re
 from operator import attrgetter
 
 from bot import Cmd, EventRouter, Injected, Permission
-from klei import KleiClient, LobbyData, Platform, RoomData, Season
+from klei import KleiClient, Platform, RoomData, Season
 from logbook import Logger
 from lst import LstClient
 
@@ -14,7 +14,7 @@ logger = Logger(__name__)
 router = EventRouter()
 
 
-def format_lobby_data(data: LobbyData, *, verbose: bool = False) -> str:
+def format_lobby_data(data: RoomData, *, verbose: bool = False) -> str:
     mark = ("🟧" if data.serverpaused else "🟢") if data.connected > 0 else "🟨"
 
     if data.password:
@@ -28,11 +28,7 @@ def format_lobby_data(data: LobbyData, *, verbose: bool = False) -> str:
         Season.SUMMER: "夏",
     }.get(data.season, "")
     day = ""
-    if (
-        isinstance(data, RoomData)
-        and data.data
-        and (match := DAY_PATTERN.search(data.data))
-    ):
+    if data.data and (match := DAY_PATTERN.search(data.data)):
         day = match[1]
 
     value = f"{mark:3}{player_count:7}{season + day:7}{data.name}"

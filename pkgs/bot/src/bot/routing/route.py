@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from diwire import ResolverProtocol
 from pydantic import BaseModel
 
-from bot.core.di import InjectionContext, State, call_with_injection
+from bot.core.di import InjectionContext, call_with_injection
 from bot.protocol.enums import EventKind
 from bot.protocol.returns import ReturnAction
 
@@ -50,6 +50,5 @@ class DispatchEffect:
 class DispatchResult:
     route: EventRoute
     values: list[object]
-    state: State
     effects: list[DispatchEffect] = field(default_factory=list)
     exception: BaseException | None = None

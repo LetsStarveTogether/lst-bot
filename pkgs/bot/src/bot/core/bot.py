@@ -114,7 +114,6 @@ class Bot(EventRouter):
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
         self.max_dispatches = max_dispatches
-        self.scheduler_timezone = scheduler_timezone
         self.container = (
             container
             if container is not None
@@ -125,12 +124,11 @@ class Bot(EventRouter):
         )
         self.container.add_instance(self, provides=Bot)
         self._gateways: list[Gateway] = []
-        self._gateway_provider_types: set[type[Gateway]] = set()
-        register_context_providers(self.container, self._gateway_provider_types)
+        register_context_providers(self.container)
         self._start_hooks: list[Callable] = []
         self._close_hooks: list[Callable] = []
         self._recent_connection: tuple[Gateway, BotSelf] | None = None
-        self._scheduler = CronScheduler(self, default_timezone=self.scheduler_timezone)
+        self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
         self._lifecycle_started = False
         self._pending_cleanup: list[_CleanupCallback] = []
@@ -159,11 +157,6 @@ class Bot(EventRouter):
         if self._lifecycle_started:
             msg = "Gateways cannot be added after bot startup begins"
             raise RuntimeError(msg)
-        register_context_providers(
-            self.container,
-            self._gateway_provider_types,
-            gateway_type=type(gateway),
-        )
         self._gateways.append(gateway)
 
     def mount_server(self, server: RobynServer) -> None:
@@ -431,7 +424,6 @@ class Bot(EventRouter):
                     break
                 if item.result is not None and not item.result.done():
                     item.result.cancel()
-                queue.task_done()
 
         errors = [
             result
@@ -468,8 +460,6 @@ class Bot(EventRouter):
             else:
                 if item.result is not None and not item.result.done():
                     item.result.set_result(results)
-            finally:
-                queue.task_done()
 
     async def _dispatch_queued_event(
         self,
@@ -590,10 +580,10 @@ class Bot(EventRouter):
         except _DispatchTimeoutError:
             exc = TimeoutError()
             self._log_dispatch_timeout(context, route)
-            return self._failed_dispatch_result(context, route, exc), True
+            return DispatchResult(route=route, values=[], exception=exc), True
         except Exception as exc:
             self._log_dispatch_exception(context, route, exc)
-            return self._failed_dispatch_result(context, route, exc), False
+            return DispatchResult(route=route, values=[], exception=exc), False
 
         return result, False
 
@@ -636,14 +626,9 @@ class Bot(EventRouter):
             exception = exc
             self._log_dispatch_exception(context, route, exc)
 
-        state = context.state
-        if state is None:
-            msg = "Dispatch context must carry event state"
-            raise TypeError(msg)
         return DispatchResult(
             route=route,
             values=values,
-            state=state,
             effects=effects,
             exception=exception,
         )
@@ -661,24 +646,6 @@ class Bot(EventRouter):
             handler=handler,
             route=route,
             event=context.event,
-        )
-
-    def _failed_dispatch_result(
-        self,
-        context: InjectionContext,
-        route: EventRoute,
-        exception: BaseException,
-    ) -> DispatchResult:
-        state = context.state
-        if state is None:
-            msg = "Dispatch context must carry event state"
-            raise TypeError(msg)
-        return DispatchResult(
-            route=route,
-            values=[],
-            state=state,
-            effects=[],
-            exception=exception,
         )
 
     def _log_dispatch_exception(

@@ -225,45 +225,13 @@ class CronScheduler:
         self.bot = bot
         self.clock = clock
         self.sleep = sleep
-        self._default_timezone = (
-            default_timezone if default_timezone is not None else bot.scheduler_timezone
-        )
+        self._default_timezone = default_timezone
         self._jobs: list[CronJob] = []
         self._running = False
 
     @property
     def jobs(self) -> tuple[CronJob, ...]:
         return tuple(self._jobs)
-
-    def add_cron(
-        self,
-        expr: str,
-        handler: Callable,
-        *,
-        name: str | None = None,
-        timezone: str | None = None,
-        self_: SelfTarget = RECENT_SELF,
-        gateway: type[Gateway] | None = None,
-    ) -> CronJob:
-        if not croniter.is_valid(expr, strict=True):
-            msg = f"Invalid cron expression: {expr}"
-            raise ValueError(msg)
-
-        job = CronJob(
-            bot=self.bot,
-            expr=expr,
-            handler=handler,
-            name=name or getattr(handler, "__name__", "cron_job"),
-            timezone=self._timezone(timezone),
-            self_=self_,
-            gateway_type=gateway,
-            clock=self.clock,
-            sleep=self.sleep,
-        )
-        self._jobs.append(job)
-        if self._running:
-            job.start()
-        return job
 
     def on_cron(
         self,
@@ -275,14 +243,24 @@ class CronScheduler:
         gateway: type[Gateway] | None = None,
     ) -> Callable:
         def decorator(handler: Callable) -> Callable:
-            self.add_cron(
-                expr,
-                handler,
-                name=name,
-                timezone=timezone,
+            if not croniter.is_valid(expr, strict=True):
+                msg = f"Invalid cron expression: {expr}"
+                raise ValueError(msg)
+
+            job = CronJob(
+                bot=self.bot,
+                expr=expr,
+                handler=handler,
+                name=name or getattr(handler, "__name__", "cron_job"),
+                timezone=self._timezone(timezone),
                 self_=self_,
-                gateway=gateway,
+                gateway_type=gateway,
+                clock=self.clock,
+                sleep=self.sleep,
             )
+            self._jobs.append(job)
+            if self._running:
+                job.start()
             return handler
 
         return decorator

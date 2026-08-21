@@ -1,7 +1,7 @@
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AsyncExitStack
 from functools import partial
 from types import TracebackType
-from typing import Any, Final, Protocol, Self
+from typing import Final, Self
 
 from fastmcp.client.transports import StreamableHttpTransport
 from httpx import AsyncClient
@@ -12,11 +12,10 @@ from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.native_tools import WebSearchTool
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai.toolsets import AbstractToolset
 
 OPENROUTER_MODEL: Final = "deepseek/deepseek-v4-pro-0813"
 DOSU_API_KEY_HEADER: Final = "X-Dosu-API-Key"
-DOSU_MCP_TOOL_NAMES: Final = frozenset({"ask"})
+DOSU_MCP_TOOL_NAME: Final = "ask"
 REQUEST_TIMEOUT: Final = 600
 
 DST_AGENT_INSTRUCTIONS: Final = """\
@@ -58,10 +57,6 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 """
 
 
-class AgentBackend(AbstractAsyncContextManager[Any], Protocol):
-    async def run(self, question: str, /) -> Any: ...
-
-
 class DstQuestionAgent:
     def __init__(
         self,
@@ -70,7 +65,7 @@ class DstQuestionAgent:
         dosu_mcp_endpoint: str,
         dosu_api_key: SecretStr,
         http_proxy: str | None = None,
-        agent: AgentBackend | None = None,
+        agent: Agent | None = None,
     ) -> None:
         self._exit_stack: AsyncExitStack | None = None
         self._closed = False
@@ -89,14 +84,26 @@ class DstQuestionAgent:
                     http_client=self._http_client,
                 ),
             )
-            backend: AgentBackend = Agent(
+            backend = Agent(
                 model,
                 instructions=DST_AGENT_INSTRUCTIONS,
                 toolsets=[
-                    self._dosu_tools(
-                        endpoint=dosu_mcp_endpoint,
-                        api_key=dosu_api_key,
-                        proxy=proxy,
+                    MCPToolset(
+                        StreamableHttpTransport(
+                            dosu_mcp_endpoint,
+                            headers={
+                                DOSU_API_KEY_HEADER: dosu_api_key.get_secret_value()
+                            },
+                            httpx_client_factory=(
+                                partial(AsyncClient, proxy=proxy)
+                                if proxy is not None
+                                else None
+                            ),
+                        ),
+                        init_timeout=REQUEST_TIMEOUT,
+                        read_timeout=REQUEST_TIMEOUT,
+                    ).filtered(
+                        lambda _, tool_def: tool_def.name == DOSU_MCP_TOOL_NAME,
                     )
                 ],
                 capabilities=[NativeTool(WebSearchTool())],
@@ -135,24 +142,3 @@ class DstQuestionAgent:
             raise RuntimeError(msg)
         result = await self._agent.run(question)
         return result.output
-
-    @staticmethod
-    def _dosu_tools(
-        *,
-        endpoint: str,
-        api_key: SecretStr,
-        proxy: str | None,
-    ) -> AbstractToolset[Any]:
-        return MCPToolset(
-            StreamableHttpTransport(
-                endpoint,
-                headers={DOSU_API_KEY_HEADER: api_key.get_secret_value()},
-                httpx_client_factory=(
-                    partial(AsyncClient, proxy=proxy) if proxy is not None else None
-                ),
-            ),
-            init_timeout=REQUEST_TIMEOUT,
-            read_timeout=REQUEST_TIMEOUT,
-        ).filtered(
-            lambda _, tool_def: tool_def.name in DOSU_MCP_TOOL_NAMES,
-        )
