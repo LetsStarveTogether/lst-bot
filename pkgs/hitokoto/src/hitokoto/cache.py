@@ -19,9 +19,14 @@ def _is_cache_valid(cache_path: Path) -> bool:
         if not 0 <= time() - cache_path.stat().st_mtime <= 72 * 60 * 60:
             return False
         with closing(_open_read_only(cache_path)) as db:
-            return db.execute("SELECT 1 FROM sentence LIMIT 1").fetchone() is not None
-    except OSError, sqlite3.Error:
+            row = db.execute("SELECT payload FROM sentence LIMIT 1").fetchone()
+        if row is None:
+            return False
+        Hitokoto.model_validate_json(row[0])
+    except OSError, sqlite3.Error, ValueError:
         return False
+    else:
+        return True
 
 
 async def is_cache_valid(cache_path: Path) -> bool:
@@ -43,36 +48,19 @@ def _write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
                 "CREATE TABLE sentence ("
                 "id INTEGER PRIMARY KEY,"
                 "uuid TEXT NOT NULL UNIQUE,"
-                "hitokoto TEXT NOT NULL,"
                 "type TEXT NOT NULL,"
-                "source TEXT NOT NULL,"
-                "from_who TEXT,"
-                "creator TEXT NOT NULL,"
-                "creator_uid INTEGER NOT NULL,"
-                "reviewer INTEGER NOT NULL,"
-                "commit_from TEXT NOT NULL,"
-                "created_at TEXT NOT NULL"
+                "payload TEXT NOT NULL"
                 ");"
                 "CREATE INDEX idx_sentence_type ON sentence(type);",
             )
             db.executemany(
-                "INSERT INTO sentence ("
-                "id, uuid, hitokoto, type, source, from_who, creator, creator_uid, "
-                "reviewer, commit_from, created_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sentence (id, uuid, type, payload) VALUES (?, ?, ?, ?)",
                 (
                     (
                         item.id,
                         str(item.uuid),
-                        item.hitokoto,
                         item.type.value,
-                        item.from_,
-                        item.from_who,
-                        item.creator,
-                        item.creator_uid,
-                        item.reviewer,
-                        item.commit_from,
-                        item.created_at.isoformat(),
+                        item.model_dump_json(by_alias=True),
                     )
                     for item in sentences
                 ),
@@ -90,22 +78,18 @@ def _read_cached_hitokoto(
     cache_path: Path,
     types: tuple[HitokotoType, ...],
 ) -> Hitokoto:
-    query = (
-        "SELECT id, uuid, hitokoto, type, source AS [from], from_who, creator, "
-        "creator_uid, reviewer, commit_from, created_at FROM sentence"
-    )
+    query = "SELECT payload FROM sentence"
     params = tuple(item.value for item in types)
     placeholders = ", ".join("?" for _ in params)
     query += f" WHERE type IN ({placeholders})" if params else ""
     query += " ORDER BY RANDOM() LIMIT 1"
 
     with closing(_open_read_only(cache_path)) as db:
-        db.row_factory = sqlite3.Row
         row = db.execute(query, params).fetchone()
     if row is None:
         msg = "hitokoto cache has no matching sentences"
         raise RuntimeError(msg)
-    return Hitokoto.model_validate(dict(row))
+    return Hitokoto.model_validate_json(row[0])
 
 
 async def read_cached_hitokoto(

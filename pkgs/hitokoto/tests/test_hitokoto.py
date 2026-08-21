@@ -2,6 +2,7 @@ import os
 import sqlite3
 from asyncio import Future, gather, get_running_loop, timeout
 from collections.abc import Mapping
+from contextlib import closing
 from json import dumps
 from pathlib import Path
 from time import time
@@ -236,11 +237,17 @@ async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:
     assert list_cache_temps(cache_path) == []
 
 
-async def test_duplicate_ids_do_not_replace_the_existing_cache(tmp_path: Path) -> None:
+@pytest.mark.parametrize("field", ["id", "uuid"])
+async def test_duplicate_keys_do_not_replace_the_existing_cache(
+    tmp_path: Path,
+    field: str,
+) -> None:
     cache_path = tmp_path / "hitokoto.db"
     await write_cache(cache_path, bundle("existing"))
     duplicates = bundle(include_game=True)
-    duplicates[1] = duplicates[1].model_copy(update={"id": duplicates[0].id})
+    duplicates[1] = duplicates[1].model_copy(
+        update={field: getattr(duplicates[0], field)},
+    )
 
     with pytest.raises(sqlite3.IntegrityError):
         await write_cache(cache_path, duplicates)
@@ -254,11 +261,12 @@ async def test_real_sqlite_cache_filters_types_and_rejects_empty_matches(
     tmp_path: Path,
 ) -> None:
     cache_path = tmp_path / "hitokoto.db"
-    await write_cache(cache_path, bundle(include_game=True))
+    sentences = bundle(include_game=True)
+    await write_cache(cache_path, sentences)
 
     result = await read_cached_hitokoto(cache_path, (HitokotoType.GAME,))
 
-    assert result.hitokoto == "cached game"
+    assert result == sentences[1]
     with pytest.raises(RuntimeError, match="no matching"):
         await read_cached_hitokoto(cache_path, (HitokotoType.JOKE,))
 
@@ -297,9 +305,14 @@ async def test_cache_validity_rejects_invalid_mtime(
     assert await is_cache_valid(cache_path) is False
 
 
-async def test_cache_validity_rejects_corrupt_database(tmp_path: Path) -> None:
+async def test_cache_validity_rejects_corruption(tmp_path: Path) -> None:
     cache_path = tmp_path / "hitokoto.db"
     cache_path.write_bytes(b"not a sqlite database")
+
+    assert await is_cache_valid(cache_path) is False
+    await write_cache(cache_path, bundle())
+    with closing(sqlite3.connect(cache_path)) as db, db:
+        db.execute("UPDATE sentence SET payload = '{}'")
 
     assert await is_cache_valid(cache_path) is False
 
