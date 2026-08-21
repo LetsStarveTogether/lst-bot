@@ -108,7 +108,7 @@ def test_parameterized_standard_actions_reject_empty_params(action: str) -> None
     ("params", "detail_type"),
     [
         pytest.param(
-            {"user_id": "42", "msg": "private"},
+            {"user_id": "42", "message": "private"},
             "private",
             id="private-inferred",
         ),
@@ -139,7 +139,7 @@ def test_send_message_discriminator_selects_each_target_variant(
 ) -> None:
     call = ActionCall.model_validate({"action": "send_message", "params": params})
     normalized = call.model_dump(mode="json", exclude_none=True)
-    message = params.get("message", params.get("msg"))
+    message = params["message"]
 
     assert normalized["params"]["detail_type"] == detail_type
     assert normalized["params"]["message"] == [
@@ -257,6 +257,13 @@ def test_action_request_omits_absent_envelope_fields() -> None:
             id="non-object-params",
         ),
         pytest.param(
+            {
+                "action": "send_message",
+                "params": {"detail_type": "private", "user_id": "42", "msg": "x"},
+            },
+            id="msg-is-not-message-alias",
+        ),
+        pytest.param(
             {"action": "get_status", "params": {}, "echo": 1},
             id="non-string-echo",
         ),
@@ -353,6 +360,10 @@ def test_action_response_accepts_status_retcode_contract(
         pytest.param(
             {"status": "done", "retcode": 0, "data": None, "message": ""},
             id="unknown-status",
+        ),
+        pytest.param(
+            {"status": b"ok", "retcode": 0, "data": None, "message": ""},
+            id="bytes-status",
         ),
         pytest.param(
             {"status": "ok", "retcode": "0", "data": None, "message": ""},

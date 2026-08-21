@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Annotated, Literal, Self, override
+from typing import Annotated, Literal, override
 
 from pydantic import (
     BeforeValidator,
@@ -10,7 +10,6 @@ from pydantic import (
     StrictFloat,
     StrictStr,
     Tag,
-    model_validator,
 )
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -52,12 +51,7 @@ class ReplySegmentData(Model):
 
 
 class ExtensionSegmentData(Model):
-    @model_validator(mode="after")
-    def data_value(self) -> Self:
-        if self.model_extra and "type" in self.model_extra:
-            msg = "extension segment data must not contain type"
-            raise ValueError(msg)
-        return self
+    type: MISSING = MISSING
 
 
 class TextSegment(Model):

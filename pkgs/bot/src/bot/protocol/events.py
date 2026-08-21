@@ -2,7 +2,6 @@ from typing import Annotated, Literal
 
 from pydantic import (
     Field,
-    InstanceOf,
     RootModel,
     SerializeAsAny,
     StrictFloat,
@@ -20,7 +19,12 @@ from .msg import Msg
 class Event(Model):
     id: StrictStr
     time: StrictFloat
-    type: EventKind
+    type: Literal[
+        EventKind.MESSAGE,
+        EventKind.NOTICE,
+        EventKind.REQUEST,
+        EventKind.META,
+    ]
     detail_type: StrictStr
     sub_type: StrictStr
     self_: BotSelf = Field(alias="self")
@@ -275,7 +279,7 @@ _EVENT_MODELS: dict[str | tuple[str, str], type[Event]] = {
 }
 
 
-class EventPayload(RootModel[SerializeAsAny[InstanceOf[Event]]]):
+class EventPayload(RootModel[SerializeAsAny[Event]]):
     @field_validator("root", mode="before")
     @classmethod
     def parse_event(cls, value: object) -> Event:

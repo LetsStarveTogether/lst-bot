@@ -361,6 +361,10 @@ def test_heartbeat_rejects_non_positive_or_non_int64_interval(
     "payload",
     [
         pytest.param({}, id="empty"),
+        pytest.param(
+            {**_message("private"), "type": b"message"},
+            id="bytes-type",
+        ),
         pytest.param({**_message("private"), "id": 1}, id="non-string-id"),
         pytest.param(
             {**_message("private"), "detail_type": 1},

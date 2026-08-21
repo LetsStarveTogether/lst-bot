@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, Self
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     BeforeValidator,
     Discriminator,
@@ -97,7 +96,7 @@ class ActionParamModel(Model):
 
 
 class ActionResponse(Model):
-    status: ApiStatus
+    status: Literal[ApiStatus.OK, ApiStatus.ASYNC, ApiStatus.FAILED]
     retcode: StrictInt
     data: JsonValue
     message: StrictStr
@@ -180,10 +179,7 @@ class LatestEventsParams(ActionParamModel):
 
 class SendMsgBaseParams(ActionParamModel):
     detail_type: StrictStr
-    message: MsgValue = Field(
-        validation_alias=AliasChoices("message", "msg"),
-        serialization_alias="message",
-    )
+    message: MsgValue
 
 
 class SendPrivateMsgParams(SendMsgBaseParams):
