@@ -6,7 +6,6 @@ from typing import Any, cast, override
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
-import orjson
 import pytest
 from bot import (
     ActionResponse,
@@ -24,6 +23,7 @@ from bot.gateways.onebot11 import (
     ReverseWebSocket,
     WebSocketAction,
 )
+from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import Server
@@ -315,12 +315,12 @@ async def test_reverse_websocket_dispatches_and_matches_action_response() -> Non
             },
             proxy=None,
         ) as websocket:
-            await websocket.send(orjson.dumps(private_msg_payload()).decode())
+            await websocket.send(dumpb(private_msg_payload()).decode())
             raw_request = await websocket.recv()
             assert isinstance(raw_request, str)
-            request = orjson.loads(raw_request)
+            request = loads(raw_request)
             await websocket.send(
-                orjson.dumps({
+                dumpb({
                     "status": "ok",
                     "retcode": 0,
                     "data": {"user_id": 42, "nickname": "tester"},
@@ -543,7 +543,7 @@ async def test_forward_websocket_receives_action_while_waiting_for_events() -> N
         completed.set()
 
     async with timeout(1), bot:
-        request = orjson.loads(await websocket.sent.get())
+        request = loads(await websocket.sent.get())
         websocket.feed({
             "status": "ok",
             "retcode": 0,

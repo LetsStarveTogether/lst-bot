@@ -31,7 +31,6 @@ from time import time
 from typing import Annotated, Literal, Self, cast, override
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
-import orjson
 from pydantic import (
     AfterValidator,
     AnyHttpUrl,
@@ -58,6 +57,7 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
 from bot.core import Bot
+from bot.json import dumpb, loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel, WireBytes
 from bot.protocol.base import Model
 from bot.protocol.common import BotSelf, BotStatus, Status, Version
@@ -1067,7 +1067,7 @@ class DiscordRestClient:
                     for name, value in request.json_.items()
                 )
             elif request.json_ is not None:
-                fields.append(("payload_json", orjson.dumps(request.json_)))
+                fields.append(("payload_json", dumpb(request.json_)))
             fields.extend(
                 (
                     file.field or f"files[{index}]",
@@ -1166,8 +1166,8 @@ class DiscordRestClient:
     @staticmethod
     def _parse_payload(data: bytes, status: int) -> JsonValue:
         try:
-            return orjson.loads(data) if data else None
-        except orjson.JSONDecodeError as exc:
+            return loads(data) if data else None
+        except ValueError as exc:
             if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
                 return None
             msg = "Discord API returned invalid JSON"
@@ -2005,7 +2005,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         *,
         system: bool = False,
     ) -> None:
-        encoded = orjson.dumps(payload)
+        encoded = dumpb(payload)
         if len(encoded) > _MAX_GATEWAY_PAYLOAD_BYTES:
             msg = "Discord Gateway payload exceeds 4096 bytes"
             raise ValueError(msg)

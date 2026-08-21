@@ -16,7 +16,6 @@ from pathlib import PurePosixPath
 from typing import Annotated, Literal, Never, Self
 from urllib.parse import quote
 
-import orjson
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -39,6 +38,7 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 from urllib3_future.filepost import encode_multipart_formdata
 
+from bot.json import dumpb, loads
 from bot.protocol.base import Model
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
@@ -1001,9 +1001,9 @@ class TelegramRestClient:
             msg = f"Telegram API request failed for {method}"
             raise ConnectionError(msg) from None
         try:
-            payload = orjson.loads(data)
+            payload = loads(data)
             envelope = TelegramEnvelope.model_validate(payload)
-        except orjson.JSONDecodeError, ValueError:
+        except ValueError:
             msg = f"Telegram API returned an invalid response for {method}"
             if response.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 raise ConnectionError(msg) from None
@@ -1012,7 +1012,7 @@ class TelegramRestClient:
 
 
 def _form_value(value: JsonValue) -> str:
-    return value if isinstance(value, str) else orjson.dumps(value).decode()
+    return value if isinstance(value, str) else dumpb(value).decode()
 
 
 def _download_path(value: str) -> str:

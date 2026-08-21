@@ -27,6 +27,7 @@ from bot.gateways.base import (
     request_target_path,
     token_matches,
 )
+from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from robyn import Headers
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
@@ -39,6 +40,20 @@ class MultiValueFields:
 
     def get_all(self, name: str) -> list[str]:
         return self.values.get(name, [])
+
+
+def test_json_codec_is_compact_utf8_and_strict() -> None:
+    payload = {"文本": ["é", 1.5]}
+    encoded = dumpb(payload)
+
+    assert encoded == '{"文本":["é",1.5]}'.encode()
+    assert loads(encoded) == loads(encoded.decode()) == payload
+    for invalid in (b"NaN", b'{"v":1e400}', b'"\\ud800"', b"\xef\xbb\xbf{}", b"\xff"):
+        with pytest.raises(ValueError, match=r"."):
+            loads(invalid)
+    for invalid in (float("nan"), "\ud800"):
+        with pytest.raises(ValueError, match=r"."):
+            dumpb(invalid)
 
 
 def test_authorization_header_does_not_fall_back_to_query_token() -> None:

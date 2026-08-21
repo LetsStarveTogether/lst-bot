@@ -18,7 +18,6 @@ from typing import Annotated, Literal, Self
 from unicodedata import east_asian_width
 from urllib.parse import quote, urlencode
 
-import orjson
 from pydantic import (
     AfterValidator,
     AliasChoices,
@@ -41,6 +40,7 @@ from pydantic import (
 )
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
+from bot.json import loads
 from bot.protocol.base import Model
 
 from .base import header_value
@@ -2366,8 +2366,8 @@ class QQRestClient:
     @staticmethod
     def _parse_payload(data: bytes, status: int) -> JsonValue:
         try:
-            return orjson.loads(data) if data else None
-        except orjson.JSONDecodeError as exc:
+            return loads(data) if data else None
+        except ValueError as exc:
             if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
                 return None
             msg = "QQ API returned invalid JSON"

@@ -22,7 +22,6 @@ from typing import Annotated, Any, Literal, Self, cast, override
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
-import orjson
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -45,6 +44,7 @@ from websockets.http11 import Request as WebSocketRequest
 from websockets.http11 import Response as WebSocketResponse
 
 from bot.core import Bot
+from bot.json import loads
 from bot.protocol.actions import (
     ActionParamModel,
     ActionResponse,
@@ -812,7 +812,7 @@ class OneBot11Gateway(Gateway):
             if status != HTTPStatus.OK:
                 msg = f"OneBot 11 action request failed with HTTP {status}"
                 raise RuntimeError(msg)
-            payload = orjson.loads(await response.data)
+            payload = loads(await response.data)
         return decode_action_response(payload)
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
@@ -933,7 +933,7 @@ class OneBot11Gateway(Gateway):
                     self._ws_actions.bind_self(session, self_)
             while True:
                 try:
-                    payload = orjson.loads(await websocket.receive_text())
+                    payload = loads(await websocket.receive_text())
                 except StopAsyncIteration, WebSocketDisconnect:
                     break
                 if not isinstance(payload, dict):
@@ -1578,9 +1578,7 @@ def _action_time(value: JsonValue) -> float:
     return float(value)
 
 
-def decode_action_response(
-    payload: BaseModel | Mapping[str, JsonValue],
-) -> ActionResponse:
+def decode_action_response(payload: object) -> ActionResponse:
     response = OneBot11ActionResponse.model_validate(_json_object(payload))
     if response.echo is not None and not isinstance(response.echo, str):
         msg = "OneBot 11 action response echo must be a string or null"

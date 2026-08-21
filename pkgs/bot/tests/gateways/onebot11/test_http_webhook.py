@@ -4,7 +4,6 @@ from hmac import new
 from http import HTTPStatus
 from unittest.mock import AsyncMock, patch
 
-import orjson
 import pytest
 from bot import (
     Bot,
@@ -15,6 +14,7 @@ from bot import (
     ReturnAction,
 )
 from bot.gateways.onebot11 import HttpAction, HttpWebhook, OneBot11Gateway
+from bot.json import dumpb, loads
 from bot.protocol.base import Model
 from pydantic import JsonValue
 from robyn import Response, Robyn
@@ -30,7 +30,7 @@ from .support import (
 
 
 def response_json(response: Response) -> JsonValue:
-    return orjson.loads(response.description)
+    return loads(response.description)
 
 
 async def test_http_webhook_dispatches_event_and_returns_no_content() -> None:
@@ -229,7 +229,7 @@ def test_robyn_route_enforces_onebot11_http_headers_and_signature() -> None:
     app = Robyn(__file__)
     gateway.mount(app)
     gateway.mount(app)
-    body = orjson.dumps(private_msg_payload())
+    body = dumpb(private_msg_payload())
     signature = "sha1=" + new(credential.encode(), body, sha1).hexdigest()
 
     with (
@@ -296,7 +296,7 @@ def test_robyn_route_enforces_onebot11_http_headers_and_signature() -> None:
             id="malformed-json",
         ),
         pytest.param(
-            orjson.dumps(private_msg_payload()),
+            dumpb(private_msg_payload()),
             {"Content-Type": "text/plain"},
             HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
             id="wrong-content-type",

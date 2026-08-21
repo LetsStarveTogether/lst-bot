@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Self, cast
 
-import orjson
+from bot.json import dumpb, loads
 from pydantic import JsonValue
 from urllib3_future import AsyncHTTPResponse
 
@@ -24,9 +24,7 @@ def response(
     headers: dict[str, str] | None = None,
 ) -> AsyncHTTPResponse:
     return AsyncHTTPResponse(
-        body=(b"" if payload is None else orjson.dumps(payload))
-        if body is None
-        else body,
+        body=(b"" if payload is None else dumpb(payload)) if body is None else body,
         status=status,
         headers=headers or {"Content-Type": "application/json"},
     )
@@ -70,14 +68,12 @@ class ActionServer:
                     RecordedRequest(
                         path=self.path,
                         headers=dict(self.headers.items()),
-                        json=cast(JsonValue, orjson.loads(body)),
+                        json=cast(JsonValue, loads(body)),
                     )
                 )
                 payload = owner.payload
                 response = (
-                    payload.encode()
-                    if isinstance(payload, str)
-                    else orjson.dumps(payload)
+                    payload.encode() if isinstance(payload, str) else dumpb(payload)
                 )
                 self.send_response(owner.status)
                 self.send_header("Content-Type", owner.content_type)

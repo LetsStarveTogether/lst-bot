@@ -4,7 +4,6 @@ from http import HTTPStatus
 from typing import override
 from unittest.mock import AsyncMock, patch
 
-import orjson
 import pytest
 from bot import (
     ActionResponse,
@@ -18,6 +17,7 @@ from bot import (
 )
 from bot.gateways import Gateway
 from bot.gateways.onebot12 import HttpWebhook, OneBot12Gateway
+from bot.json import dumpb, loads
 from robyn import Robyn
 from robyn.testing import TestClient as RobynTestClient
 
@@ -92,7 +92,7 @@ async def test_http_dispatch_returns_quick_actions_with_explicit_null() -> None:
 
     assert response.status_code == HTTPStatus.OK
     assert response.headers["Content-Type"] == "application/json"
-    assert orjson.loads(response.description) == [
+    assert loads(response.description) == [
         {
             "action": "send_message",
             "params": {
@@ -296,7 +296,7 @@ def test_http_webhook_requires_json_content_type(
     with client:
         response = client.post(
             "/onebot",
-            body=orjson.dumps(private_message_payload()),
+            body=dumpb(private_message_payload()),
             headers=headers,
         )
 
@@ -308,11 +308,11 @@ def test_http_webhook_requires_json_content_type(
     [
         pytest.param(b"{", id="malformed-json"),
         pytest.param(
-            orjson.dumps({"action": "get_version", "params": {}}),
+            dumpb({"action": "get_version", "params": {}}),
             id="action-request",
         ),
         pytest.param(
-            orjson.dumps({
+            dumpb({
                 "status": "ok",
                 "retcode": 0,
                 "data": None,

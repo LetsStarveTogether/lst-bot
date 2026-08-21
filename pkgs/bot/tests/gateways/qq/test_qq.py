@@ -5,7 +5,6 @@ from string import Formatter
 from typing import cast
 from unittest.mock import AsyncMock, call
 
-import orjson
 import pytest
 from bot import (
     Action,
@@ -53,6 +52,7 @@ from bot.gateways.qq_api import (
     QQStrategyList,
     QQStreamMessageRequest,
 )
+from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from pydantic import JsonValue, TypeAdapter, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
@@ -292,10 +292,10 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     async with timeout(3), bot:
         await all_received.wait()
         assert gateway._online  # ruff: ignore[private-member-access]
-        identify = orjson.loads(await first.sent.get())
-        first_heartbeat = orjson.loads(await first.sent.get())
-        resume = orjson.loads(await second.sent.get())
-        second_heartbeat = orjson.loads(await second.sent.get())
+        identify = loads(await first.sent.get())
+        first_heartbeat = loads(await first.sent.get())
+        resume = loads(await second.sent.get())
+        second_heartbeat = loads(await second.sent.get())
 
     assert connect.await_args_list == [
         call("wss://qq.example/", None),
@@ -350,7 +350,7 @@ async def test_gateway_lifecycle_actually_restarts() -> None:
     async with timeout(1):
         for index, websocket in enumerate(websockets, start=1):
             async with bot:
-                identify = orjson.loads(await websocket.sent.get())
+                identify = loads(await websocket.sent.get())
                 assert identify["op"] == 2
                 assert connector.await_count == index
             assert websocket.closed.is_set()
@@ -824,7 +824,7 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
     clean = ScriptedWebSocket(StopAsyncIteration())
     fatal_native = AsyncMock()
     fatal_native.recv.side_effect = (
-        orjson.dumps({"op": 10, "d": {"heartbeat_interval": 60_000}}).decode(),
+        dumpb({"op": 10, "d": {"heartbeat_interval": 60_000}}).decode(),
         ConnectionClosedError(Close(4014, "fatal"), None),
     )
     fatal = WebsocketsConnection(fatal_native)

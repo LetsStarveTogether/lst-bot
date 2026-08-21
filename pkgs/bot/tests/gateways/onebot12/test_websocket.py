@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, call, patch
 
-import orjson
 import pytest
 from bot import (
     ActionResponse,
@@ -23,6 +22,7 @@ from bot.gateways.onebot12 import (
     ReverseWebSocket,
     WebSocketAction,
 )
+from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection, connect
@@ -86,8 +86,8 @@ async def test_reverse_websocket_dispatches_real_text_frames() -> None:
     async with timeout(3), bot:
         port = gateway.reverse_websocket_ports[0]
         async with await open_onebot12(port) as websocket:
-            await websocket.send(orjson.dumps(connect_payload()).decode())
-            await websocket.send(orjson.dumps(private_message_payload()).decode())
+            await websocket.send(dumpb(connect_payload()).decode())
+            await websocket.send(dumpb(private_message_payload()).decode())
             await received.wait()
 
 
@@ -185,18 +185,18 @@ async def test_reverse_websocket_handshake_rejections(
     [
         pytest.param(
             "12.test",
-            [orjson.dumps(connect_payload())],
+            [dumpb(connect_payload())],
             id="binary-connect-frame",
         ),
         pytest.param(
             "12.test",
-            [orjson.dumps(private_message_payload()).decode()],
+            [dumpb(private_message_payload()).decode()],
             id="event-before-connect",
         ),
         pytest.param(
             "12.test",
             [
-                orjson.dumps({
+                dumpb({
                     **connect_payload(),
                     "version": {
                         "impl": "test",
@@ -209,22 +209,22 @@ async def test_reverse_websocket_handshake_rejections(
         ),
         pytest.param(
             "12.other",
-            [orjson.dumps(connect_payload()).decode()],
+            [dumpb(connect_payload()).decode()],
             id="implementation-subprotocol-mismatch",
         ),
         pytest.param(
             "12.test",
             [
-                orjson.dumps(connect_payload()).decode(),
-                orjson.dumps(connect_payload()).decode(),
+                dumpb(connect_payload()).decode(),
+                dumpb(connect_payload()).decode(),
             ],
             id="repeated-connect",
         ),
         pytest.param(
             "12.test",
             [
-                orjson.dumps(connect_payload()).decode(),
-                orjson.dumps({
+                dumpb(connect_payload()).decode(),
+                dumpb({
                     "status": "failed",
                     "retcode": 40_000,
                     "data": None,
@@ -273,10 +273,10 @@ async def test_action_response_is_read_while_dispatch_is_blocked() -> None:
     async with timeout(3), bot:
         port = gateway.reverse_websocket_ports[0]
         async with await open_onebot12(port) as websocket:
-            await websocket.send(orjson.dumps(connect_payload()).decode())
-            await websocket.send(orjson.dumps(status_payload(SELF)).decode())
+            await websocket.send(dumpb(connect_payload()).decode())
+            await websocket.send(dumpb(status_payload(SELF)).decode())
             await status_seen.wait()
-            await websocket.send(orjson.dumps(private_message_payload()).decode())
+            await websocket.send(dumpb(private_message_payload()).decode())
             await dispatch_blocked.wait()
 
             try:
@@ -289,7 +289,7 @@ async def test_action_response_is_read_while_dispatch_is_blocked() -> None:
                     )
                     request_frame = await websocket.recv()
                     assert isinstance(request_frame, str)
-                    request = cast(dict[str, JsonValue], orjson.loads(request_frame))
+                    request = cast(dict[str, JsonValue], loads(request_frame))
                     assert request == {
                         "action": "vendor.test",
                         "params": {"optional": None},
@@ -297,7 +297,7 @@ async def test_action_response_is_read_while_dispatch_is_blocked() -> None:
                         "self": {"platform": "qq", "user_id": "10000"},
                     }
                     await websocket.send(
-                        orjson.dumps({
+                        dumpb({
                             "status": "ok",
                             "retcode": 0,
                             "data": None,
@@ -338,8 +338,8 @@ async def test_action_response_must_come_from_selected_session() -> None:
             await open_onebot12(port) as websocket_b,
         ):
             for websocket, self_ in ((websocket_a, self_a), (websocket_b, self_b)):
-                await websocket.send(orjson.dumps(connect_payload()).decode())
-                await websocket.send(orjson.dumps(status_payload(self_)).decode())
+                await websocket.send(dumpb(connect_payload()).decode())
+                await websocket.send(dumpb(status_payload(self_)).decode())
             await both_bound.wait()
 
             async with TaskGroup() as tasks:
@@ -348,7 +348,7 @@ async def test_action_response_must_come_from_selected_session() -> None:
                 )
                 request_frame = await websocket_b.recv()
                 assert isinstance(request_frame, str)
-                request = cast(dict[str, JsonValue], orjson.loads(request_frame))
+                request = cast(dict[str, JsonValue], loads(request_frame))
                 response = {
                     "status": "ok",
                     "retcode": 0,
@@ -356,13 +356,13 @@ async def test_action_response_must_come_from_selected_session() -> None:
                     "message": "",
                     "echo": request["echo"],
                 }
-                await websocket_a.send(orjson.dumps(response).decode())
+                await websocket_a.send(dumpb(response).decode())
                 marker = {**status_payload(self_a), "id": "evt-after-wrong-source"}
-                await websocket_a.send(orjson.dumps(marker).decode())
+                await websocket_a.send(dumpb(marker).decode())
                 await wrong_source_processed.wait()
                 assert not action.done()
 
-                await websocket_b.send(orjson.dumps(response).decode())
+                await websocket_b.send(dumpb(response).decode())
                 result = cast(ActionResponse, await action)
 
     assert result.data is None
@@ -381,8 +381,8 @@ async def test_pending_action_fails_when_session_disconnects() -> None:
     async with timeout(3), bot:
         port = gateway.reverse_websocket_ports[0]
         async with await open_onebot12(port) as websocket:
-            await websocket.send(orjson.dumps(connect_payload()).decode())
-            await websocket.send(orjson.dumps(status_payload(SELF)).decode())
+            await websocket.send(dumpb(connect_payload()).decode())
+            await websocket.send(dumpb(status_payload(SELF)).decode())
             await status_seen.wait()
 
             async with TaskGroup() as tasks:

@@ -1,7 +1,6 @@
 from asyncio import Event, Queue
 from typing import override
 
-import orjson
 from pydantic import JsonValue
 
 from bot import (
@@ -13,6 +12,7 @@ from bot import (
     Gateway,
     PrivateMessageEvent,
 )
+from bot.json import dumpb
 from bot.protocol.actions import ActionParamModel
 
 
@@ -83,7 +83,7 @@ class ScriptedWebSocket:
             self.feed(item)
 
     def feed(self, item: JsonValue | BaseException) -> None:
-        value = item if isinstance(item, BaseException) else orjson.dumps(item).decode()
+        value = item if isinstance(item, BaseException) else dumpb(item).decode()
         self.incoming.put_nowait(value)
 
     def finish(self) -> None:

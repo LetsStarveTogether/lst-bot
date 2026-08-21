@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Annotated, Never, Protocol, Self
 from urllib.parse import parse_qs
 from uuid import uuid4
 
-import orjson
 from pydantic import (
     BaseModel,
     Field,
@@ -33,6 +32,7 @@ from urllib3_future import AsyncPoolManager
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
+from bot.json import dumpb
 from bot.protocol.actions import (
     ActionCall,
     ActionParamInput,
@@ -504,7 +504,7 @@ def json_response(status: int, payload: BaseModel | JsonValue) -> Response:
             exclude_unset=False,
         )
     else:
-        body = orjson.dumps(payload)
+        body = dumpb(payload)
     return Response(status, {"Content-Type": "application/json"}, body)
 
 

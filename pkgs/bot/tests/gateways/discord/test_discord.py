@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 from typing import cast
 from unittest.mock import AsyncMock
 
-import orjson
 import pytest
 from bot import Bot, BotSelf, MetaEvent, NoticeEvent, PrivateMessageEvent
 from bot.gateways import discord as discord_module
@@ -34,6 +33,7 @@ from bot.gateways.discord import (
     DiscordReady,
     DiscordRequest,
 )
+from bot.json import loads
 from bot.protocol.actions import ActionParamModel
 from bot.testing import ScriptedWebSocket
 from pydantic import ValidationError
@@ -403,9 +403,7 @@ async def test_public_gateway_lifecycle_can_restart(
     assert sum(isinstance(event, PrivateMessageEvent) for event in events) == 2
     assert urls == ["wss://gateway.discord.example/?v=10&encoding=json"] * 2
     assert [websocket.close_code for websocket in websockets] == [1000, 1000]
-    assert [
-        orjson.loads(websocket.sent.get_nowait())["op"] for websocket in websockets
-    ] == [
+    assert [loads(websocket.sent.get_nowait())["op"] for websocket in websockets] == [
         2,
         2,
     ]
@@ -464,7 +462,7 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
         with pytest.raises(ConnectionError, match="reconnect"):
             await instance._read_websocket(websocket)
 
-    identify = orjson.loads(websocket.sent.get_nowait())
+    identify = loads(websocket.sent.get_nowait())
     assert identify["op"] == 2
     assert identify["d"]["intents"] == 4609
     assert identify["d"]["token"] == CREDENTIAL
@@ -506,7 +504,7 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
 
     resumed = ScriptedWebSocket()
     await instance._authenticate_websocket(resumed)
-    assert orjson.loads(resumed.sent.get_nowait()) == {
+    assert loads(resumed.sent.get_nowait()) == {
         "op": 6,
         "d": {"token": "token", "session_id": "session", "seq": 3},
     }
@@ -651,7 +649,7 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
     instance._seq = 1
     await instance._authenticate_websocket(websocket)
     assert [call.args[0] for call in mocked_sleep.await_args_list] == [1.5, 5.0]
-    assert [orjson.loads(websocket.sent.get_nowait())["op"] for _ in range(3)] == [
+    assert [loads(websocket.sent.get_nowait())["op"] for _ in range(3)] == [
         2,
         2,
         6,
@@ -699,7 +697,7 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
         "wss://gateway.discord.example/?v=10&encoding=json"
     ]
     assert discovery_pool.requests[0][1].endswith("/gateway/bot")
-    assert [orjson.loads(item.sent.get_nowait())["op"] for item in connections] == [
+    assert [loads(item.sent.get_nowait())["op"] for item in connections] == [
         *([6] * (discord_module._MAX_RESUME_ATTEMPTS + 1)),
         2,
     ]
@@ -716,6 +714,14 @@ async def test_gateway_native_limits_and_intent_boundaries(
     instance = gateway()
     websocket = ScriptedWebSocket()
     instance._websocket = websocket
+
+    send = instance._send_gateway
+    at_limit = {"op": 1, "d": "x" + "é" * 2040}
+    await send(websocket, at_limit, system=True)
+    assert len(websocket.sent.get_nowait().encode()) == 4096
+    with pytest.raises(ValueError, match="exceeds 4096 bytes"):
+        await send(websocket, {"op": 1, "d": "xx" + "é" * 2040}, system=True)
+    instance._gateway_send_times.clear()
 
     for _ in range(6):
         await instance._send_gateway(websocket, {"op": 3, "d": {}})
@@ -805,7 +811,7 @@ async def test_gateway_native_limits_and_intent_boundaries(
         opcode=43,
         data=channel_info,
     )
-    assert [orjson.loads(commands.sent.get_nowait()) for _ in range(3)] == [
+    assert [loads(commands.sent.get_nowait()) for _ in range(3)] == [
         {"op": 3, "d": presence},
         {"op": 4, "d": voice},
         {"op": 43, "d": channel_info},
@@ -837,9 +843,9 @@ async def test_reconnect_heartbeat_and_shutdown_close_codes(
             await instance._serve_websocket(acknowledged)
 
     async def drive() -> None:
-        sent = [orjson.loads(await acknowledged.sent.get()) for _ in range(2)]
+        sent = [loads(await acknowledged.sent.get()) for _ in range(2)]
         acknowledged.feed({"op": 1, "d": None})
-        sent.append(orjson.loads(await acknowledged.sent.get()))
+        sent.append(loads(await acknowledged.sent.get()))
         acknowledged.feed({"op": 11, "d": None})
         acknowledged.feed({"op": 7, "d": None})
         assert [payload["op"] for payload in sent] == [2, 1, 1]
@@ -856,14 +862,14 @@ async def test_reconnect_heartbeat_and_shutdown_close_codes(
             await gateway()._serve_websocket(missed)
     assert error.value.__cause__ is not None
     assert "not acknowledged" in str(error.value.__cause__)
-    assert [orjson.loads(missed.sent.get_nowait())["op"] for _ in range(2)] == [2, 1]
+    assert [loads(missed.sent.get_nowait())["op"] for _ in range(2)] == [2, 1]
     assert missed.close_code == 4000
 
     shutdown = ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}})
     task = create_task(gateway()._serve_websocket(shutdown))
     try:
         async with timeout(1):
-            assert orjson.loads(await shutdown.sent.get())["op"] == 2
+            assert loads(await shutdown.sent.get())["op"] == 2
             await shutdown.receiving.wait()
     finally:
         task.cancel()

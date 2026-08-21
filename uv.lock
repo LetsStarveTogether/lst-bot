@@ -82,7 +82,6 @@ source = { editable = "pkgs/bot" }
 dependencies = [
     { name = "croniter" },
     { name = "diwire" },
-    { name = "orjson" },
     { name = "pydantic" },
     { name = "robyn" },
     { name = "urllib3-future" },
@@ -93,7 +92,6 @@ dependencies = [
 requires-dist = [
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "diwire", specifier = ">=1.4.2" },
-    { name = "orjson", specifier = ">=3.11.9" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "robyn", specifier = ">=0.84.0" },
     { name = "urllib3-future", specifier = ">=2.21.902" },

@@ -3,7 +3,6 @@ from collections.abc import AsyncIterator, Mapping
 from hashlib import sha256
 from typing import cast
 
-import orjson
 import pytest
 from bot import Bot, BotSelf, Msg, Status
 from bot.gateways import telegram as telegram_module
@@ -25,6 +24,7 @@ from bot.gateways.telegram_api import (
     TelegramUser,
     TelegramVenue,
 )
+from bot.json import dumpb
 from bot.protocol.enums import Action
 from bot.protocol.events import (
     GroupMessageEvent,
@@ -43,7 +43,7 @@ SUPERGROUP_ID = -1_000_000_000_001
 
 def response(payload: JsonValue, status: int = 200) -> AsyncHTTPResponse:
     return AsyncHTTPResponse(
-        body=orjson.dumps(payload),
+        body=dumpb(payload),
         status=status,
         headers={"Content-Type": "application/json"},
     )

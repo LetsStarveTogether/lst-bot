@@ -4,7 +4,6 @@ from http import HTTPMethod
 from typing import cast
 from unittest.mock import AsyncMock
 
-import orjson
 import pytest
 from bot.gateways import qq_api
 from bot.gateways.qq_api import (
@@ -21,6 +20,7 @@ from bot.gateways.qq_api import (
     QQSendC2CMessageRequest,
     QQStreamMessageRequest,
 )
+from bot.json import dumpb
 from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
@@ -652,7 +652,7 @@ async def test_action_deadline_is_shared_by_token_and_action_io(
             return cast(
                 AsyncHTTPResponse,
                 GatedResponse(
-                    orjson.dumps({"access_token": "token", "expires_in": 7200}),
+                    dumpb({"access_token": "token", "expires_in": 7200}),
                     token_body_entered,
                     token_body_release,
                 ),
@@ -663,7 +663,7 @@ async def test_action_deadline_is_shared_by_token_and_action_io(
             return response(200, [])
         return cast(
             AsyncHTTPResponse,
-            GatedResponse(orjson.dumps([]), final_entered, final_release),
+            GatedResponse(dumpb([]), final_entered, final_release),
         )
 
     monkeypatch.setattr(pool, "request", request)
