@@ -33,7 +33,6 @@ from diwire import (
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.actions import ActionCall
-from bot.protocol.common import BotSelf
 from bot.protocol.events import Event
 from bot.protocol.msg import Msg
 from bot.protocol.returns import ReturnAction
@@ -118,7 +117,7 @@ class Bot(EventRouter):
         )
         self.container.add_instance(self, provides=Bot)
         self._gateways: list[Gateway] = []
-        self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
+        self.scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
         self._lifecycle_started = False
         self._pending_cleanup: list[_CleanupCallback] = []
@@ -159,10 +158,6 @@ class Bot(EventRouter):
         server.shutdown_handler(self.close)
         self._mounted_server = server
 
-    @property
-    def scheduler(self) -> CronScheduler:
-        return self._scheduler
-
     def resolve_gateway(self, gateway_type: type[Gateway] | None = None) -> Gateway:
         if gateway_type is None:
             if len(self._gateways) == 1:
@@ -183,23 +178,6 @@ class Bot(EventRouter):
             raise LookupError(msg)
         msg = f"Multiple gateways of type {gateway_type.__name__} are registered"
         raise LookupError(msg)
-
-    def on_cron(
-        self,
-        expr: str,
-        *,
-        name: str | None = None,
-        timezone: str | None = None,
-        self_: BotSelf | None = None,
-        gateway: type[Gateway] | None = None,
-    ) -> Callable:
-        return self._scheduler.on_cron(
-            expr,
-            name=name,
-            timezone=timezone,
-            self_=self_,
-            gateway=gateway,
-        )
 
     async def start(self) -> None:
         self._reject_lifecycle_reentry()
@@ -253,7 +231,7 @@ class Bot(EventRouter):
                 gateways.append(gateway)
                 await gateway.start()
             self.container.compile()
-            self._scheduler.start()
+            self.scheduler.start()
         except BaseException as startup_error:
             callbacks = self._cleanup_callbacks(
                 gateways,
@@ -279,7 +257,7 @@ class Bot(EventRouter):
         close_container: bool,
     ) -> list[_CleanupCallback]:
         callbacks: list[_CleanupCallback] = [
-            self._scheduler.close,
+            self.scheduler.close,
             self._stop_dispatcher,
         ]
         callbacks.extend(gateway.close for gateway in reversed(tuple(gateways)))

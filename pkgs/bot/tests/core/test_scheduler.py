@@ -51,11 +51,11 @@ def use_scripted_time(bot: Bot) -> ScriptedSleep:
 def test_on_cron_registers_validated_jobs_in_the_public_view() -> None:
     bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
 
-    @bot.on_cron("*/5 * * * *", name="five")
+    @bot.scheduler.on_cron("*/5 * * * *", name="five")
     def five() -> None:
         pass
 
-    @bot.on_cron("0 9 * * *", timezone="Asia/Tokyo")
+    @bot.scheduler.on_cron("0 9 * * *", timezone="Asia/Tokyo")
     def tokyo() -> None:
         pass
 
@@ -72,7 +72,7 @@ def test_on_cron_rejects_invalid_cron_expression() -> None:
     bot = Bot()
 
     with pytest.raises(ValueError, match="Invalid cron expression"):
-        bot.on_cron("0 0 31 2 *")(lambda: None)
+        bot.scheduler.on_cron("0 0 31 2 *")(lambda: None)
 
 
 async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> None:
@@ -81,7 +81,7 @@ async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> N
     started = Event()
     cancelled = Event()
 
-    @bot.on_cron("* * * * *", self_=None)
+    @bot.scheduler.on_cron("* * * * *", self_=None)
     async def job() -> None:
         try:
             started.set()
@@ -107,7 +107,7 @@ async def test_cron_handler_cannot_close_its_bot() -> None:
         await release.wait()
         await bot.close()
 
-    @bot.on_cron("* * * * *", self_=None)
+    @bot.scheduler.on_cron("* * * * *", self_=None)
     async def shutdown() -> None:
         nonlocal background
         with pytest.raises(RuntimeError, match="scheduled handler"):
@@ -159,7 +159,7 @@ async def test_cron_delay_uses_absolute_time_across_dst(
     sleep = ScriptedSleep()
     bot.scheduler.clock = lambda _: now
     bot.scheduler.sleep = sleep
-    bot.on_cron(expr, self_=None)(lambda: None)
+    bot.scheduler.on_cron(expr, self_=None)(lambda: None)
 
     await bot.start()
     delay, _ = await sleep.next_call()
@@ -174,7 +174,7 @@ async def test_none_target_job_injects_service() -> None:
     bot.container.add_instance(Service("ready"), provides=Service)
     seen: Queue[str] = Queue()
 
-    @bot.on_cron("* * * * *")
+    @bot.scheduler.on_cron("* * * * *")
     async def collect(service: Injected[Service]) -> None:
         await seen.put(service.value)
 
@@ -189,7 +189,7 @@ async def test_none_target_connection_injection_failure_is_logged(
     bot = Bot()
     sleep = use_scripted_time(bot)
 
-    @bot.on_cron("* * * * *", name="bad", self_=None)
+    @bot.scheduler.on_cron("* * * * *", name="bad", self_=None)
     def bad(connection: Injected[Connection]) -> None:
         _ = connection
 
@@ -212,7 +212,7 @@ async def test_fixed_account_uses_the_registered_gateway() -> None:
     seen: Queue[Connection] = Queue()
     self_ = BotSelf(platform="test", user_id="fixed")
 
-    @bot.on_cron("* * * * *", self_=self_, gateway=AlternateGateway)
+    @bot.scheduler.on_cron("* * * * *", self_=self_, gateway=AlternateGateway)
     async def collect(connection: Injected[Connection]) -> None:
         await seen.put(connection)
 
@@ -231,7 +231,7 @@ async def test_fixed_account_logs_gateway_ambiguity(
     recording_gateway(bot)
     bot.add_gateway(AlternateGateway(bot))
 
-    @bot.on_cron(
+    @bot.scheduler.on_cron(
         "* * * * *",
         name="ambiguous",
         self_=BotSelf(platform="test", user_id="fixed"),
@@ -253,7 +253,7 @@ async def test_overlapping_tick_is_skipped() -> None:
     release = Event()
     attempts = 0
 
-    @bot.on_cron("* * * * *", name="slow", self_=None)
+    @bot.scheduler.on_cron("* * * * *", name="slow", self_=None)
     async def slow() -> None:
         nonlocal attempts
         attempts += 1
@@ -275,7 +275,7 @@ async def test_handler_failure_does_not_block_later_ticks() -> None:
     attempts: Queue[int] = Queue()
     count = 0
 
-    @bot.on_cron("* * * * *", name="flaky", self_=None)
+    @bot.scheduler.on_cron("* * * * *", name="flaky", self_=None)
     def flaky() -> None:
         nonlocal count
         count += 1

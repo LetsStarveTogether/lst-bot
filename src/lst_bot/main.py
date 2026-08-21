@@ -52,7 +52,7 @@ def build_bot(
             )
         )
         if settings.report_group_id:
-            bot.on_cron(
+            bot.scheduler.on_cron(
                 "0 0,8-23 * * *",
                 self_=onebot_self,
                 gateway=OneBot11Gateway,
