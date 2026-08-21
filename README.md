@@ -14,7 +14,7 @@ This repository contains the bot application and its reusable framework and clie
 ## Features
 
 - Connects chats through OneBot 11, Telegram, and Discord.
-- Looks up DST versions, Klei lobbies, room details, and online players.
+- Looks up DST versions, Klei lobbies, and room details.
 - Manages local DST rooms and sends scheduled activity reports.
 - Answers DST questions with an AI agent.
 

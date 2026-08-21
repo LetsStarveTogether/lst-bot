@@ -1,18 +1,17 @@
 from datetime import date
 from unittest.mock import Mock
 
-from bot import Bot, Cmd
+from bot import Bot
 from bot.testing import RecordingGateway
 from hitokoto import HitokotoClient
 from klei import (
     KleiClient,
-    Platform,
     Version,
     VersionType,
 )
 from support import room_data
 
-from lst_bot.general import hitokoto, report, search_player, versions
+from lst_bot.general import hitokoto, report, versions
 from lst_bot.settings import Settings
 
 
@@ -50,34 +49,6 @@ async def test_versions_selects_latest_available_channels() -> None:
     )
     client.get_latest_versions.return_value = []
     assert await versions(client) == "❌ 未搜索到版本信息"
-
-
-async def test_search_player_filters_active_rooms() -> None:
-    client = Mock(spec_set=KleiClient)
-    client.get_lobby_data.return_value = [
-        room_data(row_id="1"),
-        room_data(row_id="2", connected=0),
-        room_data(row_id="3"),
-    ]
-    client.get_room_data.return_value = [
-        room_data(row_id="1", name="Alpha", players="Wilson, Wendy"),
-        room_data(row_id="3", name="Beta", players="WX-78"),
-    ]
-    reply = await search_player(
-        Cmd(raw="/搜索玩家", arg="Wendy"),
-        client,
-    )
-
-    client.get_lobby_data.assert_awaited_once_with(platforms=(Platform.Steam,))
-    room_data_call = client.get_room_data.await_args
-    assert room_data_call is not None
-    assert list(room_data_call.args[0]) == [
-        ("1", room_data().region),
-        ("3", room_data().region),
-    ]
-    assert reply.startswith("🔍️ 1/2\n")
-    assert "Alpha" in reply
-    assert "Beta" not in reply
 
 
 async def test_report_uses_injected_settings_for_room_and_message_targets() -> None:

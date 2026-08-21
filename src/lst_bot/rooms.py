@@ -73,12 +73,6 @@ async def get_host_rooms(
     return await kc.get_room_data(rooms)
 
 
-async def get_active_rooms(kc: KleiClient) -> list[RoomData]:
-    lobbies = await kc.get_lobby_data(platforms=(Platform.Steam,))
-    rooms = ((data.row_id, data.region) for data in lobbies if data.connected > 0)
-    return await kc.get_room_data(rooms)
-
-
 @router.on_cmd("房间列表")
 async def rooms(
     kc: Injected[KleiClient],

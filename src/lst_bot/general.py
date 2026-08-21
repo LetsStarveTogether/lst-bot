@@ -1,10 +1,10 @@
 from operator import attrgetter
 
-from bot import Cmd, Connection, EventRouter, Injected
+from bot import Connection, EventRouter, Injected
 from hitokoto import HitokotoClient
 from klei import KleiClient, VersionType
 
-from .rooms import format_lobby_data, get_active_rooms, get_host_rooms
+from .rooms import format_lobby_data, get_host_rooms
 from .settings import Settings
 
 router = EventRouter()
@@ -33,23 +33,6 @@ async def versions(kc: Injected[KleiClient]) -> str:
             f"发布日期：{version.date}",
         )
     return "\n\n\n".join(messages) or "❌ 未搜索到版本信息"
-
-
-@router.on_cmd("搜索玩家")
-async def search_player(cmd: Injected[Cmd], kc: Injected[KleiClient]) -> str:
-    target_name = cmd.arg
-    if not target_name:
-        return f"用法：{cmd.raw} 玩家名"
-
-    room_data_list = await get_active_rooms(kc)
-    results = [
-        room for room in room_data_list if room.players and target_name in room.players
-    ]
-    if not results:
-        return f"🟥 {len(results)}/{len(room_data_list)}"
-
-    rooms_text = "\n".join(format_lobby_data(room, verbose=True) for room in results)
-    return f"🔍️ {len(results)}/{len(room_data_list)}\n{rooms_text}"
 
 
 async def report(

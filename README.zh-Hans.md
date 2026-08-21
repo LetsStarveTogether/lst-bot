@@ -14,7 +14,7 @@
 ## 功能
 
 - 通过 OneBot 11、Telegram 和 Discord 接入聊天平台。
-- 查询 DST 最新版本、Klei 大厅、房间详情和在线玩家。
+- 查询 DST 最新版本、Klei 大厅和房间详情。
 - 管理本机 DST 房间并发送定时活跃报告。
 - 使用 AI 助手回答 DST 问题。
 
