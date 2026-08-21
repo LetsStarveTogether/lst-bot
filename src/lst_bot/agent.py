@@ -53,7 +53,6 @@ def build_question_agent(
     *,
     http_client: AsyncClient,
 ) -> Agent:
-    proxy = settings.proxy_url
     return Agent(
         OpenRouterModel(
             "deepseek/deepseek-v4-pro-0813",
@@ -70,7 +69,7 @@ def build_question_agent(
                     headers={
                         "X-Dosu-API-Key": settings.dosu_api_key.get_secret_value()
                     },
-                    proxy=proxy,
+                    proxy=settings.proxy_url,
                     timeout=REQUEST_TIMEOUT,
                     trust_env=False,
                     follow_redirects=False,

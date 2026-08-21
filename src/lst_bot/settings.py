@@ -72,9 +72,7 @@ class Settings(BaseSettings):
 
     @property
     def proxy_url(self) -> str | None:
-        return (
-            None if self.http_proxy is None else str(self.http_proxy.get_secret_value())
-        )
+        return str(self.http_proxy.get_secret_value()) if self.http_proxy else None
 
     @model_validator(mode="after")
     def validate_onebot_pair(self) -> Settings:

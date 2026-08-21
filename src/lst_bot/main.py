@@ -28,7 +28,6 @@ def build_bot(
     http_pool: AsyncPoolManager,
     question_agent: Agent,
 ) -> Bot:
-    proxy = settings.proxy_url
     bot = Bot(
         admin_ids=settings.bot_admin,
         cmd_prefixes=settings.bot_cmd_prefixes,
@@ -74,7 +73,7 @@ def build_bot(
                 http_pool=http_pool,
                 websocket_connector=partial(
                     connect_websocket,
-                    proxy=proxy,
+                    proxy=settings.proxy_url,
                     max_size=None,
                 ),
             )

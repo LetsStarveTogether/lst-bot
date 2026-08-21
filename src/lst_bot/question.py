@@ -67,20 +67,6 @@ async def replied_message_text(conn: Connection, event: MessageEvent) -> str:
             return ""
 
 
-async def build_question(
-    conn: Connection,
-    event: MessageEvent,
-    question: str,
-) -> str:
-    reply_text = await replied_message_text(conn, event)
-    parts = []
-    if reply_text:
-        parts.append(f"被回复的消息：\n{reply_text}")
-    if question:
-        parts.append(f"用户问题：\n{question}")
-    return "\n\n".join(parts)
-
-
 @router.on_cmd("问")
 async def ask_dst_question(
     cmd: Injected[Cmd],
@@ -88,7 +74,13 @@ async def ask_dst_question(
     conn: Injected[Connection],
     agent: Injected[Agent],
 ) -> Msg:
-    question = await build_question(conn, event, cmd.arg)
+    reply_text = await replied_message_text(conn, event)
+    parts = []
+    if reply_text:
+        parts.append(f"被回复的消息：\n{reply_text}")
+    if cmd.arg:
+        parts.append(f"用户问题：\n{cmd.arg}")
+    question = "\n\n".join(parts)
     if not question:
         answer = f"用法：{cmd.raw} 《饥荒联机版》相关问题"
     else:

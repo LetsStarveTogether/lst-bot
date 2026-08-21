@@ -1,14 +1,12 @@
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import pytest
-from bot import ActionResponse, ApiStatus, Bot, Cmd, Msg, Retcode
+from bot import ActionResponse, ApiStatus, Bot, Cmd, MessageEvent, Msg, Retcode
 from bot.testing import RecordingGateway, private_message_event
 from pydantic_ai import Agent
-from pydantic_ai.models.test import TestModel
 
-from lst_bot.question import (
-    ask_dst_question,
-    build_question,
-    message_payload_text,
-)
+from lst_bot.question import ask_dst_question, message_payload_text
 
 
 @pytest.mark.parametrize(
@@ -33,7 +31,7 @@ def test_message_payload_text(payload: object, expected: str) -> None:
     assert message_payload_text(payload) == expected
 
 
-async def test_build_question_combines_reply_and_command_text() -> None:
+async def test_question_handler_builds_agent_prompt_from_reply() -> None:
     bot = Bot()
     gateway = RecordingGateway(
         bot,
@@ -46,56 +44,53 @@ async def test_build_question_combines_reply_and_command_text() -> None:
     event = private_message_event("问 new question").model_copy(
         update={"message": Msg.reply("source-message", "问 new question")},
     )
+    agent = Mock(spec_set=Agent)
+    agent.run.return_value = SimpleNamespace(output="答案")
 
-    question = await build_question(gateway.connection, event, "new question")
+    async def ask(
+        current_event: MessageEvent = event,
+        arg: str = "new question",
+    ) -> Msg:
+        agent.reset_mock()
+        return await ask_dst_question(
+            Cmd(raw="/问", arg=arg), current_event, gateway.connection, agent
+        )
 
-    assert question == "被回复的消息：\nold question\n\n用户问题：\nnew question"
+    reply = await ask()
+    assert reply == Msg.reply(event.message_id, "答案", user_id=event.user_id)
+    agent.run.assert_awaited_once_with(
+        "被回复的消息：\nold question\n\n用户问题：\nnew question"
+    )
     action = gateway.actions[0].model_dump(mode="json")
     assert action["action"] == "get_msg"
     assert action["params"] == {"message_id": "source-message"}
 
     embedded = event.model_copy(update={"reply_alt_message": "embedded question"})
-    assert await build_question(gateway.connection, embedded, "new question") == (
+    await ask(embedded)
+    agent.run.assert_awaited_once_with(
         "被回复的消息：\nembedded question\n\n用户问题：\nnew question"
     )
+
     empty = event.model_copy(update={"reply_alt_message": ""})
-    assert await build_question(gateway.connection, empty, "") == ""
+    reply = await ask(empty, "")
+    assert reply == Msg.reply(
+        event.message_id,
+        "用法：/问 《饥荒联机版》相关问题",
+        user_id=event.user_id,
+    )
+    agent.run.assert_not_awaited()
     assert len(gateway.actions) == 1
 
-    gateway.responses["get_msg"] = ActionResponse.ok({"raw_message": "legacy"})
-    assert await build_question(gateway.connection, event, "new question") == (
-        "用户问题：\nnew question"
-    )
-
-    gateway.responses["get_msg"] = ActionResponse.failed(
-        Retcode.INTERNAL_HANDLER_ERROR,
-        "internal details",
-    )
-    assert await build_question(gateway.connection, event, "new question") == (
-        "用户问题：\nnew question"
-    )
-
-    gateway.responses["get_msg"] = ActionResponse(
-        status=ApiStatus.ASYNC,
-        retcode=1,
-        data={"message": [{"type": "text", "data": {"text": "pending"}}]},
-        message="queued",
-    )
-    assert await build_question(gateway.connection, event, "new question") == (
-        "用户问题：\nnew question"
-    )
-
-
-async def test_question_handler_replies_with_agent_output() -> None:
-    bot = Bot()
-    gateway = RecordingGateway(bot)
-    event = private_message_event("/问 巨鹿什么时候来？")
-
-    reply = await ask_dst_question(
-        Cmd(raw="/问", arg="巨鹿什么时候来？"),
-        event,
-        gateway.connection,
-        Agent(TestModel(custom_output_text="答案")),
-    )
-
-    assert reply == Msg.reply(event.message_id, "答案", user_id=event.user_id)
+    for response in (
+        ActionResponse.ok({"raw_message": "legacy"}),
+        ActionResponse.failed(Retcode.INTERNAL_HANDLER_ERROR, "internal details"),
+        ActionResponse(
+            status=ApiStatus.ASYNC,
+            retcode=1,
+            data={"message": [{"type": "text", "data": {"text": "pending"}}]},
+            message="queued",
+        ),
+    ):
+        gateway.responses["get_msg"] = response
+        await ask()
+        agent.run.assert_awaited_once_with("用户问题：\nnew question")
