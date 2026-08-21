@@ -28,6 +28,7 @@ from pydantic import (
     JsonValue,
     RootModel,
     SecretStr,
+    StrictBool,
     StrictInt,
     StrictStr,
     TypeAdapter,
@@ -800,7 +801,8 @@ class QQGateway(Gateway, QQRestClient):
                 raise _ReconnectError(msg)
             if payload.op is QQOpcode.INVALID_SESSION:
                 msg = "QQ Gateway session is invalid"
-                raise _ReconnectError(msg, reset_session=True)
+                resumable = TypeAdapter(StrictBool).validate_python(payload.d)
+                raise _ReconnectError(msg, reset_session=not resumable)
             if payload.op is QQOpcode.DISPATCH:
                 await self._receive_dispatch(payload)
                 continue

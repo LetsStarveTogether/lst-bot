@@ -1292,8 +1292,14 @@ async def test_websocket_hello_timeout_is_bounded(
     assert stalled.closed.is_set()
 
 
-@pytest.mark.parametrize("data", [True, False])
-async def test_websocket_invalid_session_clears_resume_state(data: bool) -> None:
+@pytest.mark.parametrize(
+    ("data", "reset_session"),
+    [(True, False), (False, True)],
+)
+async def test_websocket_invalid_session_follows_resume_flag(
+    data: bool,
+    reset_session: bool,
+) -> None:
     websocket = ScriptedWebSocket(
         {"op": 10, "d": {"heartbeat_interval": 60_000}},
         {"op": 9, "d": data},
@@ -1306,7 +1312,22 @@ async def test_websocket_invalid_session_clears_resume_state(data: bool) -> None
                 "token",
             )
 
-    assert vars(caught.value)["reset_session"] is True
+    assert vars(caught.value)["reset_session"] is reset_session
+    assert websocket.closed.is_set()
+
+
+async def test_websocket_invalid_session_requires_a_boolean() -> None:
+    websocket = ScriptedWebSocket(
+        {"op": 10, "d": {"heartbeat_interval": 60_000}},
+        {"op": 9, "d": 1},
+    )
+
+    with pytest.raises(ValidationError, match="valid boolean"):
+        await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises the opcode boundary
+            websocket,
+            "token",
+        )
+
     assert websocket.closed.is_set()
 
 
@@ -1395,12 +1416,30 @@ def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
         role_id="role",
         start_index="next",
     )
-    groups = QQStrategyGroups(group_ids=[2**64 - 1])
+    groups = QQStrategyGroups(group_ids=["123456789"])
     assert role_page.start_index == "next"
-    assert groups.group_ids == [2**64 - 1]
-    for group_id in (-1, 2**64, "1"):
+    assert groups.group_ids == ["123456789"]
+    create_strategy = QQ_ROUTES[
+        QQAction.CREATE_GROUP_APPROVAL_STRATEGY
+    ].request.model_validate({"group_ids": ["123456789"]})
+    update_strategy = QQ_ROUTES[
+        QQAction.UPDATE_GROUP_APPROVAL_STRATEGY
+    ].request.model_validate({
+        "strategy_id": "strategy",
+        "group_action": {"op": "add", "group_ids": ["123456789"]},
+    })
+    assert create_strategy.model_dump(mode="json", exclude_none=True)["group_ids"] == [
+        "123456789"
+    ]
+    assert update_strategy.model_dump(mode="json", exclude_none=True)[
+        "group_action"
+    ] == {
+        "op": "add",
+        "group_ids": ["123456789"],
+    }
+    for invalid_group_id in (123456789, "x", "-1", str(2**64)):
         with pytest.raises(ValidationError):
-            QQStrategyGroups.model_validate({"group_ids": [group_id]})
+            QQStrategyGroups.model_validate({"group_ids": [invalid_group_id]})
 
     for stream in (
         {"input_state": 10, "index": 0},

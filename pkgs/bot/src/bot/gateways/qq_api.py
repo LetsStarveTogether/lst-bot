@@ -51,13 +51,26 @@ _MEDIA_MESSAGE_TYPE = 7
 type QQID = Annotated[StrictStr, Field(min_length=1)]
 type QQLimit50 = Annotated[StrictInt, Field(ge=1, le=50)]
 type QQLimit100 = Annotated[StrictInt, Field(ge=1, le=100)]
-type QQUInt64 = Annotated[StrictInt, Field(ge=0, le=2**64 - 1)]
 type QQPositiveInt = Annotated[StrictInt, Field(gt=0)]
 type QQByteSize = Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
 type QQHttpsUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
 type QQWebsocketUrl = Annotated[
     WebsocketUrl,
     UrlConstraints(allowed_schemes=["wss"]),
+]
+
+
+def _uint64_string(value: str) -> str:
+    if int(value) > 2**64 - 1:
+        msg = "must fit an unsigned 64-bit integer"
+        raise ValueError(msg)
+    return value
+
+
+type QQUInt64String = Annotated[
+    StrictStr,
+    Field(pattern=r"^(?:0|[1-9][0-9]{0,19})$"),
+    AfterValidator(_uint64_string),
 ]
 
 
@@ -767,9 +780,9 @@ class QQStrategyGroups(QQRequest):
     group_openids: Annotated[list[QQID], Field(min_length=1, max_length=100)] | None = (
         None
     )
-    group_ids: Annotated[list[QQUInt64], Field(min_length=1, max_length=100)] | None = (
-        None
-    )
+    group_ids: (
+        Annotated[list[QQUInt64String], Field(min_length=1, max_length=100)] | None
+    ) = None
 
     @model_validator(mode="after")
     def one_group_kind(self) -> Self:
