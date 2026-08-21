@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, Self
 
 from pydantic import (
+    AnyHttpUrl,
     BaseModel,
     BeforeValidator,
     Discriminator,
@@ -155,22 +156,8 @@ class ActionResponse(Model):
 
 
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
-    detail_type = _field_value(value, "detail_type", MISSING)
-    if detail_type is MISSING:
-        targets = [
-            target
-            for target, fields in (
-                (MsgTargetTag.CHANNEL, ("guild_id", "channel_id")),
-                (MsgTargetTag.GROUP, ("group_id",)),
-                (MsgTargetTag.PRIVATE, ("user_id",)),
-            )
-            if all(
-                _field_value(value, field, MISSING) is not MISSING for field in fields
-            )
-        ]
-        return targets[0] if len(targets) == 1 else MsgTargetTag.EXTENSION
     try:
-        return MsgTargetTag(detail_type)
+        return MsgTargetTag(_field_value(value, "detail_type"))
     except ValueError:
         return MsgTargetTag.EXTENSION
 
@@ -226,7 +213,7 @@ class UploadFileBaseParams(ActionParamModel):
 
 class UploadFileUrlParams(UploadFileBaseParams):
     type: Literal[UploadFileTag.URL] = UploadFileTag.URL
-    url: StrictStr
+    url: AnyHttpUrl
     headers: HeaderMap | MISSING = MISSING
 
 

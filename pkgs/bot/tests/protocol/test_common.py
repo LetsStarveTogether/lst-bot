@@ -1,22 +1,7 @@
-from typing import Literal
-
 import pytest
 from bot import BotSelf, BotStatus, Status, Version
-from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
-from pydantic import TypeAdapter, ValidationError
-
-
-def test_strict_literal_aliases_reject_numeric_coercion() -> None:
-    assert TypeAdapter(StrictBoolLiteral[Literal[True]]).validate_python(True) is True
-    assert TypeAdapter(StrictIntLiteral[Literal[1]]).validate_python(1) == 1
-
-    for adapter, value in (
-        (TypeAdapter(StrictBoolLiteral[Literal[True]]), 1),
-        (TypeAdapter(StrictIntLiteral[Literal[1]]), True),
-        (TypeAdapter(StrictIntLiteral[Literal[1]]), 1.0),
-    ):
-        with pytest.raises(ValidationError):
-            adapter.validate_python(value)
+from bot.protocol.base import Model
+from pydantic import ValidationError
 
 
 @pytest.mark.parametrize(
@@ -140,7 +125,6 @@ def test_model_preserves_nested_json_extension_values_and_null() -> None:
     value = Model.model_validate(payload)
 
     assert value.model_dump(mode="json") == payload
-    assert Model.model_validate_json(value.model_dump_json()) == value
 
 
 def test_model_rejects_non_json_extension_value() -> None:

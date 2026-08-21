@@ -292,4 +292,8 @@ class EventPayload(RootModel[SerializeAsAny[Event]]):
         )
         if model is None and isinstance(event_type, str):
             model = _EVENT_MODELS.get(event_type)
-        return (model or Event).model_validate(value)
+        return (model or Event).model_validate(
+            value,
+            by_alias=True,
+            by_name=False,
+        )

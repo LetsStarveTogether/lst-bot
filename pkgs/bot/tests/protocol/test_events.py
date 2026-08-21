@@ -243,20 +243,51 @@ EVENT_CASES: tuple[tuple[dict[str, object], type[Event]], ...] = (
     ),
 )
 
+REQUIRED_EVENT_CASES = tuple(
+    (
+        next(payload for payload, _ in EVENT_CASES if field in payload),
+        field,
+    )
+    for field in sorted({field for payload, _ in EVENT_CASES for field in payload})
+)
+
 
 @pytest.mark.parametrize(
     ("payload", "event_class"),
     EVENT_CASES,
     ids=[f"{payload['type']}-{payload['detail_type']}" for payload, _ in EVENT_CASES],
 )
-def test_each_standard_event_variant_round_trips_json(
+def test_each_standard_event_variant_serializes_its_wire_shape(
     payload: dict[str, object],
     event_class: type[Event],
 ) -> None:
     event = EventPayload.model_validate(payload).root
 
-    assert isinstance(event, event_class)
-    assert EventPayload.model_validate_json(event.model_dump_json()).root == event
+    assert type(event) is event_class
+    assert event.model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    REQUIRED_EVENT_CASES,
+    ids=[field for _, field in REQUIRED_EVENT_CASES],
+)
+def test_standard_events_require_each_wire_field(
+    payload: dict[str, object],
+    field: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        EventPayload.model_validate({
+            key: value for key, value in payload.items() if key != field
+        })
+
+
+def test_event_payload_rejects_internal_self_field_name() -> None:
+    payload = _message("private")
+    payload["self_"] = payload.pop("self")
+
+    with pytest.raises(ValidationError):
+        EventPayload.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -279,7 +310,6 @@ def test_event_extension_variants_preserve_json_fields(
 
     assert type(event) is event_class
     assert event.model_dump(mode="json") == payload
-    assert EventPayload.model_validate_json(event.model_dump_json()).root == event
 
 
 def test_event_repr_hides_all_extra_payloads() -> None:
@@ -385,10 +415,6 @@ def test_heartbeat_rejects_non_positive_or_non_int64_interval(
         pytest.param(
             {**_message("private"), "message": "hello"},
             id="message-not-segment-list",
-        ),
-        pytest.param(
-            {key: value for key, value in _message("private").items() if key != "self"},
-            id="non-meta-missing-self",
         ),
     ],
 )

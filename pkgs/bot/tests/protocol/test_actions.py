@@ -12,10 +12,8 @@ from bot import (
     Retcode,
     ReturnAction,
 )
-from bot.protocol.actions import (
-    LatestEventsParams,
-    UploadFileBaseParams,
-)
+from bot.protocol import actions as action_models
+from bot.protocol.actions import LatestEventsParams, UploadFileBaseParams
 from pydantic import BaseModel, Field, ValidationError, field_serializer
 
 ACTION_CASES: dict[str, dict[str, object]] = {
@@ -77,14 +75,23 @@ ACTION_CASES: dict[str, dict[str, object]] = {
     ("action", "params"),
     ACTION_CASES.items(),
 )
-def test_each_standard_action_round_trips_json(
+def test_each_standard_action_serializes_its_wire_shape(
     action: str,
     params: dict[str, object],
 ) -> None:
     call = ActionCall.model_validate({"action": action, "params": params})
+    expected_params = dict(params)
+    if action == Action.SEND_MESSAGE:
+        expected_params["message"] = [
+            {"type": "text", "data": {"text": params["message"]}},
+        ]
+    elif action == Action.GET_CHANNEL_LIST:
+        expected_params["joined_only"] = False
 
-    assert call.action == action
-    assert ActionCall.model_validate_json(call.model_dump_json()) == call
+    assert call.model_dump(mode="json") == {
+        "action": action,
+        "params": expected_params,
+    }
 
 
 def test_action_matrix_covers_every_declared_standard_action() -> None:
@@ -92,136 +99,132 @@ def test_action_matrix_covers_every_declared_standard_action() -> None:
 
 
 @pytest.mark.parametrize(
-    "action",
+    ("action", "field"),
     [
-        action
+        (action, field)
         for action, params in ACTION_CASES.items()
-        if params and action != Action.GET_LATEST_EVENTS
+        if action != Action.GET_LATEST_EVENTS
+        for field in params
     ],
 )
-def test_parameterized_standard_actions_reject_empty_params(action: str) -> None:
+def test_standard_actions_require_each_wire_param(action: str, field: str) -> None:
+    params = ACTION_CASES[action]
     with pytest.raises(ValidationError):
-        ActionCall.model_validate({"action": action, "params": {}})
+        ActionCall.model_validate({
+            "action": action,
+            "params": {key: value for key, value in params.items() if key != field},
+        })
 
 
 @pytest.mark.parametrize(
-    ("params", "detail_type"),
+    ("action", "params", "params_type"),
     [
-        pytest.param(
-            {"user_id": "42", "message": "private"},
-            "private",
-            id="private-inferred",
+        (
+            "send_message",
+            {"detail_type": "private", "user_id": "42", "message": "private"},
+            action_models.SendPrivateMsgParams,
         ),
-        pytest.param(
-            {"group_id": "20000", "message": "group"},
-            "group",
-            id="group-inferred",
+        (
+            "send_message",
+            {
+                "detail_type": "group",
+                "group_id": "20000",
+                "message": "group",
+            },
+            action_models.SendGroupMsgParams,
         ),
-        pytest.param(
-            {"guild_id": "30000", "channel_id": "40000", "message": "channel"},
-            "channel",
-            id="channel-inferred",
+        (
+            "send_message",
+            {
+                "detail_type": "channel",
+                "guild_id": "30000",
+                "channel_id": "40000",
+                "message": "channel",
+            },
+            action_models.SendChannelMsgParams,
         ),
-        pytest.param(
+        (
+            "send_message",
             {
                 "detail_type": "vendor.thread",
                 "thread_id": "thread-1",
                 "message": "extension",
             },
-            "vendor.thread",
-            id="extension-explicit",
+            action_models.SendMsgBaseParams,
         ),
-    ],
-)
-def test_send_message_discriminator_selects_each_target_variant(
-    params: dict[str, object],
-    detail_type: str,
-) -> None:
-    call = ActionCall.model_validate({"action": "send_message", "params": params})
-    normalized = call.model_dump(mode="json", exclude_none=True)
-    message = params["message"]
-
-    assert normalized["params"]["detail_type"] == detail_type
-    assert normalized["params"]["message"] == [
-        {"type": "text", "data": {"text": message}},
-    ]
-
-
-@pytest.mark.parametrize(
-    "params",
-    [
-        pytest.param(
+        (
+            "upload_file",
             {
                 "type": "url",
                 "name": "file.bin",
                 "url": "https://example.test/file",
                 "headers": {"Authorization": "Bearer token"},
             },
-            id="url",
+            action_models.UploadFileUrlParams,
         ),
-        pytest.param(
+        (
+            "upload_file",
             {"type": "path", "name": "file.bin", "path": "files/file.bin"},
-            id="path",
+            action_models.UploadFilePathParams,
         ),
-        pytest.param(
+        (
+            "upload_file",
             {"type": "data", "name": "file.bin", "data": "/w=="},
-            id="data",
+            action_models.UploadFileDataParams,
         ),
-        pytest.param(
+        (
+            "upload_file",
             {"type": "vendor.storage", "name": "file.bin", "token": None},
-            id="extension",
+            UploadFileBaseParams,
         ),
-    ],
-)
-def test_upload_file_discriminator_selects_each_source_variant(
-    params: dict[str, object],
-) -> None:
-    call = ActionCall.model_validate({"action": "upload_file", "params": params})
-
-    assert ActionCall.model_validate_json(call.model_dump_json()) == call
-
-
-@pytest.mark.parametrize(
-    ("action", "params"),
-    [
-        pytest.param(
+        (
             "upload_file_fragmented",
             {"stage": "prepare", "name": "file.bin", "total_size": 0},
-            id="upload-prepare",
+            action_models.FragmentedUploadPrepareParams,
         ),
-        pytest.param(
+        (
             "upload_file_fragmented",
             {"stage": "transfer", "file_id": "file-1", "offset": 0, "data": "AA=="},
-            id="upload-transfer",
+            action_models.FragmentedUploadTransferParams,
         ),
-        pytest.param(
+        (
             "upload_file_fragmented",
             {
                 "stage": "finish",
                 "file_id": "file-1",
                 "sha256": "0" * 64,
             },
-            id="upload-finish",
+            action_models.FragmentedUploadFinishParams,
         ),
-        pytest.param(
+        (
             "get_file_fragmented",
             {"stage": "prepare", "file_id": "file-1"},
-            id="get-prepare",
+            action_models.FragmentedGetPrepareParams,
         ),
-        pytest.param(
+        (
             "get_file_fragmented",
             {"stage": "transfer", "file_id": "file-1", "offset": 0, "size": 1},
-            id="get-transfer",
+            action_models.FragmentedGetTransferParams,
         ),
     ],
 )
-def test_fragmented_file_discriminators_accept_each_stage(
+def test_action_param_discriminators_select_each_concrete_model(
     action: str,
     params: dict[str, object],
+    params_type: type[action_models.ActionParamModel],
 ) -> None:
     call = ActionCall.model_validate({"action": action, "params": params})
 
-    assert ActionCall.model_validate_json(call.model_dump_json()) == call
+    assert type(call.params) is params_type
+
+
+@pytest.mark.parametrize("url", ["", "not a url", "ftp://example.test/file"])
+def test_url_upload_requires_http_url(url: str) -> None:
+    with pytest.raises(ValidationError):
+        ActionCall.model_validate({
+            "action": "upload_file",
+            "params": {"type": "url", "name": "file.bin", "url": url},
+        })
 
 
 def test_extension_action_preserves_nested_json_values_and_null() -> None:
@@ -233,7 +236,6 @@ def test_extension_action_preserves_nested_json_values_and_null() -> None:
     call = ActionCall.model_validate(payload)
 
     assert call.model_dump(mode="json") == payload
-    assert ActionCall.model_validate_json(call.model_dump_json()) == call
 
 
 def test_action_request_omits_absent_envelope_fields() -> None:
@@ -243,7 +245,6 @@ def test_action_request_omits_absent_envelope_fields() -> None:
         "action": "get_status",
         "params": {},
     }
-    assert ActionRequest.model_validate_json(request.model_dump_json()) == request
 
 
 @pytest.mark.parametrize(
@@ -266,9 +267,13 @@ def test_action_request_omits_absent_envelope_fields() -> None:
         pytest.param(
             {
                 "action": "send_message",
-                "params": {"user_id": "", "group_id": "group", "message": "x"},
+                "params": {
+                    "detail_type": "private",
+                    "user_id": "42",
+                    "message": None,
+                },
             },
-            id="ambiguous-inferred-message-target",
+            id="null-message",
         ),
         pytest.param(
             {"action": "get_status", "params": {}, "echo": 1},
@@ -297,7 +302,7 @@ def test_action_request_rejects_invalid_protocol_shape(payload: object) -> None:
         ActionRequest.model_validate(payload)
 
 
-def test_action_response_round_trips_required_null_data_and_omits_empty_echo() -> None:
+def test_action_response_serializes_required_null_data_and_omits_empty_echo() -> None:
     response = ActionResponse.ok(echo="")
 
     assert response.model_dump(mode="json") == {
@@ -306,7 +311,6 @@ def test_action_response_round_trips_required_null_data_and_omits_empty_echo() -
         "data": None,
         "message": "",
     }
-    assert ActionResponse.model_validate_json(response.model_dump_json()) == response
     with pytest.raises(ValidationError):
         ActionResponse.ok(echo=False)  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValidationError):

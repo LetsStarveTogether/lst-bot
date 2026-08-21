@@ -120,7 +120,7 @@ class Msg(RootModel[list[MsgSegment]]):
     def reply(
         cls,
         message_id: str,
-        message: MsgInput = None,
+        message: MsgInput = (),
         *,
         user_id: str | MISSING = MISSING,
     ) -> Msg:
@@ -160,7 +160,7 @@ class Msg(RootModel[list[MsgSegment]]):
         )
 
 
-type MsgInput = Msg | MsgSegmentInput | Iterable[MsgSegmentInput] | str | None
+type MsgInput = Msg | MsgSegmentInput | Iterable[MsgSegmentInput] | str
 
 
 def _msg_input_value(value: object) -> object:
@@ -169,7 +169,7 @@ def _msg_input_value(value: object) -> object:
     if isinstance(value, Model):
         return [value.model_dump()]
     if value is None:
-        return []
+        return value
     if isinstance(value, str):
         return [{"type": MsgSegmentType.TEXT, "data": {"text": value}}]
     if isinstance(value, Mapping):
