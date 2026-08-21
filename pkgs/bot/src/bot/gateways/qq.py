@@ -551,7 +551,9 @@ class QQGateway(Gateway, QQRestClient):
             msg = "QQ intents contain unknown bits"
             raise ValueError(msg) from None
         self.shard = TypeAdapter(Shard).validate_python(shard)
-        self._websocket_connector = websocket_connector or connect_websocket
+        self._websocket_connector = (
+            connect_websocket if websocket_connector is None else websocket_connector
+        )
         self._task: Task[None] | None = None
         self._lifecycle_lock = Lock()
         self._closing = False
