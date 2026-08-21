@@ -143,6 +143,10 @@ type TelegramUserID = Annotated[
     StrictInt,
     Field(gt=0, le=_MAX_TELEGRAM_ID),
 ]
+type TelegramTopicID = Annotated[
+    StrictInt,
+    Field(gt=0, le=_MAX_TELEGRAM_ID),
+]
 type TelegramUpdateOffset = Annotated[
     StrictInt,
     Field(ge=-_MAX_INT32 - 1, le=_MAX_INT32),
@@ -252,7 +256,7 @@ class TelegramChat(Model):
 
 
 class TelegramDirectMessagesTopic(Model):
-    topic_id: PositiveInt
+    topic_id: TelegramTopicID
     user: TelegramUser | None = None
 
 

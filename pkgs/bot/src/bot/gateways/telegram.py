@@ -70,6 +70,7 @@ from .telegram_api import (
     TelegramObject,
     TelegramRestClient,
     TelegramResult,
+    TelegramTopicID,
     TelegramUpdate,
     TelegramUpload,
     TelegramUser,
@@ -123,7 +124,7 @@ class _TelegramMessageOptions(BaseModel):
 
     business_connection_id: StrictStr | None = None
     message_thread_id: PositiveInt | None = None
-    direct_messages_topic_id: PositiveInt | None = None
+    direct_messages_topic_id: TelegramTopicID | None = None
     receiver_user_id: TelegramUserID | None = None
     callback_query_id: StrictStr | None = None
     disable_notification: StrictBool | None = None
@@ -739,11 +740,15 @@ def _payload_time(payload: object) -> float:
         if isinstance(payload, Mapping)
         else getattr(payload, "message", None)
     )
-    for value in (payload, message):
+    for value, field in (
+        (payload, "date"),
+        (payload, "remove_date"),
+        (message, "date"),
+    ):
         timestamp = (
-            value.get("date")
+            value.get(field)
             if isinstance(value, Mapping)
-            else getattr(value, "date", None)
+            else getattr(value, field, None)
         )
         if (
             isinstance(timestamp, int)

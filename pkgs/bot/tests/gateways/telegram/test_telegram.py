@@ -11,6 +11,7 @@ from bot.gateways.telegram import TelegramGateway
 from bot.gateways.telegram_api import (
     TelegramAPIError,
     TelegramChat,
+    TelegramDirectMessagesTopic,
     TelegramDownloadedFile,
     TelegramEnvelope,
     TelegramFileTooLargeError,
@@ -150,6 +151,10 @@ def test_strict_models() -> None:
         })
     maximum_id = 2**52 - 1
     assert TelegramUser(id=maximum_id, is_bot=False, first_name="User").id == maximum_id
+    assert TelegramDirectMessagesTopic(topic_id=maximum_id).topic_id == maximum_id
+    for topic_id in (0, maximum_id + 1):
+        with pytest.raises(ValidationError):
+            TelegramDirectMessagesTopic(topic_id=topic_id)
     for chat in (
         TelegramChat(id=maximum_id, type="private", is_direct_messages=True),
         TelegramChat(id=-maximum_id, type="group"),
@@ -189,7 +194,6 @@ def test_strict_models() -> None:
             "error_code": 400,
             "description": "bad",
         })
-    assert telegram_module._payload_time({"date": 0}) > 0  # ruff: ignore[private-member-access]
 
 
 @pytest.mark.parametrize(
@@ -1019,6 +1023,22 @@ def test_service_messages_are_not_empty_messages(
     raw = (event.model_extra or {})["telegram_raw"]
     assert isinstance(raw, dict)
     assert raw["message"][field] == value
+
+
+def test_removed_chat_boost_uses_removal_time() -> None:
+    gateway = make_gateway()
+    gateway._self = BotSelf(  # ruff: ignore[private-member-access] - event conversion boundary
+        platform="telegram", user_id="123"
+    )
+    event = gateway._event_from_update(  # ruff: ignore[private-member-access] - event conversion boundary
+        TelegramUpdate.model_validate({
+            "update_id": 2,
+            "removed_chat_boost": {"remove_date": 123},
+        })
+    )
+    assert isinstance(event, NoticeEvent)
+    assert event.detail_type == "telegram.removed_chat_boost"
+    assert event.time == 123
 
 
 async def test_message_reply_contexts_use_their_official_routes() -> None:
