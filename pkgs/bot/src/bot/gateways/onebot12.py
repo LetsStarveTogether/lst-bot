@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
-from typing import Annotated, override
+from typing import Annotated, Literal, Self, override
 
 from pydantic import (
     ConfigDict,
@@ -24,6 +24,7 @@ from pydantic import (
     StrictStr,
     TypeAdapter,
     ValidationError,
+    model_validator,
 )
 from pydantic.dataclasses import dataclass as validated_dataclass
 from robyn import Request, Response, Robyn
@@ -39,6 +40,7 @@ from bot.core import Bot
 from bot.protocol.actions import ActionParamModel, ActionRequest, ActionResponse
 from bot.protocol.common import BotSelf
 from bot.protocol.constants import NAME_PATTERN
+from bot.protocol.enums import ApiStatus, Retcode
 from bot.protocol.events import (
     ConnectMetaEvent,
     EventPayload,
@@ -73,12 +75,31 @@ from .base import (
 
 logger = getLogger(__name__)
 
-_WS_PAYLOAD_ADAPTER = TypeAdapter(EventPayload | ActionResponse)
 _DATACLASS_CONFIG = ConfigDict(strict=True, validate_default=True)
 type _IngressPath = Annotated[
     StrictStr,
     Field(pattern=re.compile(r"^/(?!/)[\x21-\x22\x24-\x3e\x40-\x7e]*\Z")),
 ]
+_EXECUTION_RETCODES = range(30_000, 40_000)
+_EXTENSION_RETCODES = range(60_000, 100_000)
+
+
+class _OneBot12ActionResponse(ActionResponse):
+    status: Literal[ApiStatus.OK, ApiStatus.FAILED]
+
+    @model_validator(mode="after")
+    def onebot12_contract(self) -> Self:
+        if self.status == ApiStatus.FAILED and (
+            self.retcode not in Retcode
+            and self.retcode not in _EXECUTION_RETCODES
+            and self.retcode not in _EXTENSION_RETCODES
+        ):
+            msg = "OneBot 12 action response retcode is reserved or undefined"
+            raise ValueError(msg)
+        return self
+
+
+_WS_PAYLOAD_ADAPTER = TypeAdapter(EventPayload | _OneBot12ActionResponse)
 
 
 @validated_dataclass(frozen=True, slots=True, config=_DATACLASS_CONFIG)
@@ -368,7 +389,7 @@ class OneBot12Gateway(Gateway):
                 )
                 raise RuntimeError(msg)
             body = await response.data
-        return ActionResponse.model_validate_json(body)
+        return _OneBot12ActionResponse.model_validate_json(body)
 
     @property
     def _authorization_headers(self) -> dict[str, str] | None:

@@ -361,11 +361,18 @@ def test_onebot11_action_response_status_matches_retcode() -> None:
         "data": None,
         "message": "missing",
     })
+    asynchronous = decode_action_response({
+        "status": "async",
+        "retcode": 1,
+        "data": None,
+    })
 
     assert success == ActionResponse.ok({"message_id": 1})
     assert failed.status == ApiStatus.FAILED
     assert failed.retcode == 1404
     assert failed.message == "missing"
+    assert asynchronous.status == ApiStatus.ASYNC
+    assert asynchronous.retcode == 1
 
 
 def test_action_response_requires_an_object_model() -> None:
@@ -383,10 +390,6 @@ def test_action_response_requires_an_object_model() -> None:
         pytest.param(
             {"status": "async", "retcode": 0, "data": None},
             id="async-with-ok-retcode",
-        ),
-        pytest.param(
-            {"status": "async", "retcode": 1, "data": None},
-            id="unrepresentable-async",
         ),
         pytest.param(
             {"status": "failed", "retcode": 0, "data": None},

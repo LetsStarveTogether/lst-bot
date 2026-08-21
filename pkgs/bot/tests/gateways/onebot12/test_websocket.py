@@ -220,6 +220,19 @@ async def test_reverse_websocket_handshake_rejections(
             ],
             id="repeated-connect",
         ),
+        pytest.param(
+            "12.test",
+            [
+                orjson.dumps(connect_payload()).decode(),
+                orjson.dumps({
+                    "status": "failed",
+                    "retcode": 40_000,
+                    "data": None,
+                    "message": "reserved retcode",
+                }).decode(),
+            ],
+            id="invalid-action-response",
+        ),
     ],
 )
 async def test_websocket_protocol_violations_close_connection(

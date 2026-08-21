@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from bot import Action, ActionResponse, ApiStatus, Bot, Msg
 from bot.gateways.onebot12 import HttpAction, OneBot12Gateway, ReverseWebSocket
+from pydantic import ValidationError
 from urllib3_future import AsyncPoolManager
 
 from tests.gateways.support import ActionServer
@@ -102,6 +103,30 @@ async def test_http_action_rejects_transport_contract_violations(
 
         async with bot:
             with pytest.raises(RuntimeError, match=message):
+                await gateway.connection_for(SELF).action("get_version")
+
+
+@pytest.mark.parametrize(
+    ("status", "retcode"),
+    [("async", 1), ("failed", 10_008), ("failed", 40_000), ("failed", 50_000)],
+)
+async def test_http_action_rejects_invalid_response(
+    status: str,
+    retcode: int,
+) -> None:
+    payload = {
+        "status": status,
+        "retcode": retcode,
+        "data": None,
+        "message": "invalid",
+    }
+    async with ActionServer(payload) as server:
+        gateway = OneBot12Gateway(
+            Bot(),
+            action=HttpAction(f"{server.base_url}/action"),
+        )
+        async with gateway:
+            with pytest.raises(ValidationError):
                 await gateway.connection_for(SELF).action("get_version")
 
 

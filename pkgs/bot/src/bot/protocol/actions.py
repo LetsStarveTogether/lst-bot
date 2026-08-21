@@ -26,7 +26,7 @@ from pydantic import (
 
 from .base import Model
 from .common import BotSelf
-from .constants import MAX_RETCODE, SHA256_STRING_PATTERN
+from .constants import SHA256_STRING_PATTERN
 from .enums import (
     Action,
     ApiStatus,
@@ -155,7 +155,7 @@ class ActionRequest(Model):
 
 class ActionResponse(Model):
     status: ApiStatus
-    retcode: Annotated[StrictInt, Field(ge=0, le=MAX_RETCODE)]
+    retcode: StrictInt
     data: JsonValue
     message: StrictStr
     echo: StrictStr | None = Field(
@@ -187,8 +187,13 @@ class ActionResponse(Model):
                 msg = "ok action response message must be empty"
                 raise ValueError(msg)
             return self
-        if self.retcode == Retcode.OK:
-            msg = "failed action response must not use retcode 0"
+        if self.status == ApiStatus.ASYNC:
+            if self.retcode != 1:
+                msg = "async action response must use retcode 1"
+                raise ValueError(msg)
+            return self
+        if self.retcode in {Retcode.OK, 1}:
+            msg = "failed action response must not use retcode 0 or 1"
             raise ValueError(msg)
         return self
 
@@ -205,7 +210,7 @@ class ActionResponse(Model):
     @classmethod
     def failed(
         cls,
-        retcode: Retcode,
+        retcode: int,
         message: str,
         *,
         echo: str | None = None,

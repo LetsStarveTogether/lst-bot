@@ -3,6 +3,7 @@ from enum import IntEnum, StrEnum, auto
 
 class ApiStatus(StrEnum):
     OK = auto()
+    ASYNC = auto()
     FAILED = auto()
 
 

@@ -9,6 +9,7 @@ from bot import (
     ActionRequest,
     ActionResponse,
     BotSelf,
+    Retcode,
     ReturnAction,
 )
 from bot.protocol.actions import (
@@ -317,18 +318,27 @@ def test_action_response_round_trips_required_null_data_and_omits_null_echo() ->
     "payload",
     [
         pytest.param(
-            {"status": "failed", "retcode": 1, "data": None, "message": "failed"},
-            id="failed-minimum-retcode",
+            {"status": "async", "retcode": 1, "data": None, "message": ""},
+            id="async",
         ),
         pytest.param(
             {
                 "status": "failed",
-                "retcode": 99999,
+                "retcode": Retcode.BAD_REQUEST,
+                "data": None,
+                "message": "failed",
+            },
+            id="failed",
+        ),
+        pytest.param(
+            {
+                "status": "failed",
+                "retcode": 100_000,
                 "data": {"retry": False},
                 "message": "failed",
                 "echo": "echo-1",
             },
-            id="failed-maximum-retcode",
+            id="platform-defined-retcode",
         ),
     ],
 )
@@ -385,12 +395,8 @@ def test_action_response_accepts_status_retcode_contract(
             id="failed-with-ok-retcode",
         ),
         pytest.param(
-            {"status": "failed", "retcode": -1, "data": None, "message": "bad"},
-            id="retcode-below-minimum",
-        ),
-        pytest.param(
-            {"status": "failed", "retcode": 100000, "data": None, "message": "bad"},
-            id="retcode-above-maximum",
+            {"status": "failed", "retcode": 1, "data": None, "message": "bad"},
+            id="failed-with-async-retcode",
         ),
     ],
 )

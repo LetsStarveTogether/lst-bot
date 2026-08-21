@@ -1587,8 +1587,13 @@ def decode_action_response(
     if response.status == "ok":
         return ActionResponse.ok(response.data, echo=echo)
     if response.status == "async":
-        msg = "OneBot 11 async action responses cannot be represented"
-        raise ValueError(msg)
+        return ActionResponse(
+            status=ApiStatus.ASYNC,
+            retcode=response.retcode,
+            data=response.data,
+            message=response.message or response.msg or "",
+            echo=echo,
+        )
     message = response.message or response.msg or ""
     return ActionResponse(
         status=ApiStatus.FAILED,
