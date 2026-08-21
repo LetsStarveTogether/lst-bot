@@ -455,7 +455,7 @@ class Bot(EventRouter):
             active_gateway or "-",
         )
 
-        async with self.container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
+        async with self.container.enter_scope(Scope.REQUEST) as resolver:
             for route in self.routes:
                 if route.event_type is not None and route.event_type != event.type:
                     continue
