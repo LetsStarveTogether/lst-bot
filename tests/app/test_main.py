@@ -1,5 +1,5 @@
 from datetime import timedelta
-from logging import ERROR, getLogger
+from logging import DEBUG, INFO, getLogger
 from typing import Never
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
@@ -70,7 +70,7 @@ def test_main_never_lowers_dependency_log_level(
         name: Mock()
         for name in ("httpcore", "urllib3_future", "websockets", "mcp", "fastmcp")
     }
-    monkeypatch.setattr("lst_bot.main.Settings", lambda: Mock(log_level=ERROR))
+    monkeypatch.setattr("lst_bot.main.Settings", lambda: Mock(log_level=DEBUG))
     monkeypatch.setattr("lst_bot.main.logging.basicConfig", Mock())
     monkeypatch.setattr(
         "lst_bot.main.logging.getLogger",
@@ -82,7 +82,7 @@ def test_main_never_lowers_dependency_log_level(
     main()
 
     for logger in loggers.values():
-        logger.setLevel.assert_called_once_with(ERROR)
+        logger.setLevel.assert_called_once_with(INFO)
 
 
 def test_build_bot_registers_runtime_settings() -> None:

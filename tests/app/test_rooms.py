@@ -131,6 +131,7 @@ def test_restart_room_hides_internal_error() -> None:
     client = Mock(spec_set=LstClient)
     client.restart_rooms.side_effect = RuntimeError("internal details")
     assert restart_room(Cmd(raw="", arg="1"), client) == "重启失败：[1]"
+    client.restart_rooms.assert_called_once_with([1])
 
 
 def test_rollback_room_rejects_negative_snapshot_counts() -> None:
