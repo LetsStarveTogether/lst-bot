@@ -22,14 +22,6 @@ class LstClient:
         self.systemd_mode = systemd_mode
         self._systemd_manager = systemd_manager
 
-    @property
-    def systemd_manager(self) -> Any:
-        if self._systemd_manager is None:
-            manager = Manager()
-            manager.load()
-            self._systemd_manager = manager.Manager
-        return self._systemd_manager
-
     def send_console_command(self, room_ids: Iterable[int], command: str) -> None:
         room_values = tuple(room_ids)
         logger.info(
@@ -44,7 +36,10 @@ class LstClient:
             console_path.write_text(payload, encoding="utf-8")
 
     def restart_rooms(self, room_ids: Iterable[int]) -> None:
-        systemd_manager = self.systemd_manager
+        if self._systemd_manager is None:
+            manager = Manager()
+            manager.load()
+            self._systemd_manager = manager.Manager
         room_values = tuple(room_ids)
         logger.info(
             "restart DST rooms: %s",
@@ -53,4 +48,4 @@ class LstClient:
         for room_id in room_values:
             unit = self.service_template_name + f"@{room_id}.service".encode()
             logger.debug("restart DST systemd unit: %s", unit)
-            systemd_manager.RestartUnit(unit, self.systemd_mode)
+            self._systemd_manager.RestartUnit(unit, self.systemd_mode)
