@@ -101,8 +101,6 @@ _MAX_AUDIT_REASON_LENGTH = 512
 _MAX_REST_ATTEMPTS = 5
 _MAX_GLOBAL_REST_REQUESTS = 50
 _GLOBAL_REST_WINDOW_SECONDS = 1.0
-_RATE_BUCKET_IDLE_TTL = 60.0
-_RATE_BUCKET_PRUNE_INTERVAL = 10.0
 _RATE_BUCKET_PRUNE_THRESHOLD = 256
 _MAX_NONCE_BYTES = 32
 _MAX_MESSAGE_LENGTH = 2000
@@ -274,7 +272,6 @@ class DiscordMessage(Model):
     message_reference: DiscordMessageReference | None = None
     flags: NonNegativeInt | None = None
     referenced_message: DiscordMessage | None = None
-    interaction: dict[StrictStr, JsonValue] | None = None
     thread: DiscordChannel | None = None
     components: list[dict[StrictStr, JsonValue]] | None = None
     sticker_items: list[dict[StrictStr, JsonValue]] | None = None
@@ -395,15 +392,13 @@ class DiscordInteraction(Model):
     token: Annotated[StrictStr, Field(min_length=1, repr=False)]
     version: Literal[1]
     message: DiscordMessage | None = None
-    app_permissions: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")] | None = None
+    app_permissions: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
     locale: StrictStr | None = None
     guild_locale: StrictStr | None = None
-    entitlements: list[dict[StrictStr, JsonValue]] = Field(default_factory=list)
-    authorizing_integration_owners: dict[StrictStr, Snowflake | Literal["0"]] | None = (
-        None
-    )
-    context: NonNegativeInt | None = None
-    attachment_size_limit: NonNegativeInt | None = None
+    entitlements: list[dict[StrictStr, JsonValue]]
+    authorizing_integration_owners: dict[Literal["0", "1"], Snowflake | Literal["0"]]
+    context: Literal[0, 1, 2] | None = None
+    attachment_size_limit: NonNegativeInt
 
     @model_validator(mode="after")
     def interaction_data_shape(self) -> Self:
@@ -640,7 +635,6 @@ class DiscordRequest(DiscordRequestModel):
 class _DiscordRateBucket:
     lock: Lock = field(default_factory=Lock)
     ready_at: float = 0.0
-    last_used: float = 0.0
 
 
 type _DiscordResponse = DiscordPayload | DiscordBytes | DiscordNoContent
@@ -668,7 +662,11 @@ class DiscordRestClient:
         token_value = (
             token.get_secret_value() if isinstance(token, SecretStr) else token
         )
-        if not token_value or any(character.isspace() for character in token_value):
+        if (
+            not isinstance(token_value, str)
+            or not token_value
+            or any(character.isspace() for character in token_value)
+        ):
             msg = "Discord bot token must be non-empty and contain no whitespace"
             raise ValueError(msg)
         self.token = SecretStr(token_value)
@@ -680,7 +678,6 @@ class DiscordRestClient:
         self._rate_buckets: defaultdict[tuple[str, str, str], _DiscordRateBucket] = (
             defaultdict(_DiscordRateBucket)
         )
-        self._next_bucket_prune_at = 0.0
         self._global_ready_at = dict.fromkeys(("authless", "bot", "interaction"), 0.0)
         self._global_send_lock = Lock()
         self._global_send_times = {
@@ -724,16 +721,17 @@ class DiscordRestClient:
         self,
         request: DiscordRequest,
     ) -> DiscordPayload | DiscordBytes | DiscordNoContent:
-        interaction_callback = _INTERACTION_CALLBACK_PATH.fullmatch(request.path)
+        canonical_path = unquote(request.path)
+        interaction_callback = _INTERACTION_CALLBACK_PATH.fullmatch(canonical_path)
         callback = request.method == "POST" and interaction_callback is not None
         if request.auth and (
-            interaction_callback or _WEBHOOK_TOKEN_PATH.fullmatch(request.path)
+            interaction_callback or _WEBHOOK_TOKEN_PATH.fullmatch(canonical_path)
         ):
             request = request.model_copy(update={"auth": False})
         if self._closed or not self._accepting_requests:
             msg = "Discord REST client is closed"
             raise RuntimeError(msg)
-        pending = self._interaction_callbacks.get(request.path) if callback else None
+        pending = self._interaction_callbacks.get(canonical_path) if callback else None
         if pending is not None:
             return await self._submit_interaction_callback(pending, request)
         return await self._perform_tracked_request(request)
@@ -767,10 +765,11 @@ class DiscordRestClient:
         self,
         request: DiscordRequest,
     ) -> DiscordPayload | DiscordBytes | DiscordNoContent:
+        canonical_path = unquote(request.path)
         lane: Literal["authless", "bot", "interaction"] = (
             "interaction"
             if request.method == "POST"
-            and _INTERACTION_CALLBACK_PATH.fullmatch(request.path)
+            and _INTERACTION_CALLBACK_PATH.fullmatch(canonical_path)
             else "bot"
             if request.auth
             else "authless"
@@ -865,7 +864,6 @@ class DiscordRestClient:
         finally:
             self._route_buckets.clear()
             self._rate_buckets.clear()
-            self._next_bucket_prune_at = 0.0
             self._global_ready_at = dict.fromkeys(
                 ("authless", "bot", "interaction"), 0.0
             )
@@ -899,45 +897,45 @@ class DiscordRestClient:
         request: DiscordRequest,
     ) -> tuple[tuple[str, str], str, _DiscordRateBucket]:
         now = get_running_loop().time()
-        if (
-            len(self._rate_buckets) >= _RATE_BUCKET_PRUNE_THRESHOLD
-            and now >= self._next_bucket_prune_at
-        ):
-            self._next_bucket_prune_at = now + _RATE_BUCKET_PRUNE_INTERVAL
-            for key, bucket in tuple(self._rate_buckets.items()):
-                if (
-                    not bucket.lock.locked()
-                    and bucket.ready_at <= now
-                    and bucket.last_used + _RATE_BUCKET_IDLE_TTL <= now
-                ):
-                    self._rate_buckets.pop(key, None)
+        if len(self._rate_buckets) >= _RATE_BUCKET_PRUNE_THRESHOLD:
+            stale = next(
+                (
+                    key
+                    for key, bucket in self._rate_buckets.items()
+                    if not bucket.lock.locked() and bucket.ready_at <= now
+                ),
+                None,
+            )
+            if stale is not None:
+                self._rate_buckets.pop(stale)
         route, major = self._rate_route(request)
         bucket_id = self._route_buckets.get(route)
         key = (
             "bucket" if bucket_id is not None else "route",
-            bucket_id if bucket_id is not None else f"{route[0]} {route[1]}",
+            bucket_id
+            if bucket_id is not None
+            else f"{route[0]} /{route[1].split('/', 2)[1]}",
             major,
         )
         bucket = self._rate_buckets[key]
-        bucket.last_used = now
         return route, major, bucket
 
     @staticmethod
     def _rate_route(
         request: DiscordRequest,
     ) -> tuple[tuple[str, str], str]:
-        parts = request.path.split("/")[1:]
+        parts = unquote(request.path).split("/")[1:]
         normalized = parts.copy()
         major = ""
         if len(parts) > 1 and parts[0] in {"channels", "guilds"}:
             major = f"{parts[0]}:{parts[1]}"
             normalized[1] = ":id"
         elif len(parts) > 1 and parts[0] in {"interactions", "webhooks"}:
-            major = f"webhooks:{parts[1]}" if parts[0] == "webhooks" else ""
+            major = f"webhooks:{parts[1]}"
             normalized[1] = ":id"
             token_index = 2
             if len(parts) > token_index:
-                major = f"{major}:{parts[token_index]}" if major else ""
+                major = f"{major}:{parts[token_index]}"
                 normalized[token_index] = ":token"
         for index, part in enumerate(normalized):
             if part.isdecimal():
@@ -952,7 +950,6 @@ class DiscordRestClient:
         major: str,
         bucket: _DiscordRateBucket,
     ) -> _DiscordRateBucket:
-        bucket.last_used = get_running_loop().time()
         bucket_id = header_value(response.headers, "X-RateLimit-Bucket")
         if not bucket_id:
             return bucket
@@ -962,11 +959,8 @@ class DiscordRestClient:
         key = ("bucket", bucket_id, major)
         bound = self._rate_buckets.get(key)
         if bound is None:
-            self._rate_buckets[key] = bound = bucket
-        route_key = ("route", f"{route[0]} {route[1]}", major)
-        self._rate_buckets.pop(route_key, None)
+            self._rate_buckets[key] = bound = _DiscordRateBucket()
         bound.ready_at = max(bound.ready_at, bucket.ready_at)
-        bound.last_used = max(bound.last_used, bucket.last_used)
         return bound
 
     async def _wait_for_rate_limit(
@@ -2469,15 +2463,6 @@ def _discord_send_body(message: Msg) -> dict[str, JsonValue]:  # ruff: ignore[co
         elif segment.type == MsgSegmentType.MENTION_ALL:
             content.append("@everyone")
             parse.append("everyone")
-        elif segment.type in {
-            MsgSegmentType.IMAGE,
-            MsgSegmentType.VOICE,
-            MsgSegmentType.AUDIO,
-            MsgSegmentType.VIDEO,
-            MsgSegmentType.FILE,
-        }:
-            file_id = cast(object, segment.data).file_id  # ty: ignore[unresolved-attribute]
-            content.append(("\n" if content else "") + file_id)
         elif segment.type == MsgSegmentType.REPLY:
             if reference is not None:
                 msg = "Discord sends at most one message reference"
@@ -2490,7 +2475,7 @@ def _discord_send_body(message: Msg) -> dict[str, JsonValue]:  # ruff: ignore[co
                 "fail_if_not_exists": False,
             }
         else:
-            msg = f"Discord does not support message segment {segment.type!s}"
+            msg = f"Discord common messages do not support segment {segment.type!s}"
             raise ValueError(msg)
     text = "".join(content)
     if not text:

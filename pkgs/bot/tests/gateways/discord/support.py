@@ -43,6 +43,10 @@ def interaction(*, sequence: int = 1) -> DiscordGatewayPayload:
             "data": {"id": "12", "name": "test", "type": 1},
             "token": CREDENTIAL,
             "version": 1,
+            "app_permissions": "0",
+            "entitlements": [],
+            "authorizing_integration_owners": {"0": "0"},
+            "attachment_size_limit": 10_000_000,
         },
     })
 

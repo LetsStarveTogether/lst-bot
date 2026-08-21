@@ -28,7 +28,6 @@ from bot.gateways.discord import (
     DiscordGuildList,
     DiscordGuildMember,
     DiscordGuildMemberEvent,
-    DiscordHelloData,
     DiscordIntent,
     DiscordInteraction,
     DiscordMemberList,
@@ -72,24 +71,18 @@ class Clock:
 
 
 def test_strict_boundaries_and_secret_repr() -> None:
+    for token in (1, True, object()):
+        with pytest.raises(ValueError, match="Discord bot token"):
+            discord_module.DiscordRestClient(
+                cast(str, token),
+                http_pool=cast(AsyncPoolManager, Pool()),
+            )
     with pytest.raises(ValueError, match="invalid value"):
         DiscordIntent(1 << 19)
     with pytest.raises(ValidationError):
         DiscordGatewayPayload.model_validate({"op": True, "d": None})
     with pytest.raises(ValidationError):
         DiscordMessage.model_validate({**message(message_id="01")})
-    marker = f"sensitive-{id(object())}"
-    with pytest.raises(ValidationError) as gateway_error:
-        DiscordGatewayPayload.model_validate({
-            "op": 0,
-            "d": {"token": marker},
-            "s": 1,
-        })
-    assert marker not in repr(gateway_error.value)
-    assert marker not in str(gateway_error.value)
-    with pytest.raises(ValidationError) as hello_error:
-        DiscordHelloData.model_validate({"heartbeat_interval": marker})
-    assert marker not in str(hello_error.value)
     with pytest.raises(ValidationError):
         DiscordRequest.model_validate({
             "method": "GET",
@@ -132,6 +125,24 @@ def test_strict_boundaries_and_secret_repr() -> None:
         DiscordGuildMemberEvent.model_validate({"guild_id": "1", "roles": []})
 
 
+def test_interaction_rate_routes_use_canonical_webhook_majors() -> None:
+    rate_route = discord_module.DiscordRestClient._rate_route
+    plain = DiscordRequest(method="POST", path="/interactions/1/token/callback")
+    encoded = DiscordRequest(
+        method="POST",
+        path="/interactions/%31/%74oken/callback",
+    )
+
+    assert rate_route(plain) == rate_route(encoded)
+    assert rate_route(plain)[1] == "webhooks:1:token"
+    assert (
+        rate_route(
+            DiscordRequest(method="POST", path="/interactions/2/other/callback")
+        )[1]
+        == "webhooks:2:other"
+    )
+
+
 @pytest.mark.parametrize(
     ("interaction_type", "data", "valid_data"),
     [
@@ -164,12 +175,36 @@ def test_interaction_types_require_and_accept_their_minimum_data(
         "type": interaction_type,
         "token": CREDENTIAL,
         "version": 1,
+        "app_permissions": "0",
+        "entitlements": [],
+        "authorizing_integration_owners": {"0": "0"},
+        "attachment_size_limit": 10_000_000,
     }
     with pytest.raises(ValidationError, match="incomplete data"):
         DiscordInteraction.model_validate(payload | {"data": data})
     assert DiscordInteraction.model_validate(payload | {"data": valid_data}).type == (
         interaction_type
     )
+
+
+def test_interaction_requires_official_fields_and_literals() -> None:
+    payload = cast(dict[str, object], interaction().d)
+    for field in (
+        "app_permissions",
+        "entitlements",
+        "authorizing_integration_owners",
+        "attachment_size_limit",
+    ):
+        invalid = payload.copy()
+        invalid.pop(field)
+        with pytest.raises(ValidationError):
+            DiscordInteraction.model_validate(invalid)
+    for invalid in (
+        payload | {"context": 3},
+        payload | {"authorizing_integration_owners": {"2": "1"}},
+    ):
+        with pytest.raises(ValidationError):
+            DiscordInteraction.model_validate(invalid)
 
 
 async def test_default_connector_accepts_unbounded_official_gateway_frames(
@@ -558,11 +593,16 @@ def test_message_conversion_distinguishes_forward_and_voice() -> None:
         ],
     })
 
-    assert [segment.type for segment in discord_module._discord_message(incoming)] == [
+    converted = discord_module._discord_message(incoming)
+    assert [segment.type for segment in converted] == [
         "text",
         "mention",
         "voice",
     ]
+    assert converted[-1].model_dump()["data"]["file_id"] == (
+        "https://cdn.discord.example/voice.ogg"
+    )
+    assert "forwarded" not in converted.text
 
 
 async def test_dispatch_models_commit_only_valid_session_and_rate_state(
@@ -756,6 +796,20 @@ async def test_gateway_native_limits_and_intent_boundaries(
     with pytest.raises(ValueError, match="exceeds 4096 bytes"):
         await send(websocket, {"op": 1, "d": "xx" + "é" * 2040}, system=True)
     instance._gateway_send_times.clear()
+
+    for _ in range(
+        discord_module._MAX_GATEWAY_EVENTS - discord_module._GATEWAY_SYSTEM_RESERVE + 1
+    ):
+        await send(websocket, {"op": 4, "d": {}})
+    assert [call.args[0] for call in mocked_sleep.await_args_list] == [60.0]
+    instance._gateway_send_times.clear()
+    mocked_sleep.reset_mock()
+
+    for _ in range(121):
+        await send(websocket, {"op": 4, "d": {}}, system=True)
+    assert [call.args[0] for call in mocked_sleep.await_args_list] == [60.0]
+    instance._gateway_send_times.clear()
+    mocked_sleep.reset_mock()
 
     for _ in range(6):
         await instance._send_gateway(websocket, {"op": 3, "d": {}})
@@ -1037,15 +1091,25 @@ async def test_sequence_commit_and_public_message_actions() -> None:
 
     with pytest.raises(ValueError, match=r"unsupported.*tts"):
         await connection.send_msg("ignored", user_id="2", tts=True)
+    for segment_type in ("image", "voice", "audio", "video", "file"):
+        with pytest.raises(ValueError, match="common messages do not support"):
+            await connection.send_msg(
+                {"type": segment_type, "data": {"file_id": "opaque-file"}},
+                user_id="2",
+                channel_id="4",
+            )
     assert len(pool.requests) == 2
 
-    wrong = instance.connection_for(BotSelf(platform="discord", user_id="wrong"))
-    with pytest.raises(ValueError, match="wrong BotSelf"):
-        await instance.request_action(
-            wrong,
-            "get_supported_actions",
-            ActionParamModel(),
-        )
+    for wrong in (
+        instance.connection_for(BotSelf(platform="discord", user_id="wrong")),
+        gateway().connection_for(instance._self),
+    ):
+        with pytest.raises(ValueError, match="wrong BotSelf"):
+            await instance.request_action(
+                wrong,
+                "get_supported_actions",
+                ActionParamModel(),
+            )
 
 
 async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
@@ -1122,11 +1186,32 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
     instance = gateway(pool)
     connection = instance.connection_for(instance._self)
 
+    supported = await connection.action("get_supported_actions")
     results = [
         await connection.action(action, **params)
         for action, params, _, _, _, _ in cases
     ]
 
+    assert set(supported.model_dump()) == {
+        "get_supported_actions",
+        "get_status",
+        "get_version",
+        "send_message",
+        "delete_message",
+        "get_self_info",
+        "get_user_info",
+        "get_guild_info",
+        "get_guild_list",
+        "set_guild_name",
+        "get_guild_member_info",
+        "get_guild_member_list",
+        "leave_guild",
+        "get_channel_info",
+        "get_channel_list",
+        "set_channel_name",
+        "discord.request",
+        "discord.gateway",
+    }
     assert [type(result) for result in results] == [
         expected for _, _, _, expected, _, _ in cases
     ]
@@ -1146,8 +1231,9 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
 
 
 def test_message_model_is_strict_but_accepts_new_fields() -> None:
-    parsed = DiscordMessage.model_validate({**message(), "future_field": True})
-    assert parsed.model_extra == {"future_field": True}
+    extra = {"future_field": True, "interaction": {"id": "1"}}
+    parsed = DiscordMessage.model_validate(message() | extra)
+    assert parsed.model_extra == extra
     with pytest.raises(ValidationError):
         DiscordMessage.model_validate({**message(), "tts": 0})
 
@@ -1298,30 +1384,68 @@ async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
         pool.release.set()
 
 
-async def test_rest_caches_are_bounded_and_programming_errors_stay_visible(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_cold_dynamic_routes_share_provisional_bucket() -> None:
     class BucketPool(Pool):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+            self.first_returned_at: float | None = None
+            self.second_requested_at: float | None = None
+
         async def request(
             self,
             method: str,
             url: str,
             **kwargs: object,
         ) -> AsyncHTTPResponse:
+            index = len(self.requests)
             self.requests.append((method, url, kwargs))
+            if index:
+                self.second_requested_at = discord_module.get_running_loop().time()
+            self.started.set()
+            await self.release.wait()
+            if not index:
+                self.first_returned_at = discord_module.get_running_loop().time()
             return response(
                 200,
                 {},
-                headers={"X-RateLimit-Bucket": "invites"},
+                headers={
+                    "X-RateLimit-Bucket": f"invites-{index}",
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset-After": "0.02",
+                },
             )
 
-    monkeypatch.setattr(discord_module, "_RATE_BUCKET_PRUNE_THRESHOLD", 2)
-    rest = client(BucketPool())
-    for index in range(discord_module._RATE_BUCKET_PRUNE_THRESHOLD + 5):
-        await rest.request_discord("GET", f"/invites/code-{index}")
-    assert len(rest._route_buckets) == discord_module._RATE_BUCKET_PRUNE_THRESHOLD
-    assert len(rest._rate_buckets) == 1
+    pool = BucketPool()
+    rest = client(pool)
+    second_started = Event()
 
+    async def second_request() -> None:
+        second_started.set()
+        await rest.request_discord("GET", "/invites/beta")
+
+    async with timeout(1), TaskGroup() as tasks:
+        tasks.create_task(rest.request_discord("GET", "/invites/alpha"))
+        await pool.started.wait()
+        tasks.create_task(second_request())
+        await second_started.wait()
+        await sleep(0)
+        assert len(pool.requests) == 1
+        pool.release.set()
+
+    assert [url.rsplit("/", 1)[-1] for _, url, _ in pool.requests] == ["alpha", "beta"]
+    assert pool.first_returned_at is not None
+    assert pool.second_requested_at is not None
+    assert pool.second_requested_at - pool.first_returned_at >= 0.015
+    first_bucket = rest._rate_buckets.get(("bucket", "invites-0", ""))
+    second_bucket = rest._rate_buckets.get(("bucket", "invites-1", ""))
+    assert first_bucket is not None
+    assert second_bucket is not None
+    assert first_bucket is not second_bucket
+
+
+async def test_rest_programming_errors_stay_visible() -> None:
     class FailingPool(Pool):
         def __init__(self, error: Exception) -> None:
             super().__init__()
@@ -1336,7 +1460,7 @@ async def test_rest_caches_are_bounded_and_programming_errors_stay_visible(
             self.requests.append((method, url, kwargs))
             raise self.error
 
-    marker = f"token-{id(rest)}"
+    marker = f"token-{id(object())}"
     with pytest.raises(ValueError, match="programming error"):
         await client(FailingPool(ValueError("programming error"))).request_discord(
             "GET", "/gateway/bot"
@@ -1484,6 +1608,7 @@ async def test_explicit_interaction_response_has_one_owner() -> None:
     instance = gateway(pool)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
     path = f"/interactions/10/{CREDENTIAL}/callback"
+    encoded_path = f"/interactions/%31%30/{CREDENTIAL}/callback"
 
     try:
         await instance._receive_dispatch(interaction())
@@ -1493,12 +1618,15 @@ async def test_explicit_interaction_response_has_one_owner() -> None:
         result = await connection.action(
             "discord.request",
             method="POST",
-            path=path,
+            path=encoded_path,
             json={"type": 4},
         )
         await pending.task
         assert isinstance(result, DiscordNoContent)
         assert pool.requests[0][2]["json"] == {"type": 4}
+        headers = pool.requests[0][2]["headers"]
+        assert isinstance(headers, dict)
+        assert "Authorization" not in headers
         assert len(pool.requests) == 1
         assert instance._interaction_callbacks == {}
     finally:

@@ -93,6 +93,16 @@ def test_model_revalidates_nested_instances() -> None:
         BotStatus.model_validate({"self": self_, "online": True})
 
 
+def test_model_hides_invalid_input() -> None:
+    marker = f"sensitive-{id(object())}"
+
+    with pytest.raises(ValidationError) as error:
+        Status.model_validate({"good": marker, "bots": []})
+
+    assert marker not in repr(error.value)
+    assert marker not in str(error.value)
+
+
 @pytest.mark.parametrize(
     "token",
     [
