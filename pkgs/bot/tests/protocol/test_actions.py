@@ -264,6 +264,13 @@ def test_action_request_omits_absent_envelope_fields() -> None:
             id="msg-is-not-message-alias",
         ),
         pytest.param(
+            {
+                "action": "send_message",
+                "params": {"user_id": "", "group_id": "group", "message": "x"},
+            },
+            id="ambiguous-inferred-message-target",
+        ),
+        pytest.param(
             {"action": "get_status", "params": {}, "echo": 1},
             id="non-string-echo",
         ),
@@ -300,6 +307,14 @@ def test_action_response_round_trips_required_null_data_and_omits_empty_echo() -
         "message": "",
     }
     assert ActionResponse.model_validate_json(response.model_dump_json()) == response
+    with pytest.raises(ValidationError):
+        ActionResponse.ok(echo=False)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValidationError):
+        ActionResponse.failed(
+            Retcode.BAD_REQUEST,
+            "failed",
+            echo=False,  # ty: ignore[invalid-argument-type]
+        )
 
 
 @pytest.mark.parametrize(
@@ -327,6 +342,24 @@ def test_action_response_round_trips_required_null_data_and_omits_empty_echo() -
                 "echo": "echo-1",
             },
             id="platform-defined-retcode",
+        ),
+        pytest.param(
+            {
+                "status": "failed",
+                "retcode": -(2**63),
+                "data": None,
+                "message": "failed",
+            },
+            id="int64-minimum",
+        ),
+        pytest.param(
+            {
+                "status": "failed",
+                "retcode": 2**63 - 1,
+                "data": None,
+                "message": "failed",
+            },
+            id="int64-maximum",
         ),
     ],
 )
@@ -389,6 +422,24 @@ def test_action_response_accepts_status_retcode_contract(
         pytest.param(
             {"status": "failed", "retcode": 1, "data": None, "message": "bad"},
             id="failed-with-async-retcode",
+        ),
+        pytest.param(
+            {
+                "status": "failed",
+                "retcode": -(2**63) - 1,
+                "data": None,
+                "message": "bad",
+            },
+            id="below-int64-minimum",
+        ),
+        pytest.param(
+            {
+                "status": "failed",
+                "retcode": 2**63,
+                "data": None,
+                "message": "bad",
+            },
+            id="above-int64-maximum",
         ),
         pytest.param(
             {

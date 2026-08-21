@@ -193,17 +193,25 @@ async def test_dispatch_executes_batch_returns_in_order() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        pytest.param({"not": "supported"}, id="mapping"),
+        pytest.param([Msg.from_input("nested")], id="nested-batch"),
+    ],
+)
 async def test_dispatch_stops_batch_on_return_execution_error(
+    unsupported: object,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
 
     @bot.on_msg(block=True)
-    def handle() -> list[Msg | dict[str, str]]:
+    def handle() -> list[object]:
         return [
             Msg.from_input("first"),
-            {"not": "supported"},
+            unsupported,
             Msg.from_input("never"),
         ]
 
@@ -212,7 +220,7 @@ async def test_dispatch_stops_batch_on_return_execution_error(
 
     assert [action.action for action in gateway.actions] == ["send_message"]
     assert any(
-        "Unsupported handler return value: dict" in message
+        f"Unsupported handler return value: {type(unsupported).__name__}" in message
         for message in caplog.messages
     )
 

@@ -16,8 +16,12 @@ _JSON_VALUE_ADAPTER = TypeAdapter(
 )
 
 
-def _field_value(value: object, key: str) -> object:
-    return value.get(key) if isinstance(value, Mapping) else getattr(value, key, None)
+def _field_value(value: object, key: str, default: object = None) -> object:
+    return (
+        value.get(key, default)
+        if isinstance(value, Mapping)
+        else getattr(value, key, default)
+    )
 
 
 class Model(BaseModel):

@@ -27,15 +27,22 @@ def test_bot_copies_admin_identity_mapping_as_immutable_sets() -> None:
     admin_ids["other"] = {"u3"}
 
     assert bot.admin_ids == {"test": frozenset({"u1"})}
+    with pytest.raises(TypeError, match="mapping or None"):
+        Bot(admin_ids=False)  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError, match="user ID iterables"):
         Bot(admin_ids={"test": "root"})
     with pytest.raises(TypeError, match="must be strings"):
         Bot(admin_ids={"test": {42}})  # ty: ignore[invalid-argument-type]
 
 
-def test_add_gateway_rejects_a_foreign_owner() -> None:
+def test_add_gateway_is_identity_idempotent_and_rejects_a_foreign_owner() -> None:
     bot = Bot()
+    gateway = RecordingGateway(bot)
 
+    bot.add_gateway(gateway)
+    bot.add_gateway(gateway)
+
+    assert bot.resolve_gateway() is gateway
     with pytest.raises(ValueError, match="another bot"):
         bot.add_gateway(RecordingGateway(Bot()))
 

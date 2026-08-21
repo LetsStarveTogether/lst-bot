@@ -45,7 +45,8 @@ type ActionParamInput = (
     | list[ActionParamInput]
     | tuple[ActionParamInput, ...]
 )
-type NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
+type StrictInt64 = Annotated[StrictInt, Field(ge=-(2**63), le=2**63 - 1)]
+type NonNegativeStrictInt = Annotated[StrictInt64, Field(ge=0)]
 type Sha256String = Annotated[
     StrictStr,
     StringConstraints(pattern=r"^[a-f0-9]{64}$"),
@@ -97,7 +98,7 @@ class ActionParamModel(Model):
 
 class ActionResponse(Model):
     status: Literal[ApiStatus.OK, ApiStatus.ASYNC, ApiStatus.FAILED]
-    retcode: StrictInt
+    retcode: StrictInt64
     data: JsonValue
     message: StrictStr
     echo: StrictStr | MISSING = MISSING
@@ -129,7 +130,9 @@ class ActionResponse(Model):
             retcode=Retcode.OK,
             data=data,
             message="",
-            echo=echo or MISSING,
+            echo=MISSING
+            if echo is None or (isinstance(echo, str) and not echo)
+            else echo,
         )
 
     @classmethod
@@ -145,19 +148,27 @@ class ActionResponse(Model):
             retcode=retcode,
             data=None,
             message=message,
-            echo=echo or MISSING,
+            echo=MISSING
+            if echo is None or (isinstance(echo, str) and not echo)
+            else echo,
         )
 
 
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
-    detail_type = _field_value(value, "detail_type")
-    if detail_type is None:
-        if _field_value(value, "guild_id") and _field_value(value, "channel_id"):
-            return MsgTargetTag.CHANNEL
-        if _field_value(value, "group_id"):
-            return MsgTargetTag.GROUP
-        if _field_value(value, "user_id"):
-            return MsgTargetTag.PRIVATE
+    detail_type = _field_value(value, "detail_type", MISSING)
+    if detail_type is MISSING:
+        targets = [
+            target
+            for target, fields in (
+                (MsgTargetTag.CHANNEL, ("guild_id", "channel_id")),
+                (MsgTargetTag.GROUP, ("group_id",)),
+                (MsgTargetTag.PRIVATE, ("user_id",)),
+            )
+            if all(
+                _field_value(value, field, MISSING) is not MISSING for field in fields
+            )
+        ]
+        return targets[0] if len(targets) == 1 else MsgTargetTag.EXTENSION
     try:
         return MsgTargetTag(detail_type)
     except ValueError:

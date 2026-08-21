@@ -105,8 +105,11 @@ class Bot(EventRouter):
         if max_dispatches <= 0:
             msg = "max_dispatches must be greater than zero"
             raise ValueError(msg)
+        if admin_ids is not None and not isinstance(admin_ids, Mapping):
+            msg = "admin_ids must be a mapping or None"
+            raise TypeError(msg)
         admins: dict[str, frozenset[str]] = {}
-        for platform, user_ids in (admin_ids or {}).items():
+        for platform, user_ids in ({} if admin_ids is None else admin_ids).items():
             if not isinstance(platform, str) or isinstance(user_ids, str):
                 msg = "admin_ids must map platform names to user ID iterables"
                 raise TypeError(msg)
@@ -153,6 +156,8 @@ class Bot(EventRouter):
         if gateway.bot is not self:
             msg = "Gateway belongs to another bot"
             raise ValueError(msg)
+        if any(registered is gateway for registered in self._gateways):
+            return
         if self._lifecycle_started:
             msg = "Gateways cannot be added after bot startup begins"
             raise RuntimeError(msg)
@@ -569,13 +574,10 @@ class Bot(EventRouter):
         context: InjectionContext,
         value: object,
     ) -> None:
-        if isinstance(value, list | tuple):
-            for item in value:
-                await self._execute_return_value(context, item)
-            return
-
-        action = self._return_action_from_value(value)
-        await self._execute_return_action(context, action)
+        values = value if isinstance(value, list | tuple) else (value,)
+        for item in values:
+            action = self._return_action_from_value(item)
+            await self._execute_return_action(context, action)
 
     def _return_action_from_value(self, value: object) -> ReturnAction:
         if isinstance(value, ReturnAction):
@@ -608,7 +610,7 @@ class Bot(EventRouter):
                 raise TypeError(msg)
             connection = context.gateway.connection_for(self_)
 
-        await (context.gateway or connection.gateway).execute_return_action(
+        await connection.gateway.execute_return_action(
             connection,
             event,
             action,
