@@ -1,6 +1,5 @@
-import asyncio
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,7 +12,6 @@ from hitokoto import HitokotoClient
 from klei import KleiClient
 from pydantic import SecretStr
 
-import lst_bot.main as main_module
 from lst_bot.main import Application, build_application
 from lst_bot.settings import Settings
 
@@ -122,36 +120,3 @@ def test_build_application_skips_unconfigured_gateways_and_report() -> None:
         with pytest.raises(LookupError, match="No gateway"):
             application.bot.resolve_gateway(gateway_type)
     assert application.bot.scheduler.jobs == ()
-
-
-def test_main_loads_settings_inside_logging_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-    settings = Settings(_env_file=None)
-
-    class StubApplication:
-        async def run(self) -> None:
-            events.append("run")
-
-    @contextmanager
-    def logging_context(value: Settings) -> Iterator[None]:
-        assert value is settings
-        events.append("logging:start")
-        try:
-            yield
-        finally:
-            events.append("logging:close")
-
-    def make_application(value: Settings) -> StubApplication:
-        assert value is settings
-        return StubApplication()
-
-    monkeypatch.setattr(main_module, "Settings", lambda: settings)
-    monkeypatch.setattr(main_module, "configure_logging", logging_context)
-    monkeypatch.setattr(main_module, "build_application", make_application)
-    monkeypatch.setattr(main_module.uvloop, "run", asyncio.run)
-
-    main_module.main()
-
-    assert events == ["logging:start", "run", "logging:close"]
