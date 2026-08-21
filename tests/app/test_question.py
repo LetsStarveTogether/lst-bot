@@ -62,6 +62,11 @@ async def test_build_question_combines_reply_and_command_text() -> None:
     assert await build_question(gateway.connection, empty, "") == ""
     assert len(gateway.actions) == 1
 
+    gateway.responses["get_msg"] = ActionResponse.ok({"raw_message": "legacy"})
+    assert await build_question(gateway.connection, event, "new question") == (
+        "用户问题：\nnew question"
+    )
+
     gateway.responses["get_msg"] = ActionResponse.failed(
         Retcode.INTERNAL_HANDLER_ERROR,
         "internal details",

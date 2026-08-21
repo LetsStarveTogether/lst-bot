@@ -2,6 +2,7 @@ from collections.abc import Mapping, Sequence
 from logging import getLogger
 
 from bot import (
+    ActionResponse,
     Cmd,
     Connection,
     EventRouter,
@@ -58,13 +59,11 @@ async def replied_message_text(conn: Connection, event: MessageEvent) -> str:
         )
         return ""
 
-    data = getattr(response, "data", None)
-    if not isinstance(data, Mapping):
-        return ""
-
-    return message_payload_text(data.get("message")) or message_payload_text(
-        data.get("raw_message")
-    )
+    match response:
+        case ActionResponse(data={"message": message}):
+            return message_payload_text(message)
+        case _:
+            return ""
 
 
 async def build_question(
