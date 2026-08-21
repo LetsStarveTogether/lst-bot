@@ -101,6 +101,9 @@ class ScriptedWebSocket:
 
     async def send_text(self, payload: str) -> None:
         await self.send_allowed.wait()
+        if self.closed.is_set():
+            msg = "WebSocket is closed"
+            raise ConnectionError(msg)
         await self.sent.put(payload)
 
     async def close(self, code: int = 1000) -> None:

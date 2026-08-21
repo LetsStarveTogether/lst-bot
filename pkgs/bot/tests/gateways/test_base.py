@@ -104,14 +104,16 @@ def test_authorization_header_does_not_fall_back_to_query_token() -> None:
 
 
 @pytest.mark.parametrize(
-    "authorization", ["bearer token", "BEARER token", "Bearer  token"]
+    ("authorization", "token"),
+    [("bearer token", "token"), ("BEARER token", "token"), ("Bearer  token", " token")],
 )
-def test_bearer_scheme_is_case_insensitive_and_allows_multiple_spaces(
+def test_bearer_scheme_is_case_insensitive_and_preserves_token_whitespace(
     authorization: str,
+    token: str,
 ) -> None:
     source = SimpleNamespace(headers={"Authorization": authorization})
 
-    assert bearer_or_query_token(source) == "token"
+    assert bearer_or_query_token(source) == token
 
 
 def test_websocket_request_reads_query_token_from_target() -> None:
@@ -200,6 +202,17 @@ async def test_scripted_websocket_clears_receiving_after_cancellation() -> None:
     assert not websocket.receiving.is_set()
 
 
+async def test_scripted_websocket_rejects_send_closed_while_blocked() -> None:
+    websocket = ScriptedWebSocket()
+    websocket.send_allowed.clear()
+    sending = create_task(websocket.send_text("payload"))
+    await websocket.close()
+    websocket.send_allowed.set()
+
+    with pytest.raises(ConnectionError, match="closed"):
+        await sending
+
+
 async def test_await_cleanup_finishes_after_repeated_cancellation() -> None:
     release = Event()
 
@@ -217,6 +230,58 @@ async def test_await_cleanup_finishes_after_repeated_cancellation() -> None:
     with pytest.raises(CancelledError):
         await closing
     assert cleanup_task.result() is None
+
+
+async def test_await_cleanup_preserves_cancellation_and_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = Event()
+    loop_errors: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        get_running_loop(), "call_exception_handler", loop_errors.append
+    )
+
+    async def cleanup() -> None:
+        await release.wait()
+        msg = "cleanup failed"
+        raise RuntimeError(msg)
+
+    cleanup_task = create_task(cleanup())
+    closing = create_task(await_cleanup(cleanup_task))
+    await sleep(0)
+    closing.cancel()
+    await sleep(0)
+    release.set()
+
+    with pytest.raises(BaseExceptionGroup) as error:
+        await closing
+    await sleep(0)
+    assert [type(exc) for exc in error.value.exceptions] == [
+        CancelledError,
+        RuntimeError,
+    ]
+    assert loop_errors == []
+
+
+async def test_await_cleanup_remains_cancelled_when_cleanup_is_cancelled() -> None:
+    release = Event()
+
+    async def cleanup() -> None:
+        await release.wait()
+        raise CancelledError
+
+    cleanup_task = create_task(cleanup())
+    closing = create_task(await_cleanup(cleanup_task))
+    await sleep(0)
+    closing.cancel()
+    await sleep(0)
+    release.set()
+
+    with pytest.raises(CancelledError) as error:
+        await closing
+    assert closing.cancelled()
+    assert cleanup_task.cancelled()
+    assert isinstance(error.value.__cause__, CancelledError)
 
 
 def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
@@ -275,7 +340,7 @@ async def test_websockets_connection_requires_text_frames() -> None:
         await connection.receive_text()
 
 
-async def test_cancelled_websockets_send_closes_transport() -> None:
+async def test_cancelled_websockets_send_closes_transport_despite_close_error() -> None:
     started = Event()
 
     async def send(_payload: str) -> None:
@@ -284,6 +349,7 @@ async def test_cancelled_websockets_send_closes_transport() -> None:
 
     native = AsyncMock()
     native.send.side_effect = send
+    native.close.side_effect = RuntimeError("close failed")
     sending = create_task(WebsocketsConnection(native).send_text("payload"))
     await started.wait()
     sending.cancel()

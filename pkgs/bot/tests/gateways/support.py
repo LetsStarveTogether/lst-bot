@@ -26,7 +26,7 @@ def response(
     return AsyncHTTPResponse(
         body=(b"" if payload is None else dumpb(payload)) if body is None else body,
         status=status,
-        headers=headers or {"Content-Type": "application/json"},
+        headers=({"Content-Type": "application/json"} if headers is None else headers),
     )
 
 

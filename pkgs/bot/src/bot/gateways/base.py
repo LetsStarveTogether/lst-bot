@@ -7,7 +7,6 @@ from asyncio import (
     Task,
     create_task,
     get_running_loop,
-    shield,
     timeout,
     wait,
 )
@@ -141,10 +140,20 @@ async def await_cleanup(task: Task[None]) -> None:
     cancelled: CancelledError | None = None
     while not task.done():
         try:
-            await shield(task)
+            await wait((task,))
         except CancelledError as exc:
             cancelled = exc
-    await task
+    try:
+        await task
+    except CancelledError as cleanup_error:
+        if cancelled is None:
+            raise
+        raise cancelled from cleanup_error
+    except BaseException as cleanup_error:
+        if cancelled is None:
+            raise
+        msg = "Cleanup failed after cancellation"
+        raise BaseExceptionGroup(msg, [cancelled, cleanup_error]) from None
     if cancelled is not None:
         raise cancelled
 
@@ -213,8 +222,12 @@ class WebsocketsConnection:
         try:
             await self.websocket.send(payload)
         except CancelledError:
-            with suppress(Exception):
-                await await_cleanup(create_task(self.websocket.close()))
+
+            async def close() -> None:
+                with suppress(Exception):
+                    await self.websocket.close()
+
+            await await_cleanup(create_task(close()))
             raise
         except ConnectionClosed as exc:
             raise WebSocketClosedError(
@@ -265,6 +278,18 @@ class Connection:
         msg: MsgInput,
         **params: ActionParamInput,
     ) -> BaseModel:
+        if "detail_type" not in params:
+            targets = [
+                detail_type
+                for detail_type, fields in (
+                    ("channel", ("guild_id", "channel_id")),
+                    ("group", ("group_id",)),
+                    ("private", ("user_id",)),
+                )
+                if all(field in params for field in fields)
+            ]
+            if len(targets) == 1:
+                params["detail_type"] = targets[0]
         return await self.action(
             Action.SEND_MESSAGE,
             message=Msg.from_input(msg),
@@ -587,9 +612,7 @@ def bearer_or_query_token(source: object) -> str | None:
         if len(authorizations) != 1 or not isinstance(authorizations[0], str):
             return None
         scheme, separator, token = authorizations[0].partition(" ")
-        return (
-            token.lstrip(" ") if separator and scheme.casefold() == "bearer" else None
-        )
+        return token if separator and scheme.casefold() == "bearer" else None
 
     query_params = getattr(source, "query_params", None)
     values = _field_values(query_params, "access_token")
