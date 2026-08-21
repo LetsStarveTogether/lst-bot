@@ -1,10 +1,6 @@
 from bot import Retcode
 from pydantic import JsonValue
 
-from tests.gateways import support as gateway_support
-
-ActionServer = gateway_support.ActionServer
-
 
 def private_msg_payload(message: JsonValue = "hello") -> dict[str, JsonValue]:
     return {

@@ -21,8 +21,9 @@ from pydantic import JsonValue
 from robyn import Response, Robyn
 from robyn.testing import TestClient as RobynTestClient
 
+from tests.gateways.support import ActionServer
+
 from .support import (
-    ActionServer,
     friend_request_payload,
     group_request_payload,
     private_msg_payload,

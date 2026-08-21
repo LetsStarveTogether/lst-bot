@@ -25,7 +25,9 @@ from bot.gateways.onebot11 import (
 from pydantic import JsonValue, RootModel
 from urllib3_future import AsyncPoolManager
 
-from .support import ActionServer, action_response_payload
+from tests.gateways.support import ActionServer
+
+from .support import action_response_payload
 
 
 async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None:

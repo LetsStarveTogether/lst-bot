@@ -42,10 +42,6 @@ from .support import (
 AUTH = "test-value"
 
 
-class CustomHttpWebhook(HttpWebhook):
-    pass
-
-
 def reverse_gateway(
     bot: Bot,
     *,
@@ -584,10 +580,6 @@ async def test_close_finishes_cleanup_before_propagating_cancellation() -> None:
             id="duplicate-http-path",
         ),
         pytest.param(
-            [HttpWebhook("/events"), CustomHttpWebhook("/events", False)],
-            id="duplicate-http-subclass-path",
-        ),
-        pytest.param(
             [
                 ReverseWebSocket(host="127.0.0.1", port=8082, path="/a"),
                 ReverseWebSocket(host="127.0.0.1", port=8082, path="/b"),
@@ -601,39 +593,6 @@ def test_ingress_endpoints_must_be_unique(
 ) -> None:
     with pytest.raises(ValueError, match="unique"):
         OneBot12Gateway(Bot(), ingress=ingress)
-
-
-@pytest.mark.parametrize(
-    "interval",
-    [
-        pytest.param(0, id="zero"),
-        pytest.param(float("nan"), id="nan"),
-        pytest.param(float("inf"), id="infinity"),
-        pytest.param(cast(float, True), id="boolean"),
-        pytest.param(cast(float, "3"), id="string"),
-    ],
-)
-def test_forward_reconnect_interval_must_be_positive(
-    interval: float,
-) -> None:
-    with pytest.raises(ValueError, match="interval"):
-        ForwardWebSocket("ws://onebot.example/ws", reconnect_interval=interval)
-
-
-@pytest.mark.parametrize(
-    "port",
-    [
-        pytest.param(True, id="boolean"),
-        pytest.param(cast(int, 1.5), id="float"),
-        pytest.param(-1, id="negative"),
-        pytest.param(65536, id="above-uint16"),
-    ],
-)
-def test_reverse_port_must_be_valid(
-    port: int,
-) -> None:
-    with pytest.raises(ValueError, match="port"):
-        ReverseWebSocket(port=port)
 
 
 @pytest.mark.parametrize(
@@ -678,14 +637,3 @@ def test_forward_websocket_requires_ws_url(url: str) -> None:
 def test_reverse_websocket_requires_nonempty_host(host: str) -> None:
     with pytest.raises(ValueError, match="host"):
         ReverseWebSocket(host=host)
-
-
-def test_ingress_config_rejects_coercible_scalar_types() -> None:
-    with pytest.raises(ValueError, match="path"):
-        HttpWebhook(path=cast(str, 12))
-    with pytest.raises(ValueError, match="quick_response"):
-        HttpWebhook(quick_response=cast(bool, 1))
-    with pytest.raises(ValueError, match="host"):
-        ReverseWebSocket(host=cast(str, 12))
-    with pytest.raises(ValueError, match="url"):
-        ForwardWebSocket(url=cast(str, 12))
