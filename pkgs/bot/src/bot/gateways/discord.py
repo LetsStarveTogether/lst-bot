@@ -99,6 +99,8 @@ _GATEWAY_SYSTEM_RESERVE = 10
 _GATEWAY_WINDOW_SECONDS = 60.0
 _MAX_AUDIT_REASON_LENGTH = 512
 _MAX_REST_ATTEMPTS = 5
+_MAX_GLOBAL_REST_REQUESTS = 50
+_GLOBAL_REST_WINDOW_SECONDS = 1.0
 _RATE_BUCKET_IDLE_TTL = 60.0
 _RATE_BUCKET_PRUNE_INTERVAL = 10.0
 _RATE_BUCKET_PRUNE_THRESHOLD = 256
@@ -694,6 +696,11 @@ class DiscordRestClient:
         )
         self._next_bucket_prune_at = 0.0
         self._global_ready_at = dict.fromkeys(("authless", "bot", "interaction"), 0.0)
+        self._global_send_lock = Lock()
+        self._global_send_times = {
+            "authless": deque[float](),
+            "bot": deque[float](),
+        }
         self._closed = False
         self._accepting_requests = True
         self._rate_limit_interrupt = AsyncEvent()
@@ -791,6 +798,8 @@ class DiscordRestClient:
                     self._ensure_available(request)
                     await self._wait_for_rate_limit(bucket, lane=lane)
                     self._ensure_available(request)
+                    await self._wait_for_global_limit(lane)
+                    self._ensure_available(request)
                     try:
                         async with timeout(_API_TIMEOUT):
                             response, data = await self._request(request)
@@ -874,6 +883,8 @@ class DiscordRestClient:
             self._global_ready_at = dict.fromkeys(
                 ("authless", "bot", "interaction"), 0.0
             )
+            for send_times in self._global_send_times.values():
+                send_times.clear()
             self._interaction_callbacks.clear()
 
     async def start(self) -> None:
@@ -983,6 +994,32 @@ class DiscordRestClient:
             delay = ready_at - get_running_loop().time()
             if delay <= 0:
                 return
+            with suppress(TimeoutError):
+                async with timeout(delay):
+                    await self._rate_limit_interrupt.wait()
+                    return
+
+    async def _wait_for_global_limit(
+        self,
+        lane: Literal["authless", "bot", "interaction"],
+    ) -> None:
+        if lane == "interaction":
+            return
+        send_times = self._global_send_times[lane]
+        while True:
+            async with self._global_send_lock:
+                now = get_running_loop().time()
+                while send_times and now - send_times[0] >= _GLOBAL_REST_WINDOW_SECONDS:
+                    send_times.popleft()
+                delay = self._global_ready_at[lane] - now
+                if len(send_times) >= _MAX_GLOBAL_REST_REQUESTS:
+                    delay = max(
+                        delay,
+                        _GLOBAL_REST_WINDOW_SECONDS - (now - send_times[0]),
+                    )
+                if delay <= 0:
+                    send_times.append(now)
+                    return
             with suppress(TimeoutError):
                 async with timeout(delay):
                     await self._rate_limit_interrupt.wait()

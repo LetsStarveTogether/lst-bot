@@ -20,18 +20,24 @@ from bot.gateways.base import WebSocketClosedError
 from bot.gateways.discord import (
     DiscordAPIError,
     DiscordBytes,
+    DiscordChannel,
+    DiscordChannelList,
     DiscordGateway,
     DiscordGatewayFatalError,
     DiscordGatewayPayload,
+    DiscordGuildList,
+    DiscordGuildMember,
     DiscordGuildMemberEvent,
     DiscordHelloData,
     DiscordIntent,
     DiscordInteraction,
+    DiscordMemberList,
     DiscordMessage,
     DiscordNoContent,
     DiscordPayload,
     DiscordReady,
     DiscordRequest,
+    DiscordUser,
 )
 from bot.json import loads
 from bot.protocol.actions import ActionParamModel
@@ -1010,6 +1016,94 @@ async def test_sequence_commit_and_public_message_actions() -> None:
         )
 
 
+async def test_public_lookup_actions_map_endpoints_and_models() -> None:
+    guild = {"id": "10", "name": "guild", "icon": None, "features": []}
+    member = {"user": user(), "roles": []}
+    channel = {"id": "20", "type": 0}
+    cases = (
+        (
+            "get_self_info",
+            {},
+            response(200, user("1")),
+            DiscordUser,
+            "GET",
+            "/users/@me",
+        ),
+        (
+            "get_user_info",
+            {"user_id": "2"},
+            response(200, user()),
+            DiscordUser,
+            "GET",
+            "/users/2",
+        ),
+        (
+            "get_guild_list",
+            {},
+            response(200, [guild]),
+            DiscordGuildList,
+            "GET",
+            "/users/@me/guilds?limit=200",
+        ),
+        (
+            "get_guild_member_info",
+            {"guild_id": "10", "user_id": "2"},
+            response(200, member),
+            DiscordGuildMember,
+            "GET",
+            "/guilds/10/members/2",
+        ),
+        (
+            "get_guild_member_list",
+            {"guild_id": "10"},
+            response(200, [member]),
+            DiscordMemberList,
+            "GET",
+            "/guilds/10/members?limit=1000",
+        ),
+        (
+            "leave_guild",
+            {"guild_id": "10"},
+            response(204),
+            DiscordNoContent,
+            "DELETE",
+            "/users/@me/guilds/10",
+        ),
+        (
+            "get_channel_info",
+            {"guild_id": "10", "channel_id": "20"},
+            response(200, channel),
+            DiscordChannel,
+            "GET",
+            "/channels/20",
+        ),
+        (
+            "get_channel_list",
+            {"guild_id": "10"},
+            response(200, [channel]),
+            DiscordChannelList,
+            "GET",
+            "/guilds/10/channels",
+        ),
+    )
+    pool = Pool(*(reply for _, _, reply, _, _, _ in cases))
+    instance = gateway(pool)
+    connection = instance.connection_for(instance._self)
+
+    results = [
+        await connection.action(action, **params)
+        for action, params, _, _, _, _ in cases
+    ]
+
+    assert [type(result) for result in results] == [
+        expected for _, _, _, expected, _, _ in cases
+    ]
+    assert [
+        (method, url.removeprefix("https://discord.example/api/v10"))
+        for method, url, _ in pool.requests
+    ] == [(method, path) for _, _, _, _, method, path in cases]
+
+
 @pytest.mark.parametrize(
     ("action", "data"),
     [
@@ -1331,6 +1425,39 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
     bot_headers = cast(dict[str, str], pool.requests[-1][2]["headers"])
     assert "Authorization" not in token_headers
     assert bot_headers["Authorization"] == "Bot token"
+
+
+async def test_proactive_global_limit_exempts_interactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock()
+
+    class ExpiringTimeout:
+        def __init__(self, delay: float) -> None:
+            self.delay = delay
+
+        async def __aenter__(self) -> None:
+            clock.now += self.delay
+            raise TimeoutError
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object,
+        ) -> None:
+            pass
+
+    monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
+    monkeypatch.setattr(discord_module, "timeout", ExpiringTimeout)
+    rest = client(Pool())
+
+    for _ in range(discord_module._MAX_GLOBAL_REST_REQUESTS + 1):
+        await rest._wait_for_global_limit("bot")
+    assert clock.now == pytest.approx(1.0)
+    for _ in range(100):
+        await rest._wait_for_global_limit("interaction")
+    assert clock.now == pytest.approx(1.0)
 
 
 async def test_explicit_interaction_response_has_one_owner() -> None:
