@@ -1,31 +1,39 @@
 name: Test
 
 on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
   workflow_call:
 
 permissions: {}
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python-version }})
+    name: Test (Python 3.14)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version:
-          - "3.14"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup uv and Python
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
+
+      - name: Run checks
+        run: |
+          uv lock --check
+          uv run ruff format --check
+          uv run ruff check
+          uv run ty check
+          uv build --all-packages --no-create-gitignore --no-sources
 
       - name: Run tests
         run: uv run pytest
