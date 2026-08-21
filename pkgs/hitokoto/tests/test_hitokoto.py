@@ -8,6 +8,7 @@ from pathlib import Path
 from time import time
 from typing import Any, override
 
+import hitokoto.cache as cache_module
 import hitokoto.client as client_module
 import pytest
 from hitokoto import (
@@ -48,21 +49,25 @@ class RecordingPool(AsyncPoolManager):
         result = self.routes[url]
         if result is None:
             return await get_running_loop().create_future()
-        if isinstance(result, AsyncHTTPResponse | PendingBodyResponse):
+        if isinstance(result, AsyncHTTPResponse | RecordingResponse):
             return result
         payload = result if isinstance(result, bytes) else dumps(result).encode()
         return AsyncHTTPResponse(body=payload, status=200)
 
 
-class PendingBodyResponse:
-    def __init__(self, status: int) -> None:
+class RecordingResponse:
+    def __init__(self, status: int, body: bytes | None = None) -> None:
         self.status = status
+        self.body = body
         self.body_accessed = False
 
     @property
     def data(self) -> Future[bytes]:
         self.body_accessed = True
-        return get_running_loop().create_future()
+        future = get_running_loop().create_future()
+        if self.body is not None:
+            future.set_result(self.body)
+        return future
 
 
 def hitokoto_payload(text: str = "hello") -> dict[str, object]:
@@ -133,12 +138,8 @@ def test_client_requires_official_https_transport() -> None:
         HitokotoClient(bundle_url="http://bundle.test", http_pool=pool)
 
 
-async def test_client_rejects_error_status_without_reading_body(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(client_module, "HTTP_TIMEOUT_SECONDS", 0.01)
-    response = PendingBodyResponse(500)
+async def test_client_consumes_error_body_before_failing(tmp_path: Path) -> None:
+    response = RecordingResponse(500, b"error")
     pool = RecordingPool({f"{BUNDLE_URL}version.json": response})
 
     with pytest.raises(HTTPError, match="HTTP 500"):
@@ -148,12 +149,12 @@ async def test_client_rejects_error_status_without_reading_body(
             cache_path=tmp_path / "hitokoto.db",
         ).get_hitokoto()
 
-    assert response.body_accessed is False
+    assert response.body_accessed is True
 
 
 @pytest.mark.parametrize(
     "route",
-    [None, PendingBodyResponse(200)],
+    [None, RecordingResponse(200)],
     ids=["request", "body"],
 )
 async def test_client_applies_wall_clock_timeout_to_all_io(
@@ -172,7 +173,7 @@ async def test_client_applies_wall_clock_timeout_to_all_io(
                 cache_path=tmp_path / "hitokoto.db",
             ).get_hitokoto()
 
-    if isinstance(route, PendingBodyResponse):
+    if isinstance(route, RecordingResponse):
         assert route.body_accessed is True
 
 
@@ -213,6 +214,24 @@ async def test_real_sqlite_cache_rejects_an_empty_database(tmp_path: Path) -> No
 
     with pytest.raises(RuntimeError, match="no matching"):
         await read_cached_hitokoto(cache_path)
+
+
+async def test_random_cache_read_handles_sqlite_min_integer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "hitokoto.db"
+    await write_cache(cache_path, bundle())
+    # Force SQLite's signed random boundary.
+    open_read_only = cache_module._open_read_only  # ruff: ignore[private-member-access]
+
+    def open_with_min_random(path: Path) -> sqlite3.Connection:
+        db = open_read_only(path)
+        db.create_function("random", 0, lambda: -(1 << 63))
+        return db
+
+    monkeypatch.setattr(cache_module, "_open_read_only", open_with_min_random)
+    assert (await read_cached_hitokoto(cache_path)).hitokoto == "cached hello"
 
 
 async def test_cache_validity_handles_missing_and_current_database(
@@ -274,7 +293,7 @@ async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
     timestamp = time() - 73 * 60 * 60
     os.utime(cache_path, (timestamp, timestamp))
     pool = RecordingPool({
-        f"{BUNDLE_URL}version.json": PendingBodyResponse(503),
+        f"{BUNDLE_URL}version.json": RecordingResponse(503, b"error"),
     })
 
     result = await HitokotoClient(
@@ -312,12 +331,18 @@ async def test_bundle_allows_an_empty_part_when_another_has_sentences(
         ],
     }
     routes[f"{BUNDLE_URL}sentences/empty.json"] = []
+    pool = RecordingPool(routes)
     client = HitokotoClient(
         bundle_url=BUNDLE_URL,
-        http_pool=RecordingPool(routes),
+        http_pool=pool,
         cache_path=tmp_path / "hitokoto.db",
     )
 
     await client.get_hitokoto()
 
     assert await is_cache_valid(client.cache_path)
+    assert [call["url"] for call in pool.calls] == [
+        f"{BUNDLE_URL}version.json",
+        f"{BUNDLE_URL}sentences/a.json",
+        f"{BUNDLE_URL}sentences/empty.json",
+    ]

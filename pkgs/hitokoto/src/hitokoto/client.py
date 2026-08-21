@@ -106,7 +106,8 @@ class HitokotoClient:
                 HTTPMethod.GET,
                 url,
             )
+            body = await response.data
             if response.status != HTTPStatus.OK:
                 msg = f"Hitokoto request failed: HTTP {response.status}"
                 raise HTTPError(msg)
-            return await response.data
+            return body

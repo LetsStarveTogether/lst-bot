@@ -60,8 +60,7 @@ async def write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
 def _read_cached_hitokoto(cache_path: Path) -> Hitokoto:
     with closing(_open_read_only(cache_path)) as db:
         row = db.execute(
-            "SELECT payload FROM sentence LIMIT 1 OFFSET "
-            "abs(random()) % max((SELECT count(*) FROM sentence), 1)"
+            "SELECT payload FROM sentence ORDER BY random() LIMIT 1"
         ).fetchone()
     if row is None:
         msg = "hitokoto cache has no matching sentences"
