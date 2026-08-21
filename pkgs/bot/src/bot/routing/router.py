@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from operator import attrgetter
 
@@ -128,11 +128,7 @@ def admin_permission(
         return True
 
     sender = (event.model_extra or {}).get("sender")
-    role = sender.get("role") if isinstance(sender, Mapping) else None
-    return (
-        isinstance(event, GroupMessageEvent)
-        and isinstance(sender, Mapping)
-        and sender.get("user_id") == event.user_id
-        and isinstance(role, str)
-        and role in {"admin", "owner"}
-    )
+    match sender:
+        case {"user_id": user_id, "role": "admin" | "owner"}:
+            return isinstance(event, GroupMessageEvent) and user_id == event.user_id
+    return False

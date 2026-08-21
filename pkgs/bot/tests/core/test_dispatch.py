@@ -10,6 +10,7 @@ from bot import (
     ActionResponse,
     Bot,
     Cmd,
+    EventRouter,
     GroupMessageEvent,
     Injected,
     Msg,
@@ -290,6 +291,7 @@ async def test_dispatch_records_predicate_exceptions(
 
 async def test_dispatch_respects_priority_and_block() -> None:
     bot = Bot()
+    router = EventRouter()
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
@@ -297,9 +299,11 @@ async def test_dispatch_respects_priority_and_block() -> None:
     def late() -> None:
         seen.append("late")
 
-    @bot.on_msg(priority=1, block=True)
+    @router.on_msg(priority=1, block=True)
     def early() -> None:
         seen.append("early")
+
+    bot.add_router(router)
 
     async with bot:
         await bot.dispatch(gateway.connection, make_event("anything"))
