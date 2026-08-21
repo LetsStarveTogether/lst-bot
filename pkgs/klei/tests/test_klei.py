@@ -2,92 +2,112 @@ from __future__ import annotations
 
 import json as jsonlib
 from asyncio import Event, TaskGroup, timeout
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
+from dataclasses import dataclass
 from datetime import date
-from typing import Any, override
+from typing import Any, cast, override
+from unittest.mock import Mock
 
+import klei.client as client_module
 import pytest
 from klei import (
     KleiClient,
+    LobbyData,
     Platform,
-    Region,
-    Version,
-    VersionPage,
+    Secondary,
     VersionType,
 )
+from klei.models import KleiDataResponse
 from pydantic import JsonValue, SecretStr, ValidationError
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
-BUILD_URL = "https://build.example.test/versions.json"
 VERSION_URL = "https://forum.example.test/versions/"
-REGION_URL = "https://lobby.example.test/regions.json"
 LOBBY_URL = "https://lobby.example.test/{region}-{platform}.json.gz"
 ROOM_URL = "https://rooms.example.test/{region}/lobby/read"
 
 VERSION_HTML = """
-<h1>Don't Starve Together</h1>
-<a data-role="followButton"><span class="ipsCommentCount">262</span></a>
-<li class="cCmsRecord_row " data-rowID="2749">
-  <a href="https://forum.example.test/736805-r2749/"
-     class="cRelease" data-releaseID="2749" data-currentRelease>
-    <h3 class="ipsType_sectionHead ipsType_break">
-      736805 <span class="ipsBadge ipsBadge_positive">Release</span>
+<li class="cCmsRecord_row">
+  <a class="cRelease">
+    <h3 class="ipsType_sectionHead">
+      736805 <span class="ipsBadge">Release</span>
+    </h3>
+    <div class="ipsDataItem_meta">Released 06/10/26</div>
+  </a>
+</li>
+<li class="cCmsRecord_row">invalid row</li>
+<li class="cCmsRecord_row">
+  <a class="cRelease">
+    <h3 class="ipsType_sectionHead">
+      736959 <span class="ipsBadge">Release</span>
     </h3>
     <div class="ipsDataItem_meta">Released 06/11/26</div>
   </a>
 </li>
-<li class="cCmsRecord_row " data-rowID="2754">
-  <a href="https://forum.example.test/736959-r2754/"
-     class="cRelease" data-releaseID="2754" data-currentRelease>
-    <span class="ipsType_large cUpdate_hotfix" title="Hotfix"></span>
-    <h3 class="ipsType_sectionHead ipsType_break">
-      736959 <span class="ipsBadge ipsBadge_positive">Release</span>
-    </h3>
-    <div class="ipsDataItem_meta">Released 06/11/26</div>
-  </a>
-</li>
-<ul class="ipsPagination"><li>Page 1 of 35</li></ul>
 """
 
 
-class RecordingPool(AsyncPoolManager):
-    def __init__(self, routes: Mapping[str, object]) -> None:
+@dataclass(frozen=True)
+class Reply:
+    body: bytes
+    status: int = 200
+    entered: Event | None = None
+    release: Event | None = None
+    body_release: Event | None = None
+
+
+class Response:
+    def __init__(self, body: bytes, status: int, body_release: Event | None) -> None:
+        self.status = status
+        self._body = body
+        self._body_release = body_release
+        self.body_accessed = False
+
+    @property
+    def data(self) -> Awaitable[bytes]:
+        self.body_accessed = True
+        return self._read()
+
+    async def _read(self) -> bytes:
+        if self._body_release is not None:
+            await self._body_release.wait()
+        return self._body
+
+
+class RecordingPool:
+    def __init__(self, routes: Mapping[str, bytes | Reply]) -> None:
         self.routes = routes
         self.calls: list[dict[str, object]] = []
+        self.responses: list[Response] = []
         self.cleared = False
 
-    @override
     async def request(
         self,
         method: str,
         url: str,
-        body: Any = None,
-        fields: Any = None,
-        headers: Mapping[str, str] | None = None,
-        json: Any = None,
-        **urlopen_kw: Any,
+        **kwargs: Any,
     ) -> Any:
-        _ = body, headers, urlopen_kw
         call: dict[str, object] = {"method": method, "url": url}
-        if fields is not None:
-            call["fields"] = list(fields)
-        if json is not None:
+        if (json := kwargs.get("json")) is not None:
             call["json"] = json
         self.calls.append(call)
-        result = self.routes[url]
-        if isinstance(result, Exception):
-            raise result
-        body = result if isinstance(result, bytes) else jsonlib.dumps(result).encode()
-        return AsyncHTTPResponse(body=body)
 
-    @override
+        result = self.routes[url]
+        reply = result if isinstance(result, Reply) else Reply(result)
+        if reply.entered is not None:
+            reply.entered.set()
+        if reply.release is not None:
+            await reply.release.wait()
+        response = Response(reply.body, reply.status, reply.body_release)
+        self.responses.append(response)
+        return response
+
     async def clear(self) -> None:
         self.cleared = True
 
 
 class BlockingPool(RecordingPool):
-    def __init__(self, routes: Mapping[str, object], limit: int) -> None:
+    def __init__(self, routes: Mapping[str, bytes | Reply], limit: int) -> None:
         super().__init__(routes)
         self.limit = limit
         self.active = 0
@@ -95,27 +115,28 @@ class BlockingPool(RecordingPool):
         self.saturated = Event()
         self.release = Event()
 
-    async def request(
-        self,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
+    @override
+    async def request(self, *args: Any, **kwargs: Any) -> Any:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         if self.active == self.limit:
             self.saturated.set()
         try:
             await self.release.wait()
+            return await super().request(*args, **kwargs)
         finally:
             self.active -= 1
-        return await super().request(*args, **kwargs)
 
 
-def lobby_row() -> dict[str, JsonValue]:
+def lobby_row(
+    row_id: str = "row-1",
+    *,
+    name: str = "DST cluster",
+) -> dict[str, JsonValue]:
     return {
-        "__rowId": "row-1",
+        "__rowId": row_id,
         "__addr": "127.0.0.1",
-        "name": "DST cluster",
+        "name": name,
         "port": 10999,
         "host": "host-ku",
         "connected": 3,
@@ -139,9 +160,11 @@ def lobby_row() -> dict[str, JsonValue]:
     }
 
 
-def room_row() -> dict[str, JsonValue]:
+def room_row(
+    row_id: str = "row-1", *, name: str = "DST cluster"
+) -> dict[str, JsonValue]:
     return {
-        **lobby_row(),
+        **lobby_row(row_id, name=name),
         "tick": 12_345,
         "clientmodsoff": False,
         "nat": 1,
@@ -157,165 +180,236 @@ def client(
     pool: RecordingPool,
     *,
     lobby_concurrency: int = 8,
+    room_concurrency: int = 24,
+    http_timeout: float = 1.0,
 ) -> KleiClient:
     return KleiClient(
         access_token=SecretStr("test-token"),
-        build_url=BUILD_URL,
         version_url=VERSION_URL,
-        region_url=REGION_URL,
         lobby_url=LOBBY_URL,
         room_url=ROOM_URL,
         lobby_concurrency=lobby_concurrency,
-        http_pool=pool,
+        room_concurrency=room_concurrency,
+        http_timeout=http_timeout,
+        http_pool=cast("AsyncPoolManager", pool),
     )
 
 
-def test_version_page_parses_and_orders_valid_rows() -> None:
-    page = VersionPage.model_validate(VERSION_HTML)
+async def test_client_reads_only_consumed_version_fields() -> None:
+    pool = RecordingPool({VERSION_URL: VERSION_HTML.encode()})
 
-    assert page.title == "Don't Starve Together"
-    assert page.page == 1
-    assert page.page_count == 35
-    assert page.followers == 262
-    assert [version.number for version in page.versions] == [736959, 736805]
-    assert page.versions[0].type is VersionType.RELEASE
-    assert page.versions[0].date == date(2026, 6, 11)
-    assert page.versions[0].release_id == 2754
-    assert page.versions[0].row_id == 2754
-    assert page.versions[0].is_current_release is True
-    assert page.versions[0].is_hotfix is True
-    assert Version.parse_date("6/12/26") == date(2026, 6, 12)
+    versions = await client(pool).get_latest_versions()
 
-
-def test_version_page_uses_fallbacks_and_omits_invalid_rows() -> None:
-    page = VersionPage.model_validate("""
-        <title>Fallback title</title>
-        <a data-role="followButton"><span class="ipsCommentCount">1,262</span></a>
-        <li class="cCmsRecord_row">missing required nodes</li>
-        <li class="cCmsRecord_row " data-rowID="not-a-number">
-          <a href="https://forum.example.test/736959-r2754/" class="cRelease"
-             data-releaseID="also-bad">
-            <h3 class="ipsType_sectionHead ipsType_break">
-              736959 <span class="ipsBadge ipsBadge_positive">Release</span>
-            </h3>
-            <div class="ipsDataItem_meta">Released 06/11/26</div>
-          </a>
-        </li>
-    """)
-
-    assert page.title == "Fallback title"
-    assert page.page is page.page_count is None
-    assert page.followers == 1262
-    assert len(page.versions) == 1
-    assert page.versions[0].row_id is page.versions[0].release_id is None
-
-
-async def test_client_reads_public_metadata_endpoints() -> None:
-    pool = RecordingPool({
-        BUILD_URL: {"release": ["2", "10"]},
-        VERSION_URL: VERSION_HTML.encode(),
-        REGION_URL: {"LobbyRegions": [{"Region": "us-east-1"}, {"Region": "eu"}]},
-    })
-
-    async with client(pool) as value:
-        latest = await value.get_latest_version_number()
-        page = await value.get_version_page()
-        versions = await value.get_latest_versions()
-        regions = await value.get_regions()
-
-    assert latest == 10
-    assert page.versions == versions
-    assert regions == ["us-east-1", "eu"]
-    assert [call["url"] for call in pool.calls] == [
-        BUILD_URL,
-        VERSION_URL,
-        VERSION_URL,
-        REGION_URL,
+    assert [version.number for version in versions] == [736959, 736805]
+    assert versions[0].type is VersionType.RELEASE
+    assert versions[0].date == date(2026, 6, 11)
+    assert set(versions[0].model_dump()) == {"number", "type", "date"}
+    assert pool.calls == [
+        {
+            "method": "GET",
+            "url": VERSION_URL,
+        }
     ]
-    assert pool.cleared is True
 
 
-async def test_client_parses_lobby_and_room_payloads_through_public_api() -> None:
-    lobby_url = LOBBY_URL.format(region=Region.US_EAST, platform=Platform.Steam.name)
-    room_url = ROOM_URL.format(region=Region.US_EAST)
+async def test_client_parses_dynamic_region_lobby_and_room() -> None:
+    region = "sa-east-1"
+    lobby_url = LOBBY_URL.format(region=region, platform=Platform.Steam.name)
+    room_url = ROOM_URL.format(region=region)
     pool = RecordingPool({
         lobby_url: rows_payload([lobby_row(), {"__rowId": "invalid"}]),
         room_url: rows_payload([{"__rowId": "invalid"}, room_row()]),
     })
 
-    async with client(pool) as value:
-        lobbies = await value.get_lobby_data(
-            regions=(Region.US_EAST,),
-            platforms=(Platform.Steam,),
-        )
-        rooms = await value.get_room_data(((lobbies[0].row_id, Region.US_EAST),))
+    value = client(pool)
+    lobbies = await value.get_lobby_data(
+        regions=(region,),
+        platforms=(Platform.Steam,),
+    )
+    rooms = await value.get_room_data(((lobbies[0].row_id, region),))
 
     assert len(lobbies) == 1
-    assert lobbies[0].region is Region.US_EAST
+    assert lobbies[0].region == region
     assert lobbies[0].platform is Platform.Steam
-    assert lobbies[0].connect_code == "c_connect('127.0.0.1', 10999)"
     assert len(rooms) == 1
     assert rooms[0].tick == 12_345
-    assert rooms[0].desc == "A room"
     assert pool.calls[1]["json"] == {
         "__gameId": "DontStarveTogether",
         "__token": "test-token",
         "query": {"__rowId": "row-1"},
     }
-    assert pool.cleared is True
 
 
-@pytest.mark.parametrize("resource", ["lobby", "room"], ids=["lobby", "room"])
-async def test_client_omits_http_failures_and_closes_pool(resource: str) -> None:
-    lobby_url = LOBBY_URL.format(region=Region.US_EAST, platform=Platform.Steam.name)
-    room_url = ROOM_URL.format(region=Region.US_EAST)
+async def test_non_success_http_status_fails_before_parsing_body() -> None:
+    pool = RecordingPool({VERSION_URL: Reply(VERSION_HTML.encode(), status=500)})
+
+    with pytest.raises(HTTPError, match="HTTP 500"):
+        await client(pool).get_latest_versions()
+
+    assert pool.responses[0].body_accessed is False
+
+
+@pytest.mark.parametrize("stage", ["request", "body"])
+async def test_request_has_wall_clock_timeout(stage: str) -> None:
+    blocked = Event()
     pool = RecordingPool({
-        lobby_url: HTTPError("lobby offline"),
-        room_url: HTTPError("room offline"),
+        VERSION_URL: Reply(
+            VERSION_HTML.encode(),
+            release=blocked if stage == "request" else None,
+            body_release=blocked if stage == "body" else None,
+        )
     })
 
-    async with client(pool) as value:
-        if resource == "lobby":
-            result = await value.get_lobby_data(
-                regions=(Region.US_EAST,),
-                platforms=(Platform.Steam,),
-            )
-        else:
-            result = await value.get_room_data((("row-1", Region.US_EAST),))
-
-    assert result == []
-    assert pool.cleared is True
+    async with timeout(1):
+        with pytest.raises(TimeoutError):
+            await client(pool, http_timeout=0.01).get_latest_versions()
 
 
-async def test_client_propagates_invalid_payload_and_closes_pool() -> None:
-    pool = RecordingPool({BUILD_URL: b"not-json"})
+async def test_client_clears_only_its_own_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    borrowed = RecordingPool({})
+    async with client(borrowed):
+        pass
+    assert borrowed.cleared is False
+
+    owned = RecordingPool({})
+    monkeypatch.setattr(client_module, "AsyncPoolManager", Mock(return_value=owned))
+    async with KleiClient(SecretStr("token")):
+        pass
+    assert owned.cleared is True
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"lobby_concurrency": 0},
+        {"room_concurrency": 0},
+        {"lobby_concurrency": True},
+        {"room_concurrency": 1.0},
+        {"http_timeout": 0},
+        {"http_timeout": float("nan")},
+        {"http_timeout": float("inf")},
+    ],
+)
+def test_client_limits_are_strict_positive_finite(kwargs: Any) -> None:
+    with pytest.raises(ValidationError):
+        KleiClient(SecretStr("token"), **kwargs)
+
+
+async def test_client_strictly_validates_platform_filters() -> None:
+    value = client(RecordingPool({}))
 
     with pytest.raises(ValidationError):
-        async with client(pool) as value:
-            await value.get_latest_version_number()
-
-    assert pool.cleared is True
+        await value.get_lobby_data(platforms=("Steam",))  # ty: ignore[invalid-argument-type]
 
 
-async def test_lobby_concurrency_never_exceeds_configured_limit() -> None:
-    regions = (Region.US_EAST, Region.EU_CENTRAL)
-    platforms = (Platform.Steam, Platform.PSN)
-    routes = {
-        LOBBY_URL.format(region=region, platform=platform.name): rows_payload([])
+async def test_lobby_limit_is_global_across_concurrent_batches() -> None:
+    regions = ("us-east-1", "eu-central-1", "sa-east-1", "ca-central-1")
+    routes: dict[str, bytes] = {
+        LOBBY_URL.format(region=region, platform=Platform.Steam.name): rows_payload([])
         for region in regions
-        for platform in platforms
     }
     pool = BlockingPool(routes, limit=2)
 
     async with client(pool, lobby_concurrency=2) as value, TaskGroup() as tasks:
-        task = tasks.create_task(
-            value.get_lobby_data(regions=regions, platforms=platforms),
+        first = tasks.create_task(
+            value.get_lobby_data(
+                regions=regions[:2],
+                platforms=(Platform.Steam,),
+            )
+        )
+        second = tasks.create_task(
+            value.get_lobby_data(
+                regions=regions[2:],
+                platforms=(Platform.Steam,),
+            )
         )
         async with timeout(1):
             await pool.saturated.wait()
         assert pool.max_active == 2
         pool.release.set()
 
-    assert task.result() == []
+    assert first.result() == second.result() == []
     assert len(pool.calls) == 4
-    assert pool.cleared is True
+
+
+async def test_batches_keep_input_order_when_requests_finish_out_of_order() -> None:
+    regions = ("sa-east-1", "ca-central-1")
+    first_lobby_release = Event()
+    second_lobby_entered = Event()
+    first_room_release = Event()
+    second_room_entered = Event()
+    lobby_urls = [
+        LOBBY_URL.format(region=region, platform=Platform.Steam.name)
+        for region in regions
+    ]
+    room_urls = [ROOM_URL.format(region=region) for region in regions]
+    pool = RecordingPool({
+        lobby_urls[0]: Reply(
+            rows_payload([lobby_row("lobby-1")]),
+            release=first_lobby_release,
+        ),
+        lobby_urls[1]: Reply(
+            rows_payload([lobby_row("lobby-2")]),
+            entered=second_lobby_entered,
+        ),
+        room_urls[0]: Reply(
+            rows_payload([room_row("room-1")]),
+            release=first_room_release,
+        ),
+        room_urls[1]: Reply(
+            rows_payload([room_row("room-2")]),
+            entered=second_room_entered,
+        ),
+    })
+
+    value = client(pool)
+    async with TaskGroup() as tasks:
+        lobby_task = tasks.create_task(
+            value.get_lobby_data(
+                regions=regions,
+                platforms=(Platform.Steam,),
+            )
+        )
+        try:
+            async with timeout(1):
+                await second_lobby_entered.wait()
+        finally:
+            first_lobby_release.set()
+    lobbies = lobby_task.result()
+
+    async with TaskGroup() as tasks:
+        room_task = tasks.create_task(
+            value.get_room_data((("room-1", regions[0]), ("room-2", regions[1])))
+        )
+        try:
+            async with timeout(1):
+                await second_room_entered.wait()
+        finally:
+            first_room_release.set()
+    rooms = room_task.result()
+
+    assert [lobby.row_id for lobby in lobbies] == ["lobby-1", "lobby-2"]
+    assert [room.row_id for room in rooms] == ["room-1", "room-2"]
+
+
+def test_response_envelope_and_lobby_bounds_are_validated() -> None:
+    with pytest.raises(ValidationError):
+        KleiDataResponse[LobbyData].model_validate({})
+
+    for changes in (
+        {"port": 0},
+        {"port": 65536},
+        {"connected": -1},
+        {"maxconnections": -1},
+        {"connected": 7},
+    ):
+        with pytest.raises(ValidationError):
+            LobbyData.model_validate(
+                lobby_row() | changes,
+                context={"region": "us-east-1"},
+            )
+
+    with pytest.raises(ValidationError):
+        Secondary.model_validate({"id": "secondary", "port": 0})

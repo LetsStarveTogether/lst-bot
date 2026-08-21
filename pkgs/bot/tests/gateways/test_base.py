@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, create_task, gather
+from asyncio import CancelledError, create_task, gather, get_running_loop, timeout
 from contextlib import suppress
+from gc import collect
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from bot import ActionResponse, Bot, BotSelf, Gateway
+from bot.gateways import base as base_module
 from bot.gateways.base import (
+    HttpAction,
     WebSocketActionManager,
+    WebSocketClosedError,
     WebsocketsConnection,
     bearer_or_query_token,
+    connect_websocket,
     header_value,
     request_target_path,
     token_matches,
@@ -17,25 +23,7 @@ from bot.gateways.base import (
 from bot.testing import ScriptedWebSocket
 from robyn import Headers
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
-from websockets.typing import Data
-
-
-class NativeWebSocket:
-    def __init__(self, *payloads: str | bytes | BaseException) -> None:
-        self.payloads = list(payloads)
-        self.sent: list[str] = []
-
-    async def recv(self) -> Data:
-        payload = self.payloads.pop(0)
-        if isinstance(payload, BaseException):
-            raise payload
-        return payload
-
-    async def send(self, message: str) -> None:
-        self.sent.append(message)
-
-    async def close(self) -> None:
-        pass
+from websockets.frames import Close
 
 
 class MultiValueFields:
@@ -136,42 +124,80 @@ def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
 
 
 @pytest.mark.parametrize(
-    "value",
+    ("action_type", "args"),
     [
+        pytest.param(WebSocketActionManager, (), id="websocket"),
+        pytest.param(HttpAction, ("https://onebot.example",), id="http"),
+    ],
+)
+@pytest.mark.parametrize(
+    "timeout",
+    [
+        pytest.param(True, id="boolean"),
+        pytest.param("30", id="string"),
         pytest.param(0, id="zero"),
         pytest.param(-1, id="negative"),
         pytest.param(float("nan"), id="nan"),
         pytest.param(float("inf"), id="infinity"),
     ],
 )
-def test_websocket_action_manager_rejects_invalid_timeout(value: float) -> None:
-    with pytest.raises(ValueError, match="finite and positive"):
-        WebSocketActionManager(value)
+def test_action_rejects_invalid_timeout(
+    action_type: type[HttpAction | WebSocketActionManager],
+    args: tuple[str, ...],
+    timeout: object,
+) -> None:
+    with pytest.raises(ValueError, match="Input should be"):
+        action_type(*args, timeout=timeout)  # ty: ignore[invalid-argument-type]
 
 
 async def test_websockets_connection_requires_text_frames() -> None:
-    native = NativeWebSocket("text", b"binary")
+    native = AsyncMock()
+    native.recv.side_effect = ["text", b"binary"]
     connection = WebsocketsConnection(native)
 
     await connection.send_text("sent")
+    await connection.close(4000)
 
-    assert native.sent == ["sent"]
+    native.send.assert_awaited_once_with("sent")
+    native.close.assert_awaited_once_with(code=4000)
     assert await connection.receive_text() == "text"
     with pytest.raises(TypeError, match="text frame"):
         await connection.receive_text()
+
+
+async def test_connect_websocket_passes_explicit_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = AsyncMock()
+    mocked_connect = AsyncMock(return_value=native)
+    monkeypatch.setattr(base_module, "connect", mocked_connect)
+
+    connection = await connect_websocket(
+        "wss://gateway.example",
+        None,
+        proxy="http://proxy.example",
+    )
+
+    assert connection.websocket is native
+    mocked_connect.assert_awaited_once_with(
+        "wss://gateway.example",
+        additional_headers=None,
+        proxy="http://proxy.example",
+        max_size=2**20,
+    )
 
 
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
         pytest.param(
-            ConnectionClosedOK(None, None),
+            ConnectionClosedOK(Close(1000, "done"), None),
             StopAsyncIteration,
             id="clean-close",
         ),
         pytest.param(
-            ConnectionClosedError(None, None),
-            ConnectionError,
+            ConnectionClosedError(Close(4008, "rate limited"), None),
+            WebSocketClosedError,
             id="error-close",
         ),
     ],
@@ -180,10 +206,22 @@ async def test_websockets_connection_normalizes_close(
     error: BaseException,
     expected: type[BaseException],
 ) -> None:
-    connection = WebsocketsConnection(NativeWebSocket(error))
+    native = AsyncMock()
+    native.recv.side_effect = error
+    connection = WebsocketsConnection(native)
 
-    with pytest.raises(expected):
+    with pytest.raises(expected) as received:
         await connection.receive_text()
+    assert received.value.__cause__ is error
+    if isinstance(received.value, WebSocketClosedError):
+        assert received.value.code == 4008
+
+    native.send.side_effect = error
+    with pytest.raises(expected) as sent:
+        await connection.send_text("payload")
+    assert sent.value.__cause__ is error
+    if isinstance(sent.value, WebSocketClosedError):
+        assert sent.value.code == 4008
 
 
 async def test_disconnect_fails_action_and_manager_recovers() -> None:
@@ -197,8 +235,9 @@ async def test_disconnect_fails_action_and_manager_recovers() -> None:
         await old_websocket.sent.get()
         manager.unregister(old_session)
 
-    with pytest.raises(ConnectionError):
-        await gather(manager.request(self_, lambda echo: echo), disconnect())
+    async with timeout(2):
+        with pytest.raises(ConnectionError):
+            await gather(manager.request(self_, lambda echo: echo), disconnect())
 
     websocket = ScriptedWebSocket()
     session = manager.register(websocket)
@@ -208,12 +247,13 @@ async def test_disconnect_fails_action_and_manager_recovers() -> None:
         echo = await websocket.sent.get()
         assert manager.receive(session, ActionResponse.ok({"ok": True}, echo=echo))
 
-    response, _ = await gather(manager.request(self_, lambda echo: echo), respond())
+    async with timeout(2):
+        response, _ = await gather(manager.request(self_, lambda echo: echo), respond())
 
     assert response.data == {"ok": True}
 
 
-async def test_websocket_action_manager_requires_one_bound_session() -> None:
+async def test_websocket_action_manager_prefers_latest_bound_session() -> None:
     manager = WebSocketActionManager(timeout=1)
     self_ = BotSelf(platform="test", user_id="bot")
     first = ScriptedWebSocket()
@@ -227,11 +267,22 @@ async def test_websocket_action_manager_requires_one_bound_session() -> None:
     manager.bind_self(first_session, self_)
     manager.bind_self(second_session, self_)
 
-    with pytest.raises(LookupError):
-        await manager.request(self_, lambda echo: echo)
+    async def respond_latest() -> None:
+        echo = await second.sent.get()
+        assert manager.receive(second_session, ActionResponse.ok(echo=echo))
 
+    async with timeout(2):
+        await gather(manager.request(self_, lambda echo: echo), respond_latest())
     assert first.sent.empty()
-    assert second.sent.empty()
+
+    manager.unregister(second_session)
+
+    async def respond_fallback() -> None:
+        echo = await first.sent.get()
+        assert manager.receive(first_session, ActionResponse.ok(echo=echo))
+
+    async with timeout(2):
+        await gather(manager.request(self_, lambda echo: echo), respond_fallback())
 
 
 async def test_websocket_action_response_must_come_from_request_session() -> None:
@@ -251,7 +302,8 @@ async def test_websocket_action_response_must_come_from_request_session() -> Non
         assert manager.receive(session_a, response) is True
         assert manager.receive(session_a, response) is False
 
-    await gather(manager.request(self_a, lambda echo: echo), respond())
+    async with timeout(2):
+        await gather(manager.request(self_a, lambda echo: echo), respond())
 
 
 async def test_websocket_action_timeout_covers_send_and_recovers() -> None:
@@ -262,8 +314,9 @@ async def test_websocket_action_timeout_covers_send_and_recovers() -> None:
     session = manager.register(websocket)
     manager.bind_self(session, self_)
 
-    with pytest.raises(TimeoutError):
-        await manager.request(self_, lambda echo: echo)
+    async with timeout(1):
+        with pytest.raises(TimeoutError):
+            await manager.request(self_, lambda echo: echo)
 
     websocket.send_allowed.set()
 
@@ -271,7 +324,39 @@ async def test_websocket_action_timeout_covers_send_and_recovers() -> None:
         echo = await websocket.sent.get()
         assert manager.receive(session, ActionResponse.ok(echo=echo))
 
-    await gather(manager.request(self_, lambda echo: echo), respond())
+    async with timeout(2):
+        await gather(manager.request(self_, lambda echo: echo), respond())
+
+
+async def test_send_failure_consumes_concurrent_disconnect_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = WebSocketActionManager(timeout=1)
+    self_ = BotSelf(platform="test", user_id="bot")
+    websocket = ScriptedWebSocket()
+    session = manager.register(websocket)
+    manager.bind_self(session, self_)
+    contexts: list[dict[str, object]] = []
+
+    def fail_send(_payload: str) -> None:
+        manager.unregister(session)
+        raise BrokenPipeError
+
+    monkeypatch.setattr(websocket, "send_text", AsyncMock(side_effect=fail_send))
+    loop = get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+    try:
+        with pytest.raises(BrokenPipeError):
+            await manager.request(self_, lambda echo: echo)
+        collect()
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert not any(
+        context.get("message") == "Future exception was never retrieved"
+        for context in contexts
+    )
 
 
 async def test_cancelled_websocket_action_rejects_late_response() -> None:
@@ -282,7 +367,8 @@ async def test_cancelled_websocket_action_rejects_late_response() -> None:
     manager.bind_self(session, self_)
     task = create_task(manager.request(self_, lambda echo: echo))
     try:
-        echo = await websocket.sent.get()
+        async with timeout(0.1):
+            echo = await websocket.sent.get()
         task.cancel()
         with pytest.raises(CancelledError):
             await task
@@ -306,8 +392,9 @@ async def test_fail_all_rejects_pending_and_future_requests() -> None:
         await websocket.sent.get()
         manager.fail_all()
 
-    with pytest.raises(ConnectionError):
-        await gather(manager.request(self_, lambda echo: echo), fail())
+    async with timeout(2):
+        with pytest.raises(ConnectionError):
+            await gather(manager.request(self_, lambda echo: echo), fail())
 
     with pytest.raises(LookupError):
         await manager.request(self_, lambda echo: echo)

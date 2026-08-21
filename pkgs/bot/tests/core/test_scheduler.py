@@ -100,6 +100,58 @@ async def test_bot_lifecycle_starts_ticks_and_cancels_the_running_handler() -> N
     assert cancelled.is_set()
 
 
+async def test_cron_handler_cannot_close_its_bot() -> None:
+    bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
+    sleep = use_scripted_time(bot)
+    rejected = Event()
+
+    @bot.on_cron("* * * * *", self_=None)
+    async def shutdown() -> None:
+        with pytest.raises(RuntimeError, match="scheduled handler"):
+            await bot.close()
+        with pytest.raises(RuntimeError, match="cannot close themselves"):
+            await bot.scheduler.jobs[0].close()
+        rejected.set()
+
+    await bot.start()
+    await sleep.advance()
+    await wait_for(rejected.wait(), timeout=1)
+    await bot.close()
+
+
+@pytest.mark.parametrize(
+    ("now", "expr", "expected_delay"),
+    [
+        (
+            datetime(2026, 3, 8, 1, 59, tzinfo=ZoneInfo("America/New_York")),
+            "0 3 * * *",
+            60,
+        ),
+        (
+            datetime(2026, 11, 1, 0, 59, tzinfo=ZoneInfo("America/New_York")),
+            "0 2 * * *",
+            7260,
+        ),
+    ],
+)
+async def test_cron_delay_uses_absolute_time_across_dst(
+    now: datetime,
+    expr: str,
+    expected_delay: int,
+) -> None:
+    bot = Bot(scheduler_timezone=now.tzinfo)
+    sleep = ScriptedSleep()
+    bot.scheduler.clock = lambda _: now
+    bot.scheduler.sleep = sleep
+    bot.on_cron(expr, self_=None)(lambda: None)
+
+    await bot.start()
+    delay, _ = await sleep.next_call()
+    await bot.close()
+
+    assert delay == expected_delay
+
+
 async def test_recent_account_job_uses_the_latest_dispatched_event() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)

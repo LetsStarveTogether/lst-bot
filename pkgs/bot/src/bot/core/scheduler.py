@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, Task, create_task
+from asyncio import CancelledError, Task, create_task, current_task, gather
 from asyncio import sleep as async_sleep
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, cast
@@ -25,6 +25,18 @@ logger = Logger(__name__)
 
 type Sleep = Callable[[float], Awaitable[object]]
 type Clock = Callable[[tzinfo], datetime]
+
+CURRENT_SCHEDULER_BOT: ContextVar[object | None] = ContextVar(
+    "bot_current_scheduler",
+    default=None,
+)
+
+
+def _raise_errors(message: str, errors: list[BaseException]) -> None:
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(message, errors)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,16 +72,25 @@ class CronJob:
             self._runner = create_task(self._run())
 
     async def close(self) -> None:
-        tasks = (self._runner, self._running)
+        tasks = tuple(
+            task for task in (self._runner, self._running) if task is not None
+        )
+        if current_task() in tasks:
+            msg = "Scheduled jobs cannot close themselves"
+            raise RuntimeError(msg)
         for task in tasks:
-            if task is not None and not task.done():
+            if not task.done():
                 task.cancel()
-        for task in tasks:
-            if task is not None:
-                with suppress(CancelledError):
-                    await task
+        results = await gather(*tasks, return_exceptions=True)
         self._runner = None
         self._running = None
+        errors = [
+            result
+            for result in results
+            if isinstance(result, BaseException)
+            and not isinstance(result, CancelledError)
+        ]
+        _raise_errors("Scheduled job shutdown failed", errors)
 
     async def _run(self) -> None:
         while True:
@@ -84,7 +105,7 @@ class CronJob:
                     job=self,
                     next_at=next_at,
                 )
-            await self.sleep(max(0, (next_at - now).total_seconds()))
+            await self.sleep(max(0, next_at.timestamp() - now.timestamp()))
             await self._trigger()
 
     async def _trigger(self) -> None:
@@ -125,6 +146,7 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
+        token = CURRENT_SCHEDULER_BOT.set(self.bot)
         try:
             if __debug__:
                 logger.debug("scheduled job run: {job}", job=self)
@@ -140,6 +162,8 @@ class CronJob:
             )
         else:
             logger.info("scheduled job done: {job}", job=self)
+        finally:
+            CURRENT_SCHEDULER_BOT.reset(token)
 
     async def _call_handler(
         self,
@@ -272,8 +296,13 @@ class CronScheduler:
 
     async def close(self) -> None:
         self._running = False
+        errors: list[BaseException] = []
         for job in self._jobs:
-            await job.close()
+            try:
+                await job.close()
+            except BaseException as exc:
+                errors.append(exc)
+        _raise_errors("Scheduler shutdown failed", errors)
 
     def _timezone(self, timezone: str | None) -> tzinfo:
         if timezone is not None:

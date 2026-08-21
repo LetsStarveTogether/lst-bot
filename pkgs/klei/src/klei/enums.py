@@ -1,4 +1,7 @@
 from enum import Flag, StrEnum
+from typing import Annotated
+
+from pydantic import StringConstraints
 
 
 class Platform(Flag):
@@ -12,34 +15,10 @@ class Platform(Flag):
     Switch = 0b100000
 
 
-class Region(StrEnum):
-    US_EAST = "us-east-1"
-    EU_CENTRAL = "eu-central-1"
-    AP_SOUTHEAST = "ap-southeast-1"
-    AP_EAST = "ap-east-1"
-
-
-class Role(StrEnum):
-    WILSON = "wilson"
-    WILLOW = "willow"
-    WENDY = "wendy"
-    WOLFGANG = "wolfgang"
-    WX78 = "wx78"
-    WICKERBOTTOM = "wickerbottom"
-    WES = "wes"
-    WAXWELL = "waxwell"
-    WOODIE = "woodie"
-    WATHGRITHR = "wathgrithr"
-    WEBBER = "webber"
-    WINONA = "winona"
-    WORTOX = "wortox"
-    WORMWOOD = "wormwood"
-    WARLY = "warly"
-    WURT = "wurt"
-    WALTER = "walter"
-    WANDA = "wanda"
-    WONKEY = "wonkey"
-    UNKNOWN = ""
+type Region = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)+$"),
+]
 
 
 class Season(StrEnum):
@@ -57,7 +36,6 @@ class VersionType(StrEnum):
 __all__ = [
     "Platform",
     "Region",
-    "Role",
     "Season",
     "VersionType",
 ]

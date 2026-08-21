@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from asyncio import Event as AsyncEvent
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from functools import partial
 from types import TracebackType
 from typing import Any, Self
 
 import uvloop
 from bot import Bot, BotSelf, Event, Injected
+from bot.gateways.base import connect_websocket
+from bot.gateways.discord import DiscordGateway, DiscordIntent
 from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAction
+from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
 from klei import KleiClient
 from logbook import Logger
@@ -69,27 +73,55 @@ def build_application(settings: Settings) -> Application:
         dispatch_timeout=settings.bot_timeout,
         scheduler_timezone=settings.bot_timezone,
     )
-    gateway = OneBot11Gateway(
-        bot,
-        ingress=[
-            ForwardWebSocket(
-                settings.onebot_ws_url,
-                role="universal",
-                self_=BotSelf(platform="qq", user_id=settings.onebot_self_id),
+    http_pool = AsyncProxyManager(settings.http_proxy)
+    if settings.onebot_ws_url:
+        onebot_self = BotSelf(platform="qq", user_id=settings.onebot_self_id)
+        bot.add_gateway(
+            OneBot11Gateway(
+                bot,
+                ingress=[
+                    ForwardWebSocket(
+                        settings.onebot_ws_url,
+                        role="universal",
+                        self_=onebot_self,
+                    )
+                ],
+                action=WebSocketAction(),
+                access_token=settings.onebot_access_token,
             )
-        ],
-        action=WebSocketAction(),
-        access_token=settings.onebot_access_token,
-    )
-    bot.add_gateway(gateway)
+        )
+        if settings.report_group_id:
+            bot.on_cron(
+                "0 0,8-23 * * *",
+                self_=onebot_self,
+                gateway=OneBot11Gateway,
+            )(report)
+    if settings.telegram_bot_token.get_secret_value():
+        bot.add_gateway(
+            TelegramGateway(
+                bot,
+                token=settings.telegram_bot_token,
+                http_pool=http_pool,
+            )
+        )
+    if settings.discord_bot_token.get_secret_value():
+        bot.add_gateway(
+            DiscordGateway(
+                bot,
+                token=settings.discord_bot_token,
+                intents=DiscordIntent(settings.discord_intents),
+                http_pool=http_pool,
+                websocket_connector=partial(
+                    connect_websocket, proxy=settings.http_proxy
+                ),
+            )
+        )
 
     lst_client = LstClient()
-    hitokoto_client = HitokotoClient(
-        http_pool=AsyncProxyManager(settings.http_proxy),
-    )
+    hitokoto_client = HitokotoClient(http_pool=http_pool)
     klei_client = KleiClient(
         access_token=settings.klei_access_token,
-        http_pool=AsyncProxyManager(settings.http_proxy),
+        http_pool=http_pool,
     )
     question_agent = DstQuestionAgent(
         openrouter_api_key=settings.openrouter_api_key,
@@ -109,7 +141,6 @@ def build_application(settings: Settings) -> Application:
 
     for router in (general_router, question_router, rooms_router):
         bot.add_router(router)
-    bot.on_cron("0 0,8-23 * * *")(report)
 
     @bot.on_event()
     def log_event(event: Injected[Event]) -> None:
@@ -118,7 +149,7 @@ def build_application(settings: Settings) -> Application:
 
     return Application(
         bot,
-        resources=(hitokoto_client, klei_client, question_agent),
+        resources=(http_pool, question_agent),
     )
 
 

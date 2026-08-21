@@ -10,8 +10,7 @@ dependencies = [
     "logbook>=1.9.2",
     "orjson>=3.11.9",
     "pydantic>=2.13.4",
-    "python-ulid>=3.1.0",
-    "robyn[pydantic]>=0.84.0",
+    "robyn>=0.84.0",
     "urllib3-future>=2.21.902",
     "websockets>=16.0",
 ]

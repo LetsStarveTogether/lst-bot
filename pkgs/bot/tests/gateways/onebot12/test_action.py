@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from asyncio import Event as AsyncEvent
+from asyncio import timeout
 from http import HTTPStatus
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from bot import ActionResponse, ApiStatus, Bot
@@ -110,18 +114,41 @@ async def test_gateway_does_not_close_borrowed_http_pool() -> None:
     assert len(server.requests) == 2
 
 
-async def test_closed_gateway_rejects_actions() -> None:
-    async with ActionServer(ACTION_RESPONSE) as server:
-        bot = Bot()
-        gateway = OneBot12Gateway(
-            bot,
-            action=HttpAction(f"{server.base_url}/action?source=test"),
-        )
-        bot.add_gateway(gateway)
-        connection = gateway.connection_for(SELF)
+async def test_http_action_timeout_includes_response_body() -> None:
+    pool = AsyncMock(spec=AsyncPoolManager)
+    pool.request.return_value = SimpleNamespace(
+        status=HTTPStatus.OK,
+        headers={"Content-Type": "application/json"},
+        data=AsyncEvent().wait(),
+    )
+    bot = Bot()
+    gateway = OneBot12Gateway(
+        bot,
+        action=HttpAction(
+            "http://onebot.example/action",
+            timeout=0.01,
+            http_pool=cast(AsyncPoolManager, pool),
+        ),
+    )
+    bot.add_gateway(gateway)
 
+    async with timeout(1):
         async with bot:
-            pass
+            with pytest.raises(TimeoutError):
+                await gateway.connection_for(SELF).action("get_version")
 
-        with pytest.raises(RuntimeError, match="gateway is closed"):
-            await connection.action("get_version")
+
+async def test_closed_gateway_rejects_actions() -> None:
+    bot = Bot()
+    gateway = OneBot12Gateway(
+        bot,
+        action=HttpAction("http://127.0.0.1:1/action"),
+    )
+    bot.add_gateway(gateway)
+    connection = gateway.connection_for(SELF)
+
+    async with bot:
+        pass
+
+    with pytest.raises(RuntimeError, match="gateway is closed"):
+        await connection.action("get_version")

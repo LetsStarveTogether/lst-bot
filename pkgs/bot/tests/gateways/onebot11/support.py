@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from typing import cast
-
 from bot import Retcode
 from pydantic import JsonValue
 
 from tests.gateways import support as gateway_support
 
 ActionServer = gateway_support.ActionServer
-
-_DEFAULT_RESPONSE_DATA = object()
 
 
 def private_msg_payload(message: JsonValue = "hello") -> dict[str, JsonValue]:
@@ -30,17 +26,6 @@ def private_msg_payload(message: JsonValue = "hello") -> dict[str, JsonValue]:
             "sex": "unknown",
             "age": 18,
         },
-    }
-
-
-def group_msg_payload(message: JsonValue = "hello") -> dict[str, JsonValue]:
-    return {
-        **private_msg_payload(message),
-        "message_type": "group",
-        "sub_type": "normal",
-        "message_id": 13,
-        "group_id": 20000,
-        "anonymous": None,
     }
 
 
@@ -69,18 +54,14 @@ def group_request_payload() -> dict[str, JsonValue]:
 
 
 def action_response_payload(
-    data: JsonValue | object = _DEFAULT_RESPONSE_DATA,
+    data: JsonValue,
     *,
     echo: str | None = None,
 ) -> dict[str, JsonValue]:
     payload: dict[str, JsonValue] = {
         "status": "ok",
         "retcode": Retcode.OK,
-        "data": (
-            {"message_id": 1}
-            if data is _DEFAULT_RESPONSE_DATA
-            else cast(JsonValue, data)
-        ),
+        "data": data,
     }
     if echo is not None:
         payload["echo"] = echo

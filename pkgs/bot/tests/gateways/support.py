@@ -9,12 +9,29 @@ from typing import Self, cast
 
 import orjson
 from pydantic import JsonValue
+from urllib3_future import AsyncHTTPResponse
 
 _DEFAULT_ACTION_RESPONSE: JsonValue = {
     "status": "ok",
     "retcode": 0,
     "data": {"message_id": 1},
 }
+
+
+def response(
+    status: int,
+    payload: JsonValue = None,
+    *,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> AsyncHTTPResponse:
+    return AsyncHTTPResponse(
+        body=(b"" if payload is None else orjson.dumps(payload))
+        if body is None
+        else body,
+        status=status,
+        headers=headers or {"Content-Type": "application/json"},
+    )
 
 
 @dataclass(frozen=True, slots=True)

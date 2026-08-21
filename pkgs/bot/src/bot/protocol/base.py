@@ -12,6 +12,7 @@ class Model(BaseModel):
     model_config = ConfigDict(
         allow_inf_nan=False,
         extra="allow",
+        hide_input_in_errors=True,
         populate_by_name=True,
         serialize_by_alias=True,
     )

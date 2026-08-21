@@ -21,6 +21,10 @@ from pydantic import ValidationError
             {"platform": "qq..guild", "user_id": "10000"},
             id="empty-name-component",
         ),
+        pytest.param(
+            {"platform": "qq\n", "user_id": "10000"},
+            id="trailing-newline",
+        ),
     ],
 )
 def test_bot_self_rejects_invalid_platform_name(payload: object) -> None:

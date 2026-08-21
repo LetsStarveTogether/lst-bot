@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from bot import Bot
 from bot.testing import private_message_event, recording_gateway
-from klei import KleiClient, Platform, Region, RoomData
+from klei import KleiClient, Platform, RoomData
 from lst import LstClient
 from support import room_data
 
@@ -62,11 +62,7 @@ def test_format_lobby_data(data: RoomData, verbose: bool, expected: str) -> None
 
 async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     bot = Bot()
-    settings = Settings(
-        _env_file=None,
-        onebot_self_id="bot",
-        klei_host_id="wanted",
-    )
+    settings = Settings(_env_file=None, klei_host_id="wanted")
     client = Mock(spec_set=KleiClient)
     client.get_lobby_data.return_value = [
         room_data(row_id="1", host="wanted"),
@@ -88,7 +84,7 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     room_data_call = client.get_room_data.await_args
     assert room_data_call is not None
     room_refs = list(room_data_call.args[0])
-    assert room_refs == [("1", Region.AP_EAST)]
+    assert room_refs == [("1", "ap-east-1")]
     result = results[0].values[0]
     assert isinstance(result, str)
     assert "Alpha" in result
@@ -115,7 +111,7 @@ async def test_admin_room_commands_dispatch_to_lst(
     expected_args: tuple[object, ...],
     expected_reply: str,
 ) -> None:
-    bot = Bot(admin_ids={"admin"})
+    bot = Bot(admin_ids={"test": {"admin"}})
     client = Mock(spec_set=LstClient)
     bot.container.add_instance(client, provides=LstClient)
     bot.add_router(router)

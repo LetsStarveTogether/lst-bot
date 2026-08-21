@@ -27,13 +27,25 @@ class Event(Model):
     sub_type: StrictStr
     self_: BotSelf = Field(alias="self")
 
+    def __repr_args__(  # ruff: ignore[bad-dunder-method-name] - Pydantic's repr hook
+        self,
+    ) -> list[tuple[str | None, object]]:
+        return [
+            (name, value)
+            for name, value in super().__repr_args__()
+            if name in type(self).model_fields
+        ]
+
     def __str__(self) -> str:
         parts = [f"{self.type}/{self.detail_type}#{self.id}"]
 
-        guild_id = getattr(self, "guild_id", None)
-        channel_id = getattr(self, "channel_id", None)
-        group_id = getattr(self, "group_id", None)
-        user_id = getattr(self, "user_id", None)
+        fields = type(self).model_fields
+        guild_id = getattr(self, "guild_id", None) if "guild_id" in fields else None
+        channel_id = (
+            getattr(self, "channel_id", None) if "channel_id" in fields else None
+        )
+        group_id = getattr(self, "group_id", None) if "group_id" in fields else None
+        user_id = getattr(self, "user_id", None) if "user_id" in fields else None
         if guild_id and channel_id:
             parts.append(f"channel:{guild_id}/{channel_id}")
         elif group_id:
@@ -43,7 +55,9 @@ class Event(Model):
         elif user_id:
             parts.append(f"user:{user_id}")
 
-        alt_message = getattr(self, "alt_message", "")
+        alt_message = (
+            getattr(self, "alt_message", "") if "alt_message" in fields else ""
+        )
         if isinstance(alt_message, str) and alt_message:
             text = " ".join(alt_message.split())
             if text:
@@ -248,6 +262,8 @@ def _event_tag(value: object) -> EventTag:
         return EventTag.NOTICE_EXTENSION
     if event_type == EventKind.REQUEST:
         return EventTag.REQUEST_EXTENSION
+    if event_type == EventKind.MESSAGE:
+        return EventTag.MESSAGE_EXTENSION
     return EventTag.EXTENSION
 
 
@@ -309,6 +325,7 @@ type EventPayloadVariant = Annotated[
     ]
     | Annotated[FriendRequestEvent, Tag(EventTag.REQUEST_FRIEND)]
     | Annotated[GroupRequestEvent, Tag(EventTag.REQUEST_GROUP)]
+    | Annotated[MessageEvent, Tag(EventTag.MESSAGE_EXTENSION)]
     | Annotated[RequestEvent, Tag(EventTag.REQUEST_EXTENSION)]
     | Annotated[NoticeEvent, Tag(EventTag.NOTICE_EXTENSION)]
     | Annotated[ConnectMetaEvent, Tag(EventTag.META_CONNECT)]

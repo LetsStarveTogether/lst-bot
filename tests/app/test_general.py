@@ -23,7 +23,6 @@ def version(number: int, version_type: VersionType) -> Version:
         number=number,
         type=version_type,
         date=date(2026, 8, number),
-        url=f"https://example.test/{number}",
     )
 
 
@@ -107,12 +106,7 @@ async def test_report_uses_injected_settings_for_room_and_message_targets() -> N
     ]
     klei.get_room_data.return_value = [room_data(row_id="1")]
     gateway = RecordingGateway(bot)
-    settings = Settings(
-        _env_file=None,
-        onebot_self_id="bot",
-        klei_host_id="wanted",
-        report_group_id="group",
-    )
+    settings = Settings(_env_file=None, klei_host_id="wanted", report_group_id="group")
 
     await report(hitokoto, klei, gateway.connection, settings)
 

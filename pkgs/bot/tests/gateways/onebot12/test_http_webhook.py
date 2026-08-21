@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from asyncio import Event as AsyncEvent
-from asyncio import QueueFull, TaskGroup
+from asyncio import QueueFull, TaskGroup, timeout
 from http import HTTPStatus
 from typing import override
+from unittest.mock import AsyncMock, patch
 
 import orjson
 import pytest
 from bot import (
+    ActionResponse,
     Bot,
     Connection,
     Event,
@@ -22,7 +24,7 @@ from bot.routing import DispatchResult
 from robyn import Robyn
 from robyn.testing import TestClient as RobynTestClient
 
-from .support import private_message_payload
+from .support import ObservableReadinessBot, private_message_payload
 
 IDENTITY_HEADERS = {
     "Content-Type": "application/json",
@@ -57,22 +59,11 @@ class ImmediateBot(Bot):
         pass
 
 
-class ObservableReadinessBot(Bot):
-    def __init__(self) -> None:
-        super().__init__()
-        self.waiting = AsyncEvent()
-
-    @override
-    async def wait_until_running(self) -> None:
-        self.waiting.set()
-        await super().wait_until_running()
-
-
 def mounted_client(
     bot: Bot,
     *,
     token: str | None = None,
-) -> tuple[OneBot12Gateway, RobynTestClient]:
+) -> RobynTestClient:
     app = Robyn(__file__)
     gateway = OneBot12Gateway(
         bot,
@@ -80,9 +71,8 @@ def mounted_client(
         access_token=token,
     )
     bot.add_gateway(gateway)
-    assert gateway.mount(app) is app
-    assert gateway.mount(app) is app
-    return gateway, RobynTestClient(app)
+    gateway.mount(app)
+    return RobynTestClient(app)
 
 
 async def test_http_dispatch_returns_quick_actions_with_explicit_null() -> None:
@@ -99,7 +89,7 @@ async def test_http_dispatch_returns_quick_actions_with_explicit_null() -> None:
         assert connection.self_.user_id == "10000"
         return ["pong", ReturnAction.call("vendor.test", {"optional": None})]
 
-    async with bot:
+    async with timeout(1), bot:
         response = await gateway.handle_http(
             EventPayload.model_validate(private_message_payload())
         )
@@ -124,6 +114,27 @@ async def test_http_dispatch_returns_quick_actions_with_explicit_null() -> None:
     ]
 
 
+async def test_http_can_disable_quick_actions() -> None:
+    bot = Bot()
+    gateway = OneBot12Gateway(bot)
+    bot.add_gateway(gateway)
+
+    @bot.on_msg(block=True)
+    def reply() -> str:
+        return "pong"
+
+    request_action = AsyncMock(return_value=ActionResponse.ok())
+    with patch.object(gateway, "request_action", request_action):
+        async with timeout(1), bot:
+            response = await gateway.handle_http(
+                EventPayload.model_validate(private_message_payload()),
+                quick_response=False,
+            )
+
+    assert response.status_code == HTTPStatus.NO_CONTENT
+    request_action.assert_awaited_once()
+
+
 async def test_http_event_waits_for_bot_startup() -> None:
     bot = ObservableReadinessBot()
     gateway = OneBot12Gateway(bot)
@@ -134,7 +145,7 @@ async def test_http_event_waits_for_bot_startup() -> None:
     def collect() -> None:
         received.set()
 
-    async with TaskGroup() as tasks:
+    async with timeout(1), TaskGroup() as tasks:
         request = tasks.create_task(
             gateway.handle_http(EventPayload.model_validate(private_message_payload()))
         )
@@ -158,7 +169,7 @@ async def test_http_quick_action_context_expires_with_response() -> None:
     completed = AsyncEvent()
     errors: list[type[Exception]] = []
 
-    async with TaskGroup() as tasks:
+    async with timeout(1), TaskGroup() as tasks:
 
         @bot.on_msg(block=True)
         def reply_later(connection: Injected[Connection]) -> None:
@@ -186,7 +197,7 @@ async def test_http_quick_action_context_expires_with_response() -> None:
 
 def test_http_webhook_dispatches_through_robyn_test_client() -> None:
     bot = ImmediateBot()
-    _, client = mounted_client(bot)
+    client = mounted_client(bot)
 
     with client:
         response = client.post(
@@ -228,7 +239,7 @@ def test_http_webhook_authentication(
     query: dict[str, str],
     status: HTTPStatus,
 ) -> None:
-    _, client = mounted_client(ImmediateBot(), token=AUTH)
+    client = mounted_client(ImmediateBot(), token=AUTH)
 
     with client:
         response = client.post(
@@ -259,7 +270,7 @@ def test_http_webhook_authentication(
 def test_http_webhook_requires_onebot12_identity(
     headers: dict[str, str],
 ) -> None:
-    _, client = mounted_client(ImmediateBot())
+    client = mounted_client(ImmediateBot())
 
     with client:
         response = client.post(
@@ -281,7 +292,7 @@ def test_http_webhook_requires_onebot12_identity(
 def test_http_webhook_requires_json_content_type(
     content_type: str | None,
 ) -> None:
-    _, client = mounted_client(ImmediateBot())
+    client = mounted_client(ImmediateBot())
     headers = {"X-OneBot-Version": "12", "X-Impl": "test"}
     if content_type is not None:
         headers["Content-Type"] = content_type
@@ -317,7 +328,7 @@ def test_http_webhook_requires_json_content_type(
     ],
 )
 def test_http_webhook_rejects_non_event_bodies(body: bytes) -> None:
-    _, client = mounted_client(ImmediateBot())
+    client = mounted_client(ImmediateBot())
 
     with client:
         response = client.post(
@@ -330,7 +341,7 @@ def test_http_webhook_rejects_non_event_bodies(body: bytes) -> None:
 
 
 def test_http_webhook_maps_dispatch_overload_to_503() -> None:
-    _, client = mounted_client(ImmediateBot(overloaded=True))
+    client = mounted_client(ImmediateBot(overloaded=True))
 
     with client:
         response = client.post(

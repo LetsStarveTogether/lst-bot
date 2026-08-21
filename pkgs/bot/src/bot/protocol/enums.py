@@ -114,6 +114,7 @@ class EventTag(StrEnum):
     MESSAGE_PRIVATE = "message:private"
     MESSAGE_GROUP = "message:group"
     MESSAGE_CHANNEL = "message:channel"
+    MESSAGE_EXTENSION = "message:extension"
     REQUEST_FRIEND = "request:friend"
     REQUEST_GROUP = "request:group"
     NOTICE_FRIEND_INCREASE = "notice:friend_increase"

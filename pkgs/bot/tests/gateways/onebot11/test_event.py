@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import cast
+from uuid import UUID
 
 import pytest
 from bot import (
@@ -16,7 +17,6 @@ from bot import (
 )
 from bot.gateways.onebot11 import decode_event
 from pydantic import JsonValue
-from ulid import ULID
 
 from .support import private_msg_payload
 
@@ -162,6 +162,12 @@ def test_official_extension_notices_are_validated_and_preserved(
             file={"id": "f", "name": "x", "size": True, "busid": 2},
         ),
         notice_payload(
+            "group_upload",
+            group_id=20000,
+            user_id=42,
+            file={"id": "f", "name": "x", "size": -1, "busid": 2},
+        ),
+        notice_payload(
             "group_admin",
             sub_type="bad",
             group_id=20000,
@@ -173,6 +179,14 @@ def test_official_extension_notices_are_validated_and_preserved(
             group_id=20000,
             user_id=42,
             duration=60,
+        ),
+        notice_payload(
+            "group_ban",
+            sub_type="ban",
+            group_id=20000,
+            operator_id=7,
+            user_id=42,
+            duration=-1,
         ),
         notice_payload(
             "notify",
@@ -190,8 +204,10 @@ def test_official_extension_notices_are_validated_and_preserved(
     ids=[
         "group-upload-file-id",
         "group-upload-file-size",
+        "group-upload-negative-size",
         "group-admin-subtype",
         "group-ban-operator",
+        "group-ban-negative-duration",
         "notify-poke-target",
         "notify-honor-type",
     ],
@@ -420,8 +436,15 @@ def test_private_message_decodes_cq_and_generates_event_id() -> None:
     )
 
     assert isinstance(converted, PrivateMessageEvent)
-    assert str(converted.message) == "hi[x]"
-    assert str(ULID.from_str(converted.id)) == converted.id
+    assert converted.message.model_dump(mode="json") == [
+        {"type": "text", "data": {"text": "hi[x]"}},
+        {"type": "mention", "data": {"user_id": "100"}},
+        {
+            "type": "image",
+            "data": {"file_id": "1.jpg", "url": "http://x"},
+        },
+    ]
+    assert str(UUID(converted.id)) == converted.id
 
 
 def test_cq_parameters_are_unescaped_once() -> None:
@@ -441,8 +464,30 @@ def test_message_segment_rejects_non_object_data(data: JsonValue) -> None:
         event(private_msg_payload([{"type": "text", "data": data}]))
 
 
-def test_message_segment_accepts_null_data() -> None:
-    converted = event(private_msg_payload([{"type": "text", "data": None}]))
-
-    assert isinstance(converted, PrivateMessageEvent)
-    assert converted.message.text == ""
+@pytest.mark.parametrize(
+    "segment",
+    [
+        pytest.param({"type": "text", "data": None}, id="text-missing"),
+        pytest.param({"type": "text", "data": {"text": {}}}, id="text-object"),
+        pytest.param({"type": "at", "data": {"qq": True}}, id="mention-boolean"),
+        pytest.param({"type": "at", "data": {"qq": []}}, id="mention-array"),
+        pytest.param(
+            {"type": "image", "data": {"file": False}},
+            id="media-boolean",
+        ),
+        pytest.param(
+            {"type": "image", "data": {"file": []}},
+            id="media-array",
+        ),
+        pytest.param({"type": "reply", "data": {"id": {}}}, id="reply-object"),
+        pytest.param(
+            {"type": "location", "data": {"lat": 1, "lon": 2, "title": []}},
+            id="location-title-array",
+        ),
+    ],
+)
+def test_message_segment_rejects_invalid_scalar_fields(
+    segment: dict[str, JsonValue],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        event(private_msg_payload([segment]))

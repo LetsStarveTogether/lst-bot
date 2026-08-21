@@ -1,129 +1,67 @@
 from __future__ import annotations
 
-from contextlib import aclosing
-from datetime import UTC, datetime, timedelta
+import sqlite3
+from asyncio import to_thread
+from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
-
-import apsw
+from tempfile import NamedTemporaryFile
+from time import time
 
 from .enums import HitokotoType
-from .models import Hitokoto, HitokotoBundle
+from .models import Hitokoto
 
-CACHE_MAX_AGE = timedelta(hours=72)
+
+def _open_read_only(cache_path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"{cache_path.resolve().as_uri()}?mode=ro", uri=True)
+
+
+def _is_cache_valid(cache_path: Path) -> bool:
+    try:
+        if not 0 <= time() - cache_path.stat().st_mtime <= 72 * 60 * 60:
+            return False
+        with closing(_open_read_only(cache_path)) as db:
+            return db.execute("SELECT 1 FROM sentence LIMIT 1").fetchone() is not None
+    except OSError, sqlite3.Error:
+        return False
 
 
 async def is_cache_valid(cache_path: Path) -> bool:
-    try:
-        async with aclosing(
-            await apsw.Connection.as_async(
-                str(cache_path),
-                flags=apsw.SQLITE_OPEN_READONLY,
-            ),
-        ) as db:
-            cursor = await db.execute("SELECT updated_at FROM version")
-            row = await cursor.fetchone()
-    except apsw.Error:
-        return False
-
-    if row is None:
-        return False
-
-    try:
-        updated_at = datetime.fromisoformat(row[0])
-    except TypeError, ValueError:
-        return False
-
-    return datetime.now(UTC) - updated_at <= CACHE_MAX_AGE
+    return await to_thread(_is_cache_valid, cache_path)
 
 
-async def write_cache(cache_path: Path, bundle: HitokotoBundle) -> None:
+def _write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = cache_path.with_name(f"{cache_path.name}.tmp")
-    temp_path.unlink(missing_ok=True)
+    with NamedTemporaryFile(
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+        dir=cache_path.parent,
+        delete=False,
+    ) as temp:
+        temp_path = Path(temp.name)
     try:
-        async with aclosing(await apsw.Connection.as_async(str(temp_path))) as db, db:
-            await db.execute("PRAGMA foreign_keys = ON")
-            await db.execute(
-                "CREATE TABLE version ("
-                "protocol_version TEXT NOT NULL,"
-                "bundle_version TEXT NOT NULL,"
-                "updated_at TEXT NOT NULL"
-                ");"
-                "CREATE TABLE category ("
-                "id INTEGER PRIMARY KEY,"
-                "key TEXT NOT NULL UNIQUE,"
-                "name TEXT NOT NULL,"
-                "description TEXT NOT NULL,"
-                "path TEXT NOT NULL,"
-                "created_at TEXT NOT NULL,"
-                "updated_at TEXT NOT NULL"
-                ");"
+        with closing(sqlite3.connect(temp_path)) as db, db:
+            db.executescript(
                 "CREATE TABLE sentence ("
                 "id INTEGER PRIMARY KEY,"
                 "uuid TEXT NOT NULL UNIQUE,"
                 "hitokoto TEXT NOT NULL,"
-                "type TEXT NOT NULL REFERENCES category(key),"
+                "type TEXT NOT NULL,"
                 "source TEXT NOT NULL,"
                 "from_who TEXT,"
                 "creator TEXT NOT NULL,"
                 "creator_uid INTEGER NOT NULL,"
                 "reviewer INTEGER NOT NULL,"
                 "commit_from TEXT NOT NULL,"
-                "created_at TEXT NOT NULL,"
-                "length INTEGER NOT NULL"
+                "created_at TEXT NOT NULL"
                 ");"
                 "CREATE INDEX idx_sentence_type ON sentence(type);",
             )
-            await db.execute(
-                "INSERT INTO version ("
-                "protocol_version,"
-                "bundle_version,"
-                "updated_at"
-                ") VALUES (?, ?, ?)",
-                (
-                    bundle.protocol_version,
-                    bundle.bundle_version,
-                    datetime.now(UTC).isoformat(),
-                ),
-            )
-            await db.executemany(
-                "INSERT INTO category ("
-                "id,"
-                "key,"
-                "name,"
-                "description,"
-                "path,"
-                "created_at,"
-                "updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    (
-                        item.id,
-                        item.key.value,
-                        item.name,
-                        item.desc,
-                        item.path,
-                        item.created_at.isoformat(),
-                        item.updated_at.isoformat(),
-                    )
-                    for item in bundle.categories
-                ),
-            )
-            await db.executemany(
+            db.executemany(
                 "INSERT INTO sentence ("
-                "id,"
-                "uuid,"
-                "hitokoto,"
-                "type,"
-                "source,"
-                "from_who,"
-                "creator,"
-                "creator_uid,"
-                "reviewer,"
-                "commit_from,"
-                "created_at,"
-                "length"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "id, uuid, hitokoto, type, source, from_who, creator, creator_uid, "
+                "reviewer, commit_from, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     (
                         item.id,
@@ -137,9 +75,8 @@ async def write_cache(cache_path: Path, bundle: HitokotoBundle) -> None:
                         item.reviewer,
                         item.commit_from,
                         item.created_at.isoformat(),
-                        item.length,
                     )
-                    for item in bundle.sentences
+                    for item in sentences
                 ),
             )
         temp_path.replace(cache_path)
@@ -147,70 +84,37 @@ async def write_cache(cache_path: Path, bundle: HitokotoBundle) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+async def write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
+    await to_thread(_write_cache, cache_path, sentences)
+
+
+def _read_cached_hitokoto(
+    cache_path: Path,
+    types: tuple[HitokotoType, ...],
+) -> Hitokoto:
+    query = (
+        "SELECT id, uuid, hitokoto, type, source AS [from], from_who, creator, "
+        "creator_uid, reviewer, commit_from, created_at FROM sentence"
+    )
+    params = tuple(item.value for item in types)
+    placeholders = ", ".join("?" for _ in params)
+    query += f" WHERE type IN ({placeholders})" if params else ""
+    query += " ORDER BY RANDOM() LIMIT 1"
+
+    with closing(_open_read_only(cache_path)) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(query, params).fetchone()
+    if row is None:
+        msg = "hitokoto cache has no matching sentences"
+        raise RuntimeError(msg)
+    return Hitokoto.model_validate(dict(row))
+
+
 async def read_cached_hitokoto(
     cache_path: Path,
     types: tuple[HitokotoType, ...],
 ) -> Hitokoto:
-    type_values = tuple(item.value for item in types)
-    query = (
-        "SELECT "
-        "id,"
-        "uuid,"
-        "hitokoto,"
-        "type,"
-        "source AS [from],"
-        "from_who,"
-        "creator,"
-        "creator_uid,"
-        "reviewer,"
-        "commit_from,"
-        "created_at "
-        "FROM sentence "
-        "ORDER BY RANDOM() "
-        "LIMIT 1"
-    )
-    params: tuple[str, ...] = ()
-    if type_values:
-        placeholders = ", ".join("?" for _ in type_values)
-        query = (
-            "SELECT "  # ruff:ignore[hardcoded-sql-expression]
-            "id,"
-            "uuid,"
-            "hitokoto,"
-            "type,"
-            "source AS [from],"
-            "from_who,"
-            "creator,"
-            "creator_uid,"
-            "reviewer,"
-            "commit_from,"
-            "created_at "
-            "FROM sentence "
-            f"WHERE type IN ({placeholders}) "
-            "ORDER BY RANDOM() "
-            "LIMIT 1"
-        )
-        params = type_values
-
-    async with aclosing(
-        await apsw.Connection.as_async(
-            str(cache_path),
-            flags=apsw.SQLITE_OPEN_READONLY,
-        ),
-    ) as db:
-        cursor = await db.execute(query, params)
-        row = await cursor.fetchone()
-        if row is not None:
-            columns = (column[0] for column in cursor.description)
-            payload = dict(zip(columns, row, strict=True))
-            payload["created_at"] = datetime.fromisoformat(
-                str(payload["created_at"]),
-            )
-
-    if row is None:
-        msg = "hitokoto cache has no matching sentences"
-        raise RuntimeError(msg)
-    return Hitokoto.model_validate(payload)
+    return await to_thread(_read_cached_hitokoto, cache_path, types)
 
 
 __all__ = ["is_cache_valid", "read_cached_hitokoto", "write_cache"]

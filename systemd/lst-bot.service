@@ -1,6 +1,6 @@
 [Unit]
 Description=lst-bot
-After=network-online.target napcat.service
+After=network-online.target
 Requires=network-online.target network-pre.target
 
 [Service]

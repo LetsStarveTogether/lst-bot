@@ -3,6 +3,7 @@ from __future__ import annotations
 from asyncio import gather, timeout
 from unittest.mock import AsyncMock
 
+import orjson
 import pytest
 from bot import Bot, BotSelf
 from bot.gateways.onebot11 import (
@@ -18,6 +19,8 @@ from bot.gateways.onebot12 import WebSocketAction as OneBot12WebSocketAction
 from bot.testing import ScriptedWebSocket
 
 from .onebot12.support import connect_payload, status_payload
+from .qq.support import Pool
+from .qq.support import gateway as qq_gateway
 
 
 async def assert_disconnect_cancels_action(
@@ -41,23 +44,29 @@ async def assert_disconnect_cancels_action(
     assert websocket.closed.is_set()
 
 
-@pytest.mark.parametrize(
-    "gateway_type",
-    [
-        pytest.param(OneBot11Gateway, id="onebot11"),
-        pytest.param(OneBot12Gateway, id="onebot12"),
-    ],
-)
-async def test_gateway_lifecycle_is_restartable(
-    gateway_type: type[OneBot11Gateway | OneBot12Gateway],
-) -> None:
-    bot = Bot()
-    bot.add_gateway(gateway_type(bot))
+async def test_qq_gateway_lifecycle_actually_restarts() -> None:
+    websockets = [
+        ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
+        ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
+    ]
+    pool = Pool(
+        {"access_token": "token", "expires_in": 7200},
+        {"url": "wss://qq.example"},
+        {"access_token": "token", "expires_in": 7200},
+        {"url": "wss://qq.example"},
+    )
+    connector = AsyncMock(side_effect=websockets)
+    gateway = qq_gateway(pool, websocket_connector=connector)
+    bot = gateway.bot
+    bot.add_gateway(gateway)
 
-    async with bot:
-        pass
-    async with bot:
-        pass
+    async with timeout(1):
+        for index, websocket in enumerate(websockets, start=1):
+            async with bot:
+                identify = orjson.loads(await websocket.sent.get())
+                assert identify["op"] == 2
+                assert connector.await_count == index
+            assert websocket.closed.is_set()
 
 
 async def test_onebot11_disconnect_cancels_pending_action() -> None:

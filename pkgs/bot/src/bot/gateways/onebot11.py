@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import re
 from asyncio import (
     CancelledError,
     Lock,
     QueueFull,
     Task,
     create_task,
+    current_task,
+    gather,
     sleep,
+    timeout,
 )
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -18,11 +22,13 @@ from http import HTTPMethod, HTTPStatus
 from math import isfinite
 from typing import Annotated, Any, Literal, Self, cast, override
 from urllib.parse import quote, urlsplit, urlunsplit
+from uuid import uuid4
 
 import orjson
 from logbook import Logger
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Discriminator,
     Field,
     JsonValue,
@@ -36,8 +42,8 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+from pydantic.dataclasses import dataclass as validated_dataclass
 from robyn import Request, Response, Robyn, WebSocketDisconnect
-from ulid import ULID
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Request as WebSocketRequest
@@ -84,6 +90,9 @@ from .base import (
     Connection,
     Gateway,
     HttpAction,
+    NonWhitespaceStr,
+    PositiveSeconds,
+    TcpPort,
     WebSocketAction,
     WebSocketActionManager,
     WebSocketActionSession,
@@ -91,6 +100,7 @@ from .base import (
     WebSocketConnector,
     WebsocketsConnection,
     access_token_value,
+    await_cleanup,
     bearer_or_query_token,
     connect_websocket,
     empty_response,
@@ -159,13 +169,11 @@ type WebSocketRole = Literal["api", "event", "universal"]
 
 _ACTION_ROLES = frozenset({"api", "universal"})
 _EVENT_ROLES = frozenset({"event", "universal"})
-_MAX_PORT = 65535
-
-
-def _field_value(value: object, key: str) -> object:
-    if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value).get(key)
-    return getattr(value, key, None)
+_DATACLASS_CONFIG = ConfigDict(strict=True, validate_default=True)
+type _IngressPath = Annotated[
+    StrictStr,
+    Field(pattern=re.compile(r"^/(?!/)[^?#\s]*\Z")),
+]
 
 
 def _signature_matches(
@@ -205,7 +213,11 @@ def _qq_self(user_id: str) -> BotSelf:
 
 
 def _event_payload_tag(value: object) -> str:
-    post_type = _field_value(value, "post_type")
+    post_type = (
+        cast(Mapping[str, object], value).get("post_type")
+        if isinstance(value, Mapping)
+        else getattr(value, "post_type", None)
+    )
     return post_type if isinstance(post_type, str) else ""
 
 
@@ -243,13 +255,9 @@ class OneBot11ActionResponse(Model):
         return self
 
 
-class OneBot11SegmentData(Model):
-    pass
-
-
 class OneBot11MessageSegment(Model):
     type: StrictStr
-    data: OneBot11SegmentData = Field(default_factory=OneBot11SegmentData)
+    data: Model = Field(default_factory=Model)
 
 
 class OneBot11Message(RootModel[list[OneBot11MessageSegment]]):
@@ -289,10 +297,6 @@ class OneBot11SendGroupMsgParams(Model):
     message: OneBot11Message
 
 
-class OneBot11GenericActionParams(Model):
-    pass
-
-
 class OneBot11Event(Model):
     time: OneBot11Time
     self_id: OneBot11Id
@@ -320,7 +324,7 @@ class OneBot11NoticeEvent(OneBot11Event):
 class OneBot11GroupUploadFile(Model):
     id: StrictStr
     name: StrictStr
-    size: StrictInt
+    size: Annotated[StrictInt, Field(ge=0)]
     busid: StrictInt
 
 
@@ -344,7 +348,7 @@ class OneBot11GroupBanNotice(OneBot11NoticeEvent):
     group_id: OneBot11Id
     operator_id: OneBot11Id
     user_id: OneBot11Id
-    duration: StrictInt
+    duration: Annotated[StrictInt, Field(ge=0)]
 
 
 class OneBot11NotifyNotice(OneBot11NoticeEvent):
@@ -437,42 +441,48 @@ def decode_event(payload: BaseModel | Mapping[str, JsonValue]) -> Event:
     return _event_from_payload(_validate_ob11_event(data))
 
 
-@dataclass(frozen=True, slots=True)
+@validated_dataclass(frozen=True, slots=True, config=_DATACLASS_CONFIG)
 class HttpWebhook:
-    path: str = "/onebot/v11/http"
-    secret: AccessToken = None
-    quick_response: bool = True
-
-    def __post_init__(self) -> None:
-        if not self.path.startswith("/"):
-            msg = "OneBot 11 HTTP webhook path must start with /"
-            raise ValueError(msg)
+    path: _IngressPath = "/onebot/v11/http"
+    secret: AccessToken = field(default=None, repr=False)
+    quick_response: StrictBool = True
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@validated_dataclass(
+    frozen=True,
+    slots=True,
+    kw_only=True,
+    config=_DATACLASS_CONFIG,
+)
 class ReverseWebSocket:
-    host: str = "127.0.0.1"
-    port: int = 8081
-    path: str = "/onebot/v11/ws"
-
-    def __post_init__(self) -> None:
-        if not self.host or not 0 <= self.port <= _MAX_PORT:
-            msg = "OneBot 11 reverse WebSocket address is invalid"
-            raise ValueError(msg)
-        if not self.path.startswith("/"):
-            msg = "OneBot 11 reverse WebSocket path must start with /"
-            raise ValueError(msg)
+    host: NonWhitespaceStr = "127.0.0.1"
+    port: TcpPort = 8081
+    path: _IngressPath = "/onebot/v11/ws"
 
 
-@dataclass(frozen=True, slots=True)
+@validated_dataclass(frozen=True, slots=True, config=_DATACLASS_CONFIG)
 class ForwardWebSocket:
-    url: str
+    url: StrictStr
     role: WebSocketRole
     self_: BotSelf | None = None
-    reconnect_interval: float = 3.0
+    reconnect_interval: PositiveSeconds = 3.0
 
     def __post_init__(self) -> None:
-        endpoint = (urlsplit(self.url).path or "/").rstrip("/") or "/"
+        try:
+            parsed_url = urlsplit(self.url)
+            _ = parsed_url.port
+        except ValueError:
+            msg = "OneBot 11 WebSocket URL is invalid"
+            raise ValueError(msg) from None
+        if (
+            parsed_url.scheme not in {"ws", "wss"}
+            or parsed_url.hostname is None
+            or parsed_url.fragment
+            or any(char.isspace() for char in self.url)
+        ):
+            msg = "OneBot 11 WebSocket URL must be an absolute ws or wss URL"
+            raise ValueError(msg)
+        endpoint = (parsed_url.path or "/").rstrip("/") or "/"
         expected = {"api": "/api", "event": "/event", "universal": "/"}[self.role]
         if endpoint != expected:
             msg = f"OneBot 11 {self.role} WebSocket must use the {expected} endpoint"
@@ -484,9 +494,6 @@ class ForwardWebSocket:
             self.self_.platform != "qq" or not self.self_.user_id.isdecimal()
         ):
             msg = "OneBot 11 WebSocket identity must be a decimal qq account"
-            raise ValueError(msg)
-        if self.reconnect_interval <= 0:
-            msg = "OneBot 11 reconnect interval must be positive"
             raise ValueError(msg)
 
 
@@ -546,8 +553,9 @@ class OneBot11Gateway(Gateway):
             else None
         )
         self._websocket_connector = websocket_connector or connect_websocket
-        self._forward_tasks: dict[ForwardWebSocket, Task[None]] = {}
+        self._forward_tasks: list[Task[None]] = []
         self._reverse_servers: list[Server] = []
+        self._reverse_tasks: set[Task[None]] = set()
         self._lifecycle_lock = Lock()
         self._started = False
         self._closing = False
@@ -580,8 +588,8 @@ class OneBot11Gateway(Gateway):
                         )
                 for ingress in self.ingress:
                     if isinstance(ingress, ForwardWebSocket):
-                        self._forward_tasks[ingress] = create_task(
-                            self._run_forward_websocket(ingress)
+                        self._forward_tasks.append(
+                            create_task(self._run_forward_websocket(ingress))
                         )
             except BaseException:
                 await self._close_transports()
@@ -594,10 +602,17 @@ class OneBot11Gateway(Gateway):
     @override
     async def close(self) -> None:
         async with self._lifecycle_lock:
-            await self._close_transports()
-            await self._close_http_pool()
-            await super().close()
-            self._started = False
+            finishing = create_task(
+                self._finish_close(),
+                name="onebot11-gateway-close",
+            )
+            await await_cleanup(finishing)
+
+    async def _finish_close(self) -> None:
+        await self._close_transports()
+        await self._close_http_pool()
+        await super().close()
+        self._started = False
 
     async def _close_http_pool(self) -> None:
         if self.http_pool is not None and self._owns_http_pool:
@@ -606,21 +621,23 @@ class OneBot11Gateway(Gateway):
 
     async def _close_transports(self) -> None:
         self._closing = True
-        forward_tasks = tuple(self._forward_tasks.values())
+        forward_tasks = tuple(self._forward_tasks)
         reverse_servers = tuple(self._reverse_servers)
-        for task in forward_tasks:
-            task.cancel()
         for server in reverse_servers:
             server.close()
+        reverse_tasks = tuple(self._reverse_tasks)
+        transport_tasks = (*forward_tasks, *reverse_tasks)
+        for task in transport_tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
         if self._ws_actions is not None:
             self._ws_actions.fail_all()
-        for task in forward_tasks:
-            with suppress(CancelledError):
-                await task
+        await gather(*transport_tasks, return_exceptions=True)
         for server in reverse_servers:
             await server.wait_closed()
         self._forward_tasks.clear()
         self._reverse_servers.clear()
+        self._reverse_tasks.clear()
 
     def mount(self, server: Robyn) -> Robyn:
         if not self._mount_server_once(server):
@@ -651,13 +668,16 @@ class OneBot11Gateway(Gateway):
                 await self.dispatch_event(decode_event(data))
             except QueueFull:
                 return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
-            except (TypeError, ValueError, ValidationError) as exc:
-                error = str(exc)
+            except ValidationError as exc:
                 logger.warning(
                     "reject OneBot 11 HTTP payload ({error})",
-                    error=f"{type(exc).__name__}: {error}"
-                    if error
-                    else type(exc).__name__,
+                    error=exc.errors(include_url=False, include_input=False),
+                )
+                return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "reject OneBot 11 HTTP payload ({error})",
+                    error=type(exc).__name__,
                 )
                 return text_response(HTTPStatus.BAD_REQUEST, str(exc))
             quick_operations = collector.values if collector is not None else []
@@ -809,21 +829,23 @@ class OneBot11Gateway(Gateway):
             parsed_url.query,
             "",
         ))
-        response = await self.http_pool.request(
-            HTTPMethod.POST,
-            action_url,
-            headers=self.authorization_headers,
-            json=params.model_dump(
-                mode="json",
-                by_alias=True,
-                exclude_unset=True,
-            ),
-        )
-        status = getattr(response, "status", HTTPStatus.OK)
-        if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
-            msg = f"OneBot 11 action request failed with HTTP {status}"
-            raise RuntimeError(msg)
-        action_response = decode_action_response(orjson.loads(await response.data))
+        async with timeout(backend.timeout):
+            response = await self.http_pool.request(
+                HTTPMethod.POST,
+                action_url,
+                headers=self.authorization_headers,
+                json=params.model_dump(
+                    mode="json",
+                    by_alias=True,
+                    exclude_unset=True,
+                ),
+            )
+            status = getattr(response, "status", HTTPStatus.OK)
+            if not HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
+                msg = f"OneBot 11 action request failed with HTTP {status}"
+                raise RuntimeError(msg)
+            payload = orjson.loads(await response.data)
+        action_response = decode_action_response(payload)
         if __debug__:
             logger.debug(
                 "OneBot 11 HTTP action returned: {action} = {status}/{retcode}",
@@ -909,7 +931,20 @@ class OneBot11Gateway(Gateway):
                 )
             return None
 
-        async def handle(websocket: ServerConnection) -> None:
+        return await serve(
+            self._serve_reverse_websocket,
+            ingress.host,
+            ingress.port,
+            process_request=authenticate,
+        )
+
+    async def _serve_reverse_websocket(self, websocket: ServerConnection) -> None:
+        task = current_task()
+        assert task is not None  # ruff: ignore[assert]
+        self._reverse_tasks.add(task)
+        try:
+            if self._closing:
+                return
             request = websocket.request
             if request is None:
                 msg = "OneBot 11 reverse WebSocket handshake is missing"
@@ -919,15 +954,13 @@ class OneBot11Gateway(Gateway):
             if role is None or self_id is None:
                 msg = "OneBot 11 reverse WebSocket headers are missing"
                 raise ConnectionError(msg)
-            self_ = _qq_self(self_id)
-            await self._serve_websocket(WebsocketsConnection(websocket), role, self_)
-
-        return await serve(
-            handle,
-            ingress.host,
-            ingress.port,
-            process_request=authenticate,
-        )
+            await self._serve_websocket(
+                WebsocketsConnection(websocket),
+                role,
+                _qq_self(self_id),
+            )
+        finally:
+            self._reverse_tasks.discard(task)
 
     async def _serve_websocket(
         self,
@@ -935,16 +968,14 @@ class OneBot11Gateway(Gateway):
         role: WebSocketRole,
         self_: BotSelf | None = None,
     ) -> None:
-        await self.bot.wait_until_running()
-        expected_self = self_
-        session = (
-            self._ws_actions.register(websocket)
-            if self._ws_actions is not None and role in _ACTION_ROLES
-            else None
-        )
-        if session is not None and self_ is not None and self._ws_actions is not None:
-            self._ws_actions.bind_self(session, self_)
+        session: WebSocketActionSession | None = None
         try:
+            await self.bot.wait_until_running()
+            expected_self = self_
+            if self._ws_actions is not None and role in _ACTION_ROLES:
+                session = self._ws_actions.register(websocket)
+                if self_ is not None:
+                    self._ws_actions.bind_self(session, self_)
             while True:
                 try:
                     payload = Model.model_validate_json(await websocket.receive_text())
@@ -1014,23 +1045,22 @@ class OneBot11Gateway(Gateway):
                     self.authorization_headers,
                 )
                 await self._serve_websocket(websocket, ingress.role, ingress.self_)
-                if not self._closing:
-                    await sleep(ingress.reconnect_interval)
             except CancelledError:
                 raise
             except Exception as exc:
-                if self._closing:
-                    return
-                error = str(exc)
-                logger.exception(
-                    "OneBot 11 forward WebSocket failed: {url} retry={seconds}s "
-                    "({error})",
-                    url=ingress.url,
-                    seconds=ingress.reconnect_interval,
-                    error=f"{type(exc).__name__}: {error}"
-                    if error
-                    else type(exc).__name__,
-                )
+                if not self._closing:
+                    logger.warning(
+                        "OneBot 11 forward WebSocket failed: {url} retry={seconds}s "
+                        "({error})",
+                        url=ingress.url,
+                        seconds=ingress.reconnect_interval,
+                        error=(
+                            exc.errors(include_url=False, include_input=False)
+                            if isinstance(exc, ValidationError)
+                            else type(exc).__name__
+                        ),
+                    )
+            if not self._closing:
                 await sleep(ingress.reconnect_interval)
 
 
@@ -1038,7 +1068,7 @@ def _normalize_ob11_params(
     params: ActionParamModel,
     *,
     strict_ids: bool,
-) -> OneBot11GenericActionParams:
+) -> Model:
     payload = cast(
         dict[str, JsonValue | BaseModel],
         params.model_dump(mode="json", by_alias=True, exclude_unset=True),
@@ -1048,7 +1078,7 @@ def _normalize_ob11_params(
             payload[key] = _ob11_number(
                 cast(JsonValue, payload[key]), strict=strict_ids
             )
-    return OneBot11GenericActionParams.model_validate(payload)
+    return Model.model_validate(payload)
 
 
 def _event_from_payload(event: OneBot11Event) -> Event:
@@ -1056,13 +1086,13 @@ def _event_from_payload(event: OneBot11Event) -> Event:
     detail_type = _event_detail_type(event)
     payload: dict[str, JsonValue] = _model_dump_object(event)
     payload.update({
-        "id": str(ULID()),
+        "id": str(uuid4()),
         "self": cast(
             JsonValue,
             self_.model_dump(mode="json", by_alias=True),
         ),
         "time": event.time,
-        "type": _event_type(event),
+        "type": "meta" if isinstance(event, OneBot11MetaEvent) else event.post_type,
         "detail_type": detail_type,
         "sub_type": event.sub_type,
     })
@@ -1113,12 +1143,6 @@ def _normalize_nested_id(
     if key in nested:
         nested[key] = _id_string(nested[key])
     payload[field] = nested
-
-
-def _event_type(event: OneBot11Event) -> str:
-    if isinstance(event, OneBot11MetaEvent):
-        return "meta"
-    return event.post_type
 
 
 def _event_detail_type(event: OneBot11Event) -> str:
@@ -1242,15 +1266,15 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
     raise TypeError(msg)
 
 
-def _file_segment_data(data: BaseModel) -> OneBot11SegmentData:
+def _file_segment_data(data: BaseModel) -> Model:
     dumped = _model_dump_object(data)
     file_id = dumped.pop("file_id")
     dumped["file"] = file_id
     return _segment_data(dumped)
 
 
-def _segment_data(data: Mapping[str, JsonValue]) -> OneBot11SegmentData:
-    return OneBot11SegmentData.model_validate({
+def _segment_data(data: Mapping[str, JsonValue]) -> Model:
+    return Model.model_validate({
         key: _segment_data_value(value)
         for key, value in data.items()
         if value is not None
@@ -1275,13 +1299,9 @@ def _ob11_int(value: JsonValue) -> int:
 
 def _ob11_segment(
     segment_type: str,
-    data: OneBot11SegmentData | Mapping[str, JsonValue],
+    data: Model | Mapping[str, JsonValue],
 ) -> OneBot11MessageSegment:
-    segment_data = (
-        data
-        if isinstance(data, OneBot11SegmentData)
-        else OneBot11SegmentData.model_validate(data)
-    )
+    segment_data = data if isinstance(data, Model) else Model.model_validate(data)
     return OneBot11MessageSegment(type=segment_type, data=segment_data)
 
 
@@ -1354,9 +1374,9 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
     data = _ob11_segment_data(value.get("data"))
 
     if segment_type == "text":
-        return _ob11_segment("text", {"text": str(data.get("text", ""))})
+        return _ob11_segment("text", {"text": _required_str(data.get("text"), "text")})
     if segment_type == "at":
-        qq = str(data.get("qq", ""))
+        qq = _id_string(data.get("qq"))
         if qq == "all":
             return _ob11_segment("mention_all", {})
         return _ob11_segment("mention", {"user_id": qq})
@@ -1366,9 +1386,11 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
             "record": "voice",
             "video": "video",
         }[segment_type]
-        file = data.get("file") or data.get("url")
+        file = data.get("file")
+        if file is None:
+            file = data.get("url")
         payload = {key: item for key, item in data.items() if key != "file"}
-        payload["file_id"] = str(file or "")
+        payload["file_id"] = _required_str(file, f"{segment_type} file")
         return _ob11_segment(internal_type, payload)
     if segment_type == "location":
         return _ob11_segment(
@@ -1376,12 +1398,12 @@ def _load_ob11_segment(value: JsonValue) -> OneBot11MessageSegment:
             {
                 "latitude": _finite_float(data.get("lat")),
                 "longitude": _finite_float(data.get("lon")),
-                "title": str(data.get("title", "")),
-                "content": str(data.get("content", "")),
+                "title": _optional_str(data.get("title"), "title"),
+                "content": _optional_str(data.get("content"), "content"),
             },
         )
     if segment_type == "reply":
-        return _ob11_segment("reply", {"message_id": str(data.get("id", ""))})
+        return _ob11_segment("reply", {"message_id": _id_string(data.get("id"))})
     payload = dict(data)
     ob11_type = payload.pop("type", None)
     if ob11_type is not None:
@@ -1429,6 +1451,10 @@ def _required_str(value: JsonValue | None, field: str) -> str:
         msg = f"OneBot 11 {field} must be a string"
         raise TypeError(msg)
     return value
+
+
+def _optional_str(value: JsonValue | None, field: str) -> str:
+    return "" if value is None else _required_str(value, field)
 
 
 def _id_string(value: JsonValue | None) -> str:

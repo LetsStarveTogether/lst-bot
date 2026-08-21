@@ -22,6 +22,7 @@ from bot import (
     GuildMemberDecreaseNoticeEvent,
     GuildMemberIncreaseNoticeEvent,
     HeartbeatMetaEvent,
+    MessageEvent,
     MetaEvent,
     NoticeEvent,
     PrivateMessageDeleteNoticeEvent,
@@ -262,58 +263,48 @@ def test_each_standard_event_variant_round_trips_json(
 
 
 @pytest.mark.parametrize(
-    ("payload", "event_class"),
+    ("event_type", "event_class"),
     [
-        pytest.param(
-            _event(
-                "message",
-                "vendor.message",
-                **{"vendor.payload": {"nested": [True, None]}},
-            ),
-            Event,
-            id="message-extension",
-        ),
-        pytest.param(
-            _event(
-                "notice",
-                "vendor.notice",
-                **{"vendor.payload": {"nested": [True, None]}},
-            ),
-            NoticeEvent,
-            id="notice-extension",
-        ),
-        pytest.param(
-            _event(
-                "request",
-                "vendor.request",
-                **{"vendor.payload": {"nested": [True, None]}},
-            ),
-            RequestEvent,
-            id="request-extension",
-        ),
-        pytest.param(
-            {
-                **_event(
-                    "meta",
-                    "vendor.meta",
-                    **{"vendor.payload": {"nested": [True, None]}},
-                ),
-                "self": None,
-            },
-            MetaEvent,
-            id="meta-extension-explicit-null-self",
-        ),
+        pytest.param("message", MessageEvent, id="message"),
+        pytest.param("notice", NoticeEvent, id="notice"),
+        pytest.param("request", RequestEvent, id="request"),
+        pytest.param("meta", MetaEvent, id="meta-explicit-null-self"),
     ],
 )
 def test_event_extension_variants_preserve_json_fields(
-    payload: dict[str, object],
+    event_type: str,
     event_class: type[Event],
 ) -> None:
+    detail_type = f"vendor.{event_type}"
+    payload = (
+        _message(detail_type)
+        if event_type == "message"
+        else _event(event_type, detail_type)
+    )
+    payload["vendor.payload"] = {"nested": [True, None]}
+    if event_type == "meta":
+        payload["self"] = None
     event = EventPayload.model_validate(payload).root
 
     assert type(event) is event_class
     assert event.model_dump(mode="json", by_alias=True) == payload
     assert EventPayload.model_validate_json(event.model_dump_json()).root == event
+
+
+def test_event_repr_hides_all_extra_payloads() -> None:
+    secrets = {"qq_raw": "qq-secret", "future_platform": "future-secret"}
+    extras = {field: {"token": secret} for field, secret in secrets.items()}
+    event = EventPayload.model_validate({**_message("private"), **extras}).root
+
+    assert event.model_extra == extras
+    rendered = f"{event!r} {event}"
+    assert not any(secret in rendered for secret in secrets.values())
+
+    notice = EventPayload.model_validate({
+        **_event("notice", "vendor.raw"),
+        "alt_message": "future-secret",
+    }).root
+    assert "future-secret" not in str(notice)
 
 
 @pytest.mark.parametrize(

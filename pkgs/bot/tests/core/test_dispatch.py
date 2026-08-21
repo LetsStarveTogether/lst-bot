@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, create_task
+from asyncio import CancelledError, TaskGroup, timeout
 from asyncio import Event as AsyncEvent
 from dataclasses import dataclass
 from datetime import timedelta
@@ -22,17 +22,11 @@ from bot import (
     Reply,
     Retcode,
     ReturnAction,
-    ReturnEffect,
 )
 from bot.testing import private_message_event as make_event
 from bot.testing import recording_gateway
 from diwire import Lifetime, Scope
 from logbook import TestHandler as LogbookTestHandler
-
-
-@dataclass(frozen=True)
-class Service:
-    value: str
 
 
 @dataclass(frozen=True)
@@ -61,25 +55,6 @@ def group_message_event(
         "group_id": "group-1",
         "sender": {"user_id": user_id, "role": sender_role},
     })
-
-
-async def test_dispatch_runs_matching_cmd_with_injection() -> None:
-    bot = Bot()
-    bot.container.add_instance(Service("pong"), provides=Service)
-    gateway = recording_gateway(bot)
-    seen: list[str] = []
-
-    @bot.on_cmd("ping", block=True)
-    def ping(event: Injected[PrivateMessageEvent], service: Injected[Service]) -> None:
-        seen.append(f"{event.user_id}:{service.value}")
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            make_event("/ping", user_id="42"),
-        )
-
-    assert seen == ["42:pong"]
 
 
 async def test_connection_send_msg_builds_standard_action() -> None:
@@ -127,7 +102,7 @@ async def test_connection_action_failed_response_raises() -> None:
 
 
 async def test_dispatch_injects_connection_and_enforces_permission() -> None:
-    bot = Bot(cmd_prefixes=("!",), admin_ids={"u1"})
+    bot = Bot(cmd_prefixes=("!",), admin_ids={"test": {"u1"}})
     bot.container.add_instance(Greeter(), provides=Greeter)
     gateway = recording_gateway(bot)
 
@@ -160,7 +135,7 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
 
 
 async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
-    bot = Bot(admin_ids={"root"})
+    bot = Bot(admin_ids={"test": {"root"}})
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
@@ -195,6 +170,23 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
     assert seen == ["bot", "group", "owner"]
 
 
+async def test_bot_admin_permission_namespaces_user_ids_by_platform() -> None:
+    bot = Bot(admin_ids={"qq": {"42"}})
+    gateway = recording_gateway(bot)
+
+    @bot.on_cmd("secure", permission=Permission.bot_admin(), block=True)
+    def secure() -> None:
+        pytest.fail("same user ID on another platform must not be an admin")
+
+    async with bot:
+        results = await bot.dispatch(
+            gateway.connection,
+            make_event("/secure", user_id="42"),
+        )
+
+    assert results == []
+
+
 async def test_dispatch_auto_replies_string_return() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
@@ -209,7 +201,6 @@ async def test_dispatch_auto_replies_string_return() -> None:
     assert results[0].values == ["pong"]
     assert len(results[0].effects) == 1
     effect = results[0].effects[0]
-    assert isinstance(effect, ReturnEffect)
     assert effect.action.msg == Msg.t("pong")
     assert isinstance(effect.outcome, ActionResponse)
     assert effect.outcome.data == {"status": "ok"}
@@ -235,7 +226,6 @@ async def test_dispatch_executes_list_returns_in_order() -> None:
         results = await bot.dispatch(gateway.connection, make_event("ping"))
 
     effects = results[0].effects
-    assert all(isinstance(effect, ReturnEffect) for effect in effects)
     messages = [effect.action.msg for effect in effects]
     assert all(message is not None for message in messages)
     assert [message.text for message in messages if message is not None] == [
@@ -279,7 +269,6 @@ async def test_dispatch_executes_action_returns() -> None:
         "send_message",
         "get_user_info",
     ]
-    assert all(isinstance(effect, ReturnEffect) for effect in results[0].effects)
     assert [effect.action.kind for effect in results[0].effects] == ["call", "call"]
 
 
@@ -368,15 +357,23 @@ async def test_dispatch_stops_batch_on_return_execution_error() -> None:
     assert str(exception) == "Unsupported handler return value: dict"
 
 
-async def test_dispatch_continues_after_failed_blocking_route() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RuntimeError("boom"), id="runtime-error"),
+        pytest.param(TimeoutError("business timeout"), id="handler-timeout"),
+    ],
+)
+async def test_dispatch_continues_after_failed_blocking_route(
+    error: Exception,
+) -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
     seen: list[str] = []
 
     @bot.on_msg(priority=1, block=True)
     def fail() -> None:
-        msg = "boom"
-        raise RuntimeError(msg)
+        raise error
 
     @bot.on_msg(priority=2, block=True)
     def recover() -> None:
@@ -387,31 +384,7 @@ async def test_dispatch_continues_after_failed_blocking_route() -> None:
 
     assert seen == ["recovered"]
     assert len(results) == 2
-    assert isinstance(results[0].exception, RuntimeError)
-    assert results[1].exception is None
-
-
-async def test_dispatch_treats_handler_timeout_error_as_a_route_error() -> None:
-    bot = Bot()
-    gateway = recording_gateway(bot)
-    seen: list[str] = []
-
-    @bot.on_msg(priority=1, block=True)
-    def fail() -> None:
-        msg = "business timeout"
-        raise TimeoutError(msg)
-
-    @bot.on_msg(priority=2, block=True)
-    def recover() -> None:
-        seen.append("recovered")
-
-    async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("anything"))
-
-    assert seen == ["recovered"]
-    assert len(results) == 2
-    assert isinstance(results[0].exception, TimeoutError)
-    assert str(results[0].exception) == "business timeout"
+    assert results[0].exception is error
     assert results[1].exception is None
 
 
@@ -577,12 +550,13 @@ async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers() -> 
     def fast() -> None:
         seen.append("fast")
 
-    async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("slow"))
-        fast_results = await bot.dispatch(
-            gateway.connection,
-            make_event("fast", event_id="evt-fast"),
-        )
+    async with timeout(1):
+        async with bot:
+            results = await bot.dispatch(gateway.connection, make_event("slow"))
+            fast_results = await bot.dispatch(
+                gateway.connection,
+                make_event("fast", event_id="evt-fast"),
+            )
 
     assert slow_cancelled.is_set()
     assert len(results) == 1
@@ -605,12 +579,15 @@ async def test_dispatch_external_cancellation_propagates() -> None:
         await release.wait()
         completed.set()
 
-    async with bot:
-        task = create_task(bot.dispatch(gateway.connection, make_event("slow")))
-        await started.wait()
-        task.cancel()
-        with pytest.raises(CancelledError):
-            await task
-        assert not completed.is_set()
-        release.set()
-        await completed.wait()
+    async with timeout(1), bot, TaskGroup() as tasks:
+        task = tasks.create_task(bot.dispatch(gateway.connection, make_event("slow")))
+        try:
+            await started.wait()
+            task.cancel()
+            with pytest.raises(CancelledError):
+                await task
+            assert not completed.is_set()
+            release.set()
+            await completed.wait()
+        finally:
+            release.set()

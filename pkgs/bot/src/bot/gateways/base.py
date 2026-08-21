@@ -1,23 +1,34 @@
 from __future__ import annotations
 
 from asyncio import (
+    CancelledError,
     Future,
+    Task,
     get_running_loop,
+    shield,
     timeout,
 )
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from hmac import compare_digest
-from math import isfinite
 from types import TracebackType
-from typing import TYPE_CHECKING, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Never, Protocol, Self
 from urllib.parse import parse_qs
+from uuid import uuid4
 
 import orjson
 from logbook import Logger
-from pydantic import BaseModel, JsonValue, SecretStr
+from pydantic import (
+    BaseModel,
+    Field,
+    JsonValue,
+    SecretStr,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+)
 from robyn import Headers, Response
-from ulid import ULID
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
@@ -47,6 +58,13 @@ if TYPE_CHECKING:
 logger = Logger(__name__)
 
 type AccessToken = SecretStr | str | None
+type NonWhitespaceStr = Annotated[StrictStr, Field(pattern=r"^\S+$")]
+type PositiveSeconds = Annotated[
+    StrictFloat,
+    Field(gt=0, allow_inf_nan=False),
+]
+type TcpPort = Annotated[StrictInt, Field(ge=0, le=65535)]
+_POSITIVE_SECONDS_ADAPTER = TypeAdapter(PositiveSeconds)
 
 
 class RobynServer(Protocol):
@@ -60,7 +78,7 @@ class WebSocketConnection(Protocol):
 
     async def send_text(self, payload: str) -> None: ...
 
-    async def close(self) -> None: ...
+    async def close(self, code: int = 1000) -> None: ...
 
 
 type WebSocketConnector = Callable[
@@ -69,10 +87,26 @@ type WebSocketConnector = Callable[
 ]
 
 
+async def await_cleanup(task: Task[None]) -> None:
+    cancelled: CancelledError | None = None
+    while not task.done():
+        try:
+            await shield(task)
+        except CancelledError as exc:
+            cancelled = exc
+    await task
+    if cancelled is not None:
+        raise cancelled
+
+
 @dataclass(slots=True)
 class HttpAction:
     base_url: str
+    timeout: float = 30.0
     http_pool: AsyncPoolManager | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self.timeout = _POSITIVE_SECONDS_ADAPTER.validate_python(self.timeout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +119,14 @@ class _NativeWebSocketConnection(Protocol):
 
     async def send(self, message: str) -> None: ...
 
-    async def close(self) -> None: ...
+    async def close(self, code: int = 1000) -> None: ...
+
+
+class WebSocketClosedError(ConnectionError):
+    def __init__(self, code: int | None) -> None:
+        self.code = code
+        detail = "WebSocket connection closed"
+        super().__init__(detail if code is None else f"{detail} with code {code}")
 
 
 class WebsocketsConnection:
@@ -93,33 +134,46 @@ class WebsocketsConnection:
         self.websocket = websocket
 
     async def receive_text(self) -> str:
-        payload = await self._receive()
+        try:
+            payload = await self.websocket.recv()
+        except ConnectionClosed as exc:
+            self._raise_closed(exc)
         if isinstance(payload, bytes):
             msg = "WebSocket text frame required"
             raise TypeError(msg)
         return payload
 
     async def send_text(self, payload: str) -> None:
-        await self.websocket.send(payload)
-
-    async def close(self) -> None:
-        await self.websocket.close()
-
-    async def _receive(self) -> str | bytes:
         try:
-            return await self.websocket.recv()
-        except ConnectionClosedOK as exc:
-            raise StopAsyncIteration from exc
+            await self.websocket.send(payload)
         except ConnectionClosed as exc:
-            msg = "WebSocket connection closed"
-            raise ConnectionError(msg) from exc
+            self._raise_closed(exc)
+
+    async def close(self, code: int = 1000) -> None:
+        await self.websocket.close(code=code)
+
+    @staticmethod
+    def _raise_closed(exc: ConnectionClosed) -> Never:
+        if isinstance(exc, ConnectionClosedOK):
+            raise StopAsyncIteration from exc
+        raise WebSocketClosedError(
+            exc.rcvd.code if exc.rcvd is not None else None
+        ) from exc
 
 
 async def connect_websocket(
     url: str,
     headers: dict[str, str] | None,
+    *,
+    proxy: str | None = None,
+    max_size: int | None = 2**20,
 ) -> WebsocketsConnection:
-    websocket = await connect(url, additional_headers=headers, proxy=None)
+    websocket = await connect(
+        url,
+        additional_headers=headers,
+        proxy=proxy,
+        max_size=max_size,
+    )
     return WebsocketsConnection(websocket)
 
 
@@ -199,12 +253,6 @@ class Connection:
                 action=action,
                 self_=self.self_,
             )
-            logger.trace(
-                "request action payload : {action} {params!r} {connection}",
-                action=action,
-                params=params,
-                connection=self,
-            )
         response = await self.gateway.request_action(self, action, params)
         response_text = (
             str(response)
@@ -224,11 +272,6 @@ class Connection:
                 self_=self.self_,
                 response=response_text,
             )
-            logger.trace(
-                "action returned payload : {response!r} {connection}",
-                response=response,
-                connection=self,
-            )
         self._raise_for_failed_action_response(response)
         return response
 
@@ -236,8 +279,8 @@ class Connection:
     def _message_action_params(
         event: MessageEvent,
         msg: MsgInput,
-    ) -> dict[str, Msg | str]:
-        params: dict[str, Msg | str] = {
+    ) -> dict[str, ActionParamInput]:
+        params: dict[str, ActionParamInput] = {
             "detail_type": event.detail_type,
             "message": Msg.from_input(msg),
         }
@@ -394,20 +437,14 @@ class WebSocketActionSession:
     selfs: set[BotSelf] = field(default_factory=set)
 
 
-@dataclass(slots=True)
-class _PendingAction:
-    session: WebSocketActionSession
-    future: Future[ActionResponse]
-
-
 class WebSocketActionManager:
     def __init__(self, timeout: float) -> None:
-        if not isfinite(timeout) or timeout <= 0:
-            msg = "WebSocket action timeout must be finite and positive"
-            raise ValueError(msg)
-        self.timeout = timeout
+        self.timeout = _POSITIVE_SECONDS_ADAPTER.validate_python(timeout)
         self._sessions: list[WebSocketActionSession] = []
-        self._pending: dict[str, _PendingAction] = {}
+        self._pending: dict[
+            str,
+            tuple[WebSocketActionSession, Future[ActionResponse]],
+        ] = {}
 
     def register(self, websocket: WebSocketConnection) -> WebSocketActionSession:
         session = WebSocketActionSession(websocket)
@@ -431,10 +468,10 @@ class WebSocketActionManager:
             current for current in self._sessions if current is not session
         ]
         exc = ConnectionError("WebSocket action connection closed")
-        for echo, pending in list(self._pending.items()):
-            if pending.session is session:
-                if not pending.future.done():
-                    pending.future.set_exception(exc)
+        for echo, (pending_session, future) in list(self._pending.items()):
+            if pending_session is session:
+                if not future.done():
+                    future.set_exception(exc)
                 self._pending.pop(echo, None)
 
     async def request(
@@ -447,10 +484,10 @@ class WebSocketActionManager:
             msg = "No action-capable WebSocket connection is available"
             raise LookupError(msg)
 
-        echo = str(ULID())
+        echo = str(uuid4())
         loop = get_running_loop()
         future: Future[ActionResponse] = loop.create_future()
-        self._pending[echo] = _PendingAction(session=session, future=future)
+        self._pending[echo] = session, future
         try:
             async with timeout(self.timeout):
                 if __debug__:
@@ -465,6 +502,8 @@ class WebSocketActionManager:
             self._pending.pop(echo, None)
             if not future.done():
                 future.cancel()
+            elif not future.cancelled():
+                future.exception()
 
     def receive(
         self,
@@ -486,16 +525,17 @@ class WebSocketActionManager:
                 response=response,
             )
             return False
-        if pending.session is not session:
+        pending_session, future = pending
+        if pending_session is not session:
             logger.warning(
                 "mismatched WebSocket action response source: echo={echo} {response}",
                 echo=echo,
                 response=response,
             )
             return False
-        if pending.future.done():
+        if future.done():
             return False
-        pending.future.set_result(response)
+        future.set_result(response)
         if __debug__:
             logger.debug(
                 "receive WebSocket action response: echo={echo} {response}",
@@ -510,15 +550,17 @@ class WebSocketActionManager:
 
     def fail_all(self) -> None:
         exc = ConnectionError("WebSocket action backend closed")
-        for echo, pending in list(self._pending.items()):
-            if not pending.future.done():
-                pending.future.set_exception(exc)
+        for echo, (_, future) in list(self._pending.items()):
+            if not future.done():
+                future.set_exception(exc)
             self._pending.pop(echo, None)
         self._sessions.clear()
 
     def _session_for(self, self_: BotSelf) -> WebSocketActionSession | None:
-        matches = [session for session in self._sessions if self_ in session.selfs]
-        return matches[0] if len(matches) == 1 else None
+        return next(
+            (session for session in reversed(self._sessions) if self_ in session.selfs),
+            None,
+        )
 
 
 def json_response(status: int, payload: BaseModel | JsonValue) -> Response:
@@ -645,6 +687,7 @@ __all__ = [
     "WebSocketAction",
     "WebSocketActionManager",
     "WebSocketActionSession",
+    "WebSocketClosedError",
     "WebSocketConnection",
     "WebSocketConnector",
     "WebsocketsConnection",

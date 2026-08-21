@@ -43,7 +43,15 @@ from .enums import (
 )
 from .msg import MsgValue
 
-type ActionParamInput = BaseModel | JsonValue | bytes | bytearray
+type ActionParamInput = (
+    BaseModel
+    | JsonValue
+    | bytes
+    | bytearray
+    | Mapping[str, ActionParamInput]
+    | list[ActionParamInput]
+    | tuple[ActionParamInput, ...]
+)
 type NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
 type Sha256String = Annotated[
     StrictStr,
@@ -74,7 +82,13 @@ type WireBytes = Annotated[
     PlainSerializer(_dump_base64_bytes, return_type=str, when_used="json"),
 ]
 
-type _ActionParamValue = JsonValue | WireBytes | SerializeAsAny[BaseModel]
+type _ActionParamValue = (
+    JsonValue
+    | WireBytes
+    | SerializeAsAny[BaseModel]
+    | dict[str, _ActionParamValue]
+    | list[_ActionParamValue]
+)
 
 
 class ActionParamModel(Model):
@@ -83,7 +97,9 @@ class ActionParamModel(Model):
     @model_validator(mode="before")
     @classmethod
     def model_input(cls, value: object) -> object:
-        return value.model_dump() if isinstance(value, BaseModel) else value
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json", by_alias=True, serialize_as_any=True)
+        return value
 
     def __str__(self) -> str:
         parts: list[str] = []

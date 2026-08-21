@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from asyncio import get_running_loop, timeout
 from http import HTTPStatus
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from bot import (
@@ -21,6 +25,7 @@ from bot.gateways.onebot11 import (
     decode_action_response,
 )
 from pydantic import JsonValue
+from urllib3_future import AsyncPoolManager
 
 from .support import ActionServer, action_response_payload
 
@@ -91,6 +96,31 @@ async def test_http_action_checks_status_before_decoding_body() -> None:
                 await connection.action("get_status")
 
 
+async def test_http_action_timeout_covers_response_body() -> None:
+    body = get_running_loop().create_future()
+    pool = AsyncMock(spec=AsyncPoolManager)
+    pool.request.return_value = SimpleNamespace(
+        status=HTTPStatus.OK,
+        data=body,
+    )
+    gateway = OneBot11Gateway(
+        Bot(),
+        action=HttpAction(
+            "http://onebot.example",
+            timeout=0.01,
+            http_pool=cast(AsyncPoolManager, pool),
+        ),
+    )
+    connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
+
+    async with timeout(1):
+        async with gateway:
+            with pytest.raises(TimeoutError):
+                await connection.action("vendor_action")
+
+    assert body.cancelled()
+
+
 async def test_closed_gateway_rejects_new_http_actions() -> None:
     gateway = OneBot11Gateway(
         Bot(),
@@ -103,6 +133,24 @@ async def test_closed_gateway_rejects_new_http_actions() -> None:
         await connection.action("get_status")
 
     assert gateway.http_pool is None
+
+
+async def test_gateway_does_not_close_borrowed_http_pool() -> None:
+    async with (
+        ActionServer(action_response_payload({})) as server,
+        AsyncPoolManager() as pool,
+    ):
+        gateway = OneBot11Gateway(
+            Bot(),
+            action=HttpAction(server.base_url, http_pool=pool),
+        )
+
+        async with gateway:
+            pass
+
+        response = await pool.request("POST", server.base_url, json={})
+        assert response.status == HTTPStatus.OK
+        await response.data
 
 
 @pytest.mark.parametrize(
@@ -198,9 +246,6 @@ async def test_closed_gateway_rejects_new_http_actions() -> None:
             {"impl": "ob11", "version": "1.0", "onebot_version": "12"},
             id="version",
         ),
-        pytest.param(Action.DELETE_MESSAGE, None, None, id="delete-message"),
-        pytest.param(Action.SET_GROUP_NAME, None, None, id="set-group-name"),
-        pytest.param(Action.LEAVE_GROUP, None, None, id="leave-group"),
     ],
 )
 def test_internal_action_response_data_is_adapted(
@@ -215,6 +260,18 @@ def test_internal_action_response_data_is_adapted(
     )
 
     assert response.data == expected
+
+
+@pytest.mark.parametrize(
+    "action",
+    [Action.DELETE_MESSAGE, Action.SET_GROUP_NAME, Action.LEAVE_GROUP],
+)
+def test_null_action_response_data_is_validated(action: Action) -> None:
+    self_ = BotSelf(platform="qq", user_id="10000")
+
+    assert adapt_action_response(action, ActionResponse.ok(), self_).data is None
+    with pytest.raises(TypeError, match="response data must be null"):
+        adapt_action_response(action, ActionResponse.ok({}), self_)
 
 
 def test_raw_and_failed_action_responses_are_not_adapted() -> None:

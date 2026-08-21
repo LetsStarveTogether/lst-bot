@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-from asyncio import Event, TaskGroup, timeout
+from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
 from http import HTTPStatus
-from unittest.mock import AsyncMock
+from math import inf, nan
+from typing import Any, cast
+from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import orjson
 import pytest
 from bot import (
+    ActionResponse,
     Bot,
     BotSelf,
     Connection,
     Injected,
     PrivateMessageEvent,
-    ReturnAction,
 )
 from bot.gateways.onebot11 import (
     ForwardWebSocket,
@@ -22,7 +25,7 @@ from bot.gateways.onebot11 import (
     WebSocketAction,
 )
 from bot.testing import ScriptedWebSocket
-from ulid import ULID
+from logbook import TestHandler as LogbookTestHandler
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
@@ -32,6 +35,11 @@ from .support import private_msg_payload
 def test_forward_websocket_validates_role_endpoint_and_identity() -> None:
     self_ = BotSelf(platform="qq", user_id="10000")
 
+    with pytest.raises(ValueError, match="role"):
+        ForwardWebSocket(
+            "ws://onebot.example/event",
+            role=cast(Any, "invalid"),
+        )
     with pytest.raises(ValueError, match="/api endpoint"):
         ForwardWebSocket("ws://onebot.example/", role="api", self_=self_)
     with pytest.raises(ValueError, match="requires a bot identity"):
@@ -42,12 +50,70 @@ def test_forward_websocket_validates_role_endpoint_and_identity() -> None:
             role="universal",
             self_=BotSelf(platform="discord", user_id="bot"),
         )
-    with pytest.raises(ValueError, match="must be positive"):
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "//onebot.example/event",
+        "http://onebot.example/event",
+        "ws://one bot.example/event",
+        "ws://onebot.example/event#fragment",
+        "ws://onebot.example:invalid/event",
+    ],
+)
+def test_forward_websocket_rejects_invalid_url(url: str) -> None:
+    with pytest.raises(ValueError, match="URL"):
+        ForwardWebSocket(url, role="event")
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [True, "1", 0, -1, nan, inf],
+    ids=["boolean", "string", "zero", "negative", "nan", "infinity"],
+)
+def test_forward_websocket_rejects_invalid_reconnect_interval(
+    interval: Any,
+) -> None:
+    with pytest.raises(ValueError, match="reconnect_interval"):
         ForwardWebSocket(
             "ws://onebot.example/event",
             role="event",
-            reconnect_interval=0,
+            reconnect_interval=interval,
         )
+
+
+@pytest.mark.parametrize(
+    "port",
+    [True, 1.5, -1, 65536],
+    ids=["boolean", "float", "negative", "too-large"],
+)
+def test_reverse_websocket_rejects_invalid_port(port: Any) -> None:
+    with pytest.raises(ValueError, match="port"):
+        ReverseWebSocket(port=port)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "onebot",
+        "//host/path",
+        "/path?query=1",
+        "/path#fragment",
+        "/path\n",
+        "/two words",
+    ],
+)
+def test_ingress_rejects_non_path_targets(path: str) -> None:
+    with pytest.raises(ValueError, match="path"):
+        HttpWebhook(path=path)
+
+
+def test_http_webhook_repr_hides_secret() -> None:
+    credential = "secret"
+
+    assert credential not in repr(HttpWebhook(secret=credential))
 
 
 @pytest.mark.parametrize(
@@ -171,8 +237,46 @@ async def test_reverse_websocket_handshake_boundaries(
     assert exc_info.value.response.status_code == status
 
 
+async def test_reverse_websocket_close_cancels_handler_waiting_for_bot() -> None:
+    bot = Bot()
+    gateway = OneBot11Gateway(
+        bot,
+        ingress=[ReverseWebSocket(port=0, path="/onebot/ws")],
+    )
+    waiting = Event()
+    wait_until_running = bot.wait_until_running
+
+    async def mark_waiting() -> None:
+        waiting.set()
+        await wait_until_running()
+
+    await gateway.start()
+    websocket = None
+    try:
+        with patch.object(bot, "wait_until_running", side_effect=mark_waiting):
+            port = gateway.reverse_websocket_ports[0]
+            async with timeout(1):
+                websocket = await connect(
+                    f"ws://127.0.0.1:{port}/onebot/ws",
+                    additional_headers={
+                        "X-Self-ID": "10000",
+                        "X-Client-Role": "Event",
+                    },
+                    proxy=None,
+                )
+                await waiting.wait()
+                await gateway.close()
+                await websocket.wait_closed()
+    finally:
+        if websocket is not None:
+            await websocket.close()
+        await gateway.close()
+
+
 async def test_reverse_websocket_dispatches_and_matches_action_response() -> None:
     bot = Bot()
+    completed = Event()
+    responses: list[ActionResponse] = []
     gateway = OneBot11Gateway(
         bot,
         ingress=[ReverseWebSocket(port=0, path="/onebot/ws")],
@@ -181,8 +285,11 @@ async def test_reverse_websocket_dispatches_and_matches_action_response() -> Non
     bot.add_gateway(gateway)
 
     @bot.on_msg(block=True)
-    def collect() -> ReturnAction:
-        return ReturnAction.call("get_user_info", {"user_id": "42"})
+    async def collect(connection: Injected[Connection]) -> None:
+        response = await connection.action("get_user_info", user_id="42")
+        assert isinstance(response, ActionResponse)
+        responses.append(response)
+        completed.set()
 
     async with timeout(2), bot:
         port = gateway.reverse_websocket_ports[0]
@@ -202,14 +309,21 @@ async def test_reverse_websocket_dispatches_and_matches_action_response() -> Non
                 orjson.dumps({
                     "status": "ok",
                     "retcode": 0,
-                    "data": {"user_id": 42},
+                    "data": {"user_id": 42, "nickname": "tester"},
                     "echo": request["echo"],
                 }).decode()
             )
+            await completed.wait()
 
-    assert str(ULID.from_str(request["echo"])) == request["echo"]
+    assert str(UUID(request["echo"])) == request["echo"]
     assert request["action"] == "get_stranger_info"
     assert request["params"] == {"user_id": 42}
+    assert responses[0].data == {
+        "user_id": "42",
+        "user_name": "tester",
+        "user_displayname": "",
+        "user_remark": "",
+    }
 
 
 async def test_forward_websocket_dispatches_event_with_authorization() -> None:
@@ -247,6 +361,76 @@ async def test_forward_websocket_dispatches_event_with_authorization() -> None:
         "ws://onebot.example/",
         {"Authorization": "Bearer secret"},
     )
+
+
+async def test_forward_websocket_lifecycle_restarts_real_connections() -> None:
+    websockets = [ScriptedWebSocket(), ScriptedWebSocket()]
+    connector = AsyncMock(side_effect=websockets)
+    bot = Bot()
+    bot.add_gateway(
+        OneBot11Gateway(
+            bot,
+            ingress=[
+                ForwardWebSocket(
+                    "ws://onebot.example/event",
+                    role="event",
+                    reconnect_interval=60,
+                )
+            ],
+            websocket_connector=connector,
+        )
+    )
+
+    async with timeout(1):
+        for index, websocket in enumerate(websockets, start=1):
+            async with bot:
+                await websocket.receiving.wait()
+                assert connector.await_count == index
+            assert websocket.closed.is_set()
+
+
+async def test_gateway_close_finishes_cleanup_before_propagating_cancellation() -> None:
+    bot = Bot()
+    websocket = ScriptedWebSocket()
+    close_started = Event()
+    close_allowed = Event()
+    gateway = OneBot11Gateway(
+        bot,
+        ingress=[
+            ForwardWebSocket(
+                "ws://onebot.example/event",
+                role="event",
+                reconnect_interval=60,
+            )
+        ],
+        websocket_connector=AsyncMock(return_value=websocket),
+    )
+    bot.add_gateway(gateway)
+
+    async def slow_close() -> None:
+        close_started.set()
+        await close_allowed.wait()
+        websocket.closed.set()
+
+    with patch.object(websocket, "close", side_effect=slow_close):
+        async with timeout(1):
+            await bot.start()
+            try:
+                await websocket.receiving.wait()
+                closing = create_task(gateway.close())
+                await close_started.wait()
+                closing.cancel()
+                close_allowed.set()
+                with pytest.raises(CancelledError):
+                    await closing
+                assert websocket.closed.is_set()
+                assert gateway.http_pool is None
+                assert not gateway._started  # ruff: ignore[private-member-access]
+                assert not gateway._forward_tasks  # ruff: ignore[private-member-access]
+            finally:
+                close_allowed.set()
+                await gateway.close()
+                await bot.close()
 
 
 async def test_forward_websocket_waits_until_bot_start_completes() -> None:
@@ -299,6 +483,34 @@ async def test_forward_websocket_waits_until_bot_start_completes() -> None:
     assert websocket.closed.is_set()
 
 
+async def test_websocket_closes_when_bot_start_fails() -> None:
+    bot = Bot()
+    websocket = ScriptedWebSocket()
+    gateway = OneBot11Gateway(
+        bot,
+        ingress=[
+            ForwardWebSocket(
+                "ws://onebot.example/event",
+                role="event",
+                reconnect_interval=60,
+            )
+        ],
+        websocket_connector=AsyncMock(return_value=websocket),
+    )
+
+    with patch.object(
+        bot,
+        "wait_until_running",
+        AsyncMock(side_effect=RuntimeError("startup failed")),
+    ):
+        await gateway.start()
+        try:
+            async with timeout(1):
+                await websocket.closed.wait()
+        finally:
+            await gateway.close()
+
+
 async def test_forward_websocket_receives_action_while_waiting_for_events() -> None:
     bot = Bot()
     completed = Event()
@@ -346,24 +558,14 @@ async def test_forward_websocket_receives_action_while_waiting_for_events() -> N
 async def test_forward_websocket_reconnects_after_connect_and_receive_errors() -> None:
     bot = Bot()
     received = Event()
-    calls = 0
-    broken = ScriptedWebSocket(ConnectionError("receive failed"))
-    working = ScriptedWebSocket(private_msg_payload(), StopAsyncIteration())
+    marker = f"sensitive-{id(bot)}"
+    broken = ScriptedWebSocket(marker)
+    working = ScriptedWebSocket(private_msg_payload())
+    connector = AsyncMock(side_effect=[ConnectionError(marker), broken, working])
 
     @bot.on_msg(block=True)
     def collect() -> None:
         received.set()
-
-    def connector(
-        _url: str,
-        _headers: dict[str, str] | None,
-    ) -> ScriptedWebSocket:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            message = "connect failed"
-            raise ConnectionError(message)
-        return broken if calls == 2 else working
 
     gateway = OneBot11Gateway(
         bot,
@@ -375,23 +577,22 @@ async def test_forward_websocket_reconnects_after_connect_and_receive_errors() -
                 reconnect_interval=0.001,
             )
         ],
-        websocket_connector=AsyncMock(side_effect=connector),
+        websocket_connector=connector,
     )
     bot.add_gateway(gateway)
 
-    async with timeout(1), bot:
-        await received.wait()
-        await broken.closed.wait()
+    with LogbookTestHandler() as handler:
+        async with timeout(1), bot:
+            await received.wait()
+            await broken.closed.wait()
 
-    assert calls == 3
+    assert connector.await_count == 3
+    assert marker not in "\n".join(record.message for record in handler.records)
 
 
 async def test_websocket_queue_overload_closes_connection() -> None:
-    bot = Bot(max_dispatches=1)
-    release = Event()
-    websocket = ScriptedWebSocket(
-        *(private_msg_payload(str(index)) for index in range(66))
-    )
+    bot = Bot()
+    websocket = ScriptedWebSocket(private_msg_payload())
     gateway = OneBot11Gateway(
         bot,
         ingress=[
@@ -406,12 +607,8 @@ async def test_websocket_queue_overload_closes_connection() -> None:
     )
     bot.add_gateway(gateway)
 
-    @bot.on_msg(block=True)
-    async def block() -> None:
-        await release.wait()
+    with patch.object(gateway, "enqueue_event", side_effect=QueueFull) as enqueue:
+        async with timeout(1), bot:
+            await websocket.closed.wait()
 
-    async with timeout(1), bot:
-        await websocket.closed.wait()
-        release.set()
-
-    assert websocket.closed.is_set()
+    enqueue.assert_called_once()

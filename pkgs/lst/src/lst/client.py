@@ -46,10 +46,7 @@ class LstClient:
         for room_id in room_values:
             console_path = self.data_path / str(room_id) / "console"
             if __debug__:
-                logger.debug(
-                    "write DST console command : {path}",
-                    path=console_path,
-                )
+                logger.debug("write DST console command : {path}", path=console_path)
             console_path.write_text(payload, encoding="utf-8")
 
     def save_rooms(self, room_ids: Iterable[int]) -> None:
@@ -60,32 +57,6 @@ class LstClient:
 
     def regenerate_rooms(self, room_ids: Iterable[int]) -> None:
         self.send_console_command(room_ids, "c_regenerateworld()")
-
-    def start_rooms(self, room_ids: Iterable[int]) -> None:
-        systemd_manager = self.systemd_manager
-        room_values = tuple(room_ids)
-        logger.info(
-            "start DST rooms: {rooms}",
-            rooms=",".join(str(room_id) for room_id in room_values),
-        )
-        for room_id in room_values:
-            unit = self.service_name(room_id)
-            if __debug__:
-                logger.debug("start DST systemd unit : {unit}", unit=unit)
-            systemd_manager.StartUnit(unit, self.systemd_mode)
-
-    def stop_rooms(self, room_ids: Iterable[int]) -> None:
-        systemd_manager = self.systemd_manager
-        room_values = tuple(room_ids)
-        logger.info(
-            "stop DST rooms: {rooms}",
-            rooms=",".join(str(room_id) for room_id in room_values),
-        )
-        for room_id in room_values:
-            unit = self.service_name(room_id)
-            if __debug__:
-                logger.debug("stop DST systemd unit : {unit}", unit=unit)
-            systemd_manager.StopUnit(unit, self.systemd_mode)
 
     def restart_rooms(self, room_ids: Iterable[int]) -> None:
         systemd_manager = self.systemd_manager

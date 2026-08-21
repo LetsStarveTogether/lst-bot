@@ -1,46 +1,35 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, StrictBool, StrictStr, field_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictStr
 
 from .base import Model
 from .constants import NAME_PATTERN
+
+type _Name = Annotated[
+    StrictStr,
+    Field(pattern=rf"^(?:{NAME_PATTERN.pattern})$"),
+]
 
 
 class BotSelf(Model):
     model_config = ConfigDict(frozen=True)
 
-    platform: StrictStr
+    platform: _Name
     user_id: StrictStr
 
     def __str__(self) -> str:
         return f"{self.platform}:{self.user_id}"
 
-    @field_validator("platform")
-    @classmethod
-    def platform_value(cls, value: str) -> str:
-        if NAME_PATTERN.fullmatch(value) is None:
-            msg = "platform must match [a-z][\\-a-z0-9]*(\\.[\\-a-z0-9]+)*"
-            raise ValueError(msg)
-        return value
-
 
 class Version(Model):
-    impl: StrictStr
+    impl: _Name
     version: StrictStr
     onebot_version: Literal["12"]
 
     def __str__(self) -> str:
         return f"{self.impl}@{self.version} ob{self.onebot_version}"
-
-    @field_validator("impl")
-    @classmethod
-    def impl_value(cls, value: str) -> str:
-        if NAME_PATTERN.fullmatch(value) is None:
-            msg = "implementation name must match [a-z][\\-a-z0-9]*(\\.[\\-a-z0-9]+)*"
-            raise ValueError(msg)
-        return value
 
 
 class BotStatus(Model):

@@ -9,16 +9,17 @@ from asyncio import (
     Task,
     create_task,
     current_task,
+    gather,
     get_running_loop,
     timeout_at,
 )
 from asyncio import Event as AsyncEvent
-from collections.abc import Awaitable, Callable, Iterable
-from contextlib import AsyncExitStack, suppress
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import timedelta, tzinfo
-from types import TracebackType
+from functools import partial
+from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Self
 
 from diwire import (
@@ -53,7 +54,13 @@ from .di import (
     register_context_providers,
     request_scope,
 )
-from .scheduler import RECENT_SELF, CronScheduler, SelfTarget
+from .scheduler import (
+    CURRENT_SCHEDULER_BOT,
+    RECENT_SELF,
+    CronScheduler,
+    SelfTarget,
+    _raise_errors,
+)
 
 if TYPE_CHECKING:
     from bot.gateways.base import RobynServer
@@ -65,6 +72,11 @@ _CURRENT_DISPATCHER: ContextVar[Bot | None] = ContextVar(
     "bot_current_dispatcher",
     default=None,
 )
+_CURRENT_LIFECYCLE: ContextVar[Bot | None] = ContextVar(
+    "bot_current_lifecycle",
+    default=None,
+)
+type _CleanupCallback = Callable[[], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -85,7 +97,7 @@ class Bot:
     def __init__(
         self,
         *,
-        admin_ids: Iterable[str] = (),
+        admin_ids: Mapping[str, Iterable[str]] | None = None,
         cmd_prefixes: tuple[str, ...] = ("/",),
         dispatch_timeout: timedelta | None = timedelta(seconds=900),
         max_dispatches: int = 8,
@@ -98,7 +110,10 @@ class Bot:
         if max_dispatches <= 0:
             msg = "max_dispatches must be greater than zero"
             raise ValueError(msg)
-        self.admin_ids = frozenset(admin_ids)
+        self.admin_ids: Mapping[str, frozenset[str]] = MappingProxyType({
+            platform: frozenset(user_ids)
+            for platform, user_ids in (admin_ids or {}).items()
+        })
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
         self.max_dispatches = max_dispatches
@@ -121,6 +136,8 @@ class Bot:
         self._recent_connection: tuple[Gateway, BotSelf] | None = None
         self._scheduler = CronScheduler(self, default_timezone=self.scheduler_timezone)
         self._lifecycle_lock = Lock()
+        self._lifecycle_started = False
+        self._pending_cleanup: list[_CleanupCallback] = []
         self._started = False
         self._accepting_events = False
         self._running = AsyncEvent()
@@ -142,6 +159,12 @@ class Bot:
         await self.close()
 
     def add_gateway(self, gateway: Gateway) -> None:
+        if gateway.bot is not self:
+            msg = "Gateway belongs to another bot"
+            raise ValueError(msg)
+        if self._lifecycle_started:
+            msg = "Gateways cannot be added after bot startup begins"
+            raise RuntimeError(msg)
         register_context_providers(
             self.container,
             self._gateway_provider_types,
@@ -271,53 +294,121 @@ class Bot:
         return func
 
     async def start(self) -> None:
+        self._reject_lifecycle_reentry()
+        self._lifecycle_started = True
         async with self._lifecycle_lock:
-            if self._started:
-                return
+            token = _CURRENT_LIFECYCLE.set(self)
             try:
-                await self._start_once()
-            except BaseException:
-                logger.exception(
-                    "bot startup failed: gateways={gateway_count}",
-                    gateway_count=len(self._gateways),
-                )
-                raise
-            self._started = True
-            self._accepting_events = True
-            self._running.set()
+                if self._pending_cleanup:
+                    msg = "Bot shutdown is incomplete; call close() again"
+                    raise RuntimeError(msg)
+                if self._started:
+                    return
+                try:
+                    await self._start_once()
+                except BaseException:
+                    logger.exception(
+                        "bot startup failed: gateways={gateway_count}",
+                        gateway_count=len(self._gateways),
+                    )
+                    raise
+                self._started = True
+                self._accepting_events = True
+                self._running.set()
+            finally:
+                _CURRENT_LIFECYCLE.reset(token)
 
     async def close(self) -> None:
         if _CURRENT_DISPATCHER.get() is self:
             msg = "Bot cannot be closed from a dispatch handler"
             raise RuntimeError(msg)
+        if CURRENT_SCHEDULER_BOT.get() is self:
+            msg = "Bot cannot be closed from a scheduled handler"
+            raise RuntimeError(msg)
+        self._reject_lifecycle_reentry()
         async with self._lifecycle_lock:
-            if not self._started:
-                return
-            self._accepting_events = False
-            self._running.clear()
+            token = _CURRENT_LIFECYCLE.set(self)
             try:
-                async with AsyncExitStack() as cleanup:
-                    cleanup.push_async_callback(self.container.aclose)
-                    for gateway in self._gateways:
-                        cleanup.push_async_callback(gateway.close)
-                    cleanup.push_async_callback(self._stop_dispatcher)
-                    cleanup.push_async_callback(self._run_hooks, self._close_hooks)
-                    cleanup.push_async_callback(self._scheduler.close)
-            finally:
+                if not self._started and not self._pending_cleanup:
+                    return
+                self._accepting_events = False
+                self._running.clear()
+                if not self._pending_cleanup:
+                    self._pending_cleanup = self._cleanup_callbacks(
+                        self._gateways,
+                        run_close_hooks=True,
+                        close_container=True,
+                    )
+                failed, errors = await self._run_cleanup(self._pending_cleanup)
+                self._pending_cleanup = failed
+                _raise_errors("Bot cleanup failed", errors)
                 self._started = False
+            finally:
+                _CURRENT_LIFECYCLE.reset(token)
 
     async def _start_once(self) -> None:
-        async with AsyncExitStack() as rollback:
+        gateways: list[Gateway] = []
+        run_close_hooks = False
+        try:  # ruff: ignore[too-many-statements-in-try-clause] - lifecycle rollback is clearest in one scope
             await self._start_dispatcher()
-            rollback.push_async_callback(self._stop_dispatcher)
             for gateway in self._gateways:
-                rollback.push_async_callback(gateway.close)
+                gateways.append(gateway)
                 await gateway.start()
-            rollback.push_async_callback(self._run_hooks, self._close_hooks)
-            rollback.push_async_callback(self._scheduler.close)
+            run_close_hooks = True
             await self._run_hooks(self._start_hooks)
             self._scheduler.start()
-            rollback.pop_all()
+        except BaseException as startup_error:
+            callbacks = self._cleanup_callbacks(
+                gateways,
+                run_close_hooks=run_close_hooks,
+                close_container=False,
+            )
+            failed, cleanup_errors = await self._run_cleanup(callbacks)
+            self._pending_cleanup = failed
+            if cleanup_errors:
+                msg = "Bot startup and rollback failed"
+                errors = [startup_error, *cleanup_errors]
+                raise BaseExceptionGroup(msg, errors) from None
+            raise
+
+    def _reject_lifecycle_reentry(self) -> None:
+        if _CURRENT_LIFECYCLE.get() is self and self._lifecycle_lock.locked():
+            msg = "Bot lifecycle cannot be re-entered from a lifecycle hook"
+            raise RuntimeError(msg)
+
+    def _cleanup_callbacks(
+        self,
+        gateways: Iterable[Gateway],
+        *,
+        run_close_hooks: bool,
+        close_container: bool,
+    ) -> list[_CleanupCallback]:
+        callbacks: list[_CleanupCallback] = [
+            self._scheduler.close,
+            self._stop_dispatcher,
+        ]
+        if run_close_hooks:
+            callbacks.extend(
+                partial(self._run_hooks, [hook]) for hook in self._close_hooks
+            )
+        callbacks.extend(gateway.close for gateway in reversed(tuple(gateways)))
+        if close_container:
+            callbacks.append(self.container.aclose)
+        return callbacks
+
+    @staticmethod
+    async def _run_cleanup(
+        callbacks: Iterable[_CleanupCallback],
+    ) -> tuple[list[_CleanupCallback], list[BaseException]]:
+        failed: list[_CleanupCallback] = []
+        errors: list[BaseException] = []
+        for callback in callbacks:
+            try:
+                await callback()
+            except BaseException as exc:
+                failed.append(callback)
+                errors.append(exc)
+        return failed, errors
 
     async def wait_until_running(self) -> None:
         await self._running.wait()
@@ -393,24 +484,30 @@ class Bot:
 
     async def _stop_dispatcher(self) -> None:
         self._accepting_events = False
-        workers, self._event_workers = self._event_workers, ()
+        workers = self._event_workers
         for worker in workers:
             worker.cancel()
-        for worker in workers:
-            with suppress(CancelledError):
-                await worker
+        results = await gather(*workers, return_exceptions=True)
+        self._event_workers = ()
 
         queue, self._event_queue = self._event_queue, None
-        if queue is None:
-            return
-        while True:
-            try:
-                item = queue.get_nowait()
-            except QueueEmpty:
-                return
-            if item.result is not None and not item.result.done():
-                item.result.cancel()
-            queue.task_done()
+        if queue is not None:
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except QueueEmpty:
+                    break
+                if item.result is not None and not item.result.done():
+                    item.result.cancel()
+                queue.task_done()
+
+        errors = [
+            result
+            for result in results
+            if isinstance(result, BaseException)
+            and not isinstance(result, CancelledError)
+        ]
+        _raise_errors("Bot dispatcher shutdown failed", errors)
 
     async def _dispatch_worker(self, queue: Queue[_QueuedEvent]) -> None:
         worker = current_task()

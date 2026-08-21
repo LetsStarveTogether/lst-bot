@@ -80,6 +80,7 @@ class ScriptedWebSocket:
         self.send_allowed = Event()
         self.send_allowed.set()
         self.closed = Event()
+        self.close_code: int | None = None
         for item in incoming:
             self.feed(item)
 
@@ -102,7 +103,8 @@ class ScriptedWebSocket:
         await self.send_allowed.wait()
         await self.sent.put(payload)
 
-    async def close(self) -> None:
+    async def close(self, code: int = 1000) -> None:
+        self.close_code = code
         self.closed.set()
 
 

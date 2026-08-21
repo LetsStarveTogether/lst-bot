@@ -13,7 +13,7 @@ This repository contains the bot application and its reusable framework and clie
 
 ## Features
 
-- Connects LST group chats through OneBot.
+- Connects chats through OneBot, Telegram, and Discord.
 - Looks up DST versions, Klei lobbies, room details, and online players.
 - Manages local DST rooms and sends scheduled activity reports.
 - Answers DST questions with an AI agent.
@@ -22,7 +22,7 @@ This repository contains the bot application and its reusable framework and clie
 
 ```mermaid
 flowchart LR
-    Chat[IM Group] <--> Gateway[NapCat / OneBot]
+    Chat[IM Group] <--> Gateway[OneBot / Telegram / Discord]
     Gateway <--> Bot[lst-bot]
     Bot --> Game[Klei and DST data]
     Bot --> Rooms[Local DST rooms]
@@ -46,11 +46,14 @@ The app reads `.env` from the repository root.
 | `ONEBOT_WS_URL` | OneBot WebSocket URL |
 | `ONEBOT_ACCESS_TOKEN` | OneBot access token |
 | `ONEBOT_SELF_ID` | OneBot account ID |
-| `BOT_ADMIN` | Admin account IDs |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token; empty disables Telegram |
+| `DISCORD_BOT_TOKEN` | Discord bot token; empty disables Discord |
+| `DISCORD_INTENTS` | Discord Gateway intent bitfield; defaults to `4609` |
+| `BOT_ADMIN` | Admin IDs grouped by platform, for example `{"qq":["123"]}` |
 | `BOT_CMD_PREFIXES` | Command prefixes |
 | `BOT_TIMEOUT` | Event handling timeout as an ISO 8601 duration |
 | `BOT_TIMEZONE` | Scheduler timezone |
-| `REPORT_GROUP_ID` | Group for scheduled reports |
+| `REPORT_GROUP_ID` | OneBot report group; empty disables scheduled reports |
 | `KLEI_ACCESS_TOKEN` | Klei access token |
 | `KLEI_HOST_ID` | Managed DST host ID |
 | `OPENROUTER_API_KEY` | AI provider credentials |
@@ -58,6 +61,20 @@ The app reads `.env` from the repository root.
 | `DOSU_API_KEY` | Knowledge service credentials |
 | `HTTP_PROXY` | Proxy for outbound HTTP requests |
 | `LOG_LEVEL` | Log level |
+
+`ONEBOT_WS_URL` and `ONEBOT_SELF_ID` must be set together; leaving both empty disables OneBot.
+
+Telegram receives events with the official `getUpdates` long poll because the Bot API has no WebSocket transport.
+
+Discord uses a WebSocket Gateway.
+Enable every configured privileged intent in the Discord Developer Portal; reading ordinary guild message content requires `MESSAGE_CONTENT` (`DISCORD_INTENTS=37377` with the defaults).
+
+## Platform APIs
+
+Telegram exposes Bot API methods by their official names, except `getUpdates` and `setWebhook`, which conflict with its long poll.
+
+Discord exposes common bot actions plus `discord.request` and `discord.gateway`; user OAuth, voice transport, and multi-process shard coordination are out of scope.
+A single `DiscordGateway` owns one shard; bots at Discord's mandatory large-scale sharding threshold need an external shard coordinator.
 
 ## Development
 
@@ -69,13 +86,13 @@ The app reads `.env` from the repository root.
 
 ## Deployment
 
-The supplied systemd units use `/srv/lst-bot` and `/srv/napcat`.
+The supplied systemd units use `/srv/lst-bot`; the optional OneBot deployment also uses `/srv/napcat`.
 
-`systemd/napcat.container` runs NapCat with Podman, and `systemd/lst-bot.service` starts the bot after it.
+`systemd/napcat.container` runs NapCat with Podman when OneBot is enabled.
 
 1. Place the repository at `/srv/lst-bot` and run `just sync`.
 2. Configure `.env`.
-3. Enable the NapCat container and bot service.
+3. Enable the bot service and, when using OneBot, the NapCat container.
 4. For room management, provide `dst@<room>.service` units and grant the bot permission to control them.
 
 Update the systemd units if the deployment paths differ.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from asyncio import Event, QueueFull, TaskGroup
+from asyncio import Event, QueueFull, TaskGroup, timeout
 from hashlib import sha1
 from hmac import new
 from http import HTTPStatus
@@ -124,11 +124,34 @@ async def test_http_quick_reply_does_not_need_action_backend() -> None:
     }
 
 
+async def test_http_handler_can_disable_quick_response() -> None:
+    async with ActionServer() as server:
+        bot = Bot()
+        gateway = OneBot11Gateway(bot, action=HttpAction(server.base_url))
+        bot.add_gateway(gateway)
+
+        @bot.on_msg(block=True)
+        def collect() -> str:
+            return "pong"
+
+        async with bot:
+            response = await gateway.handle_http(
+                Model.model_validate(private_msg_payload()),
+                quick_response=False,
+            )
+
+    assert response.status_code == HTTPStatus.NO_CONTENT
+    assert server.requests[0].json == {
+        "user_id": 42,
+        "message": [{"type": "text", "data": {"text": "pong"}}],
+    }
+
+
 async def test_http_quick_operation_context_expires_with_response() -> None:
     release = Event()
     completed = Event()
 
-    async with ActionServer() as server, TaskGroup() as tasks:
+    async with timeout(1), ActionServer() as server, TaskGroup() as tasks:
         bot = Bot()
         gateway = OneBot11Gateway(bot, action=HttpAction(server.base_url))
         bot.add_gateway(gateway)

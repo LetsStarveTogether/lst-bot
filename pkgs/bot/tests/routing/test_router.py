@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 from bot import (
     Bot,
     Cmd,
@@ -10,11 +11,46 @@ from bot import (
     Injected,
     InjectionContext,
     Lifetime,
+    Permission,
+    Rule,
     Scope,
     State,
     UserEvent,
 )
 from bot.testing import private_message_event, recording_gateway
+
+
+def test_permission_composition_preserves_permission_type() -> None:
+    permission = Permission(lambda: True)
+
+    assert isinstance(permission & Rule(lambda: True), Permission)
+    assert isinstance(permission | (lambda: False), Permission)
+
+
+@pytest.mark.parametrize("role", [[], {}], ids=["list", "mapping"])
+async def test_admin_permission_rejects_non_hashable_sender_role(
+    role: list[object] | dict[str, object],
+) -> None:
+    bot = Bot()
+    router = EventRouter()
+
+    @router.on_msg(permission=Permission.admin(), block=True)
+    def protected() -> str:
+        return "allowed"
+
+    bot.add_router(router)
+    gateway = recording_gateway(bot)
+    source = private_message_event("hello")
+    payload = source.model_dump(mode="json", by_alias=True)
+    payload["sender"] = {"role": role}
+
+    async with bot:
+        results = await bot.dispatch(
+            gateway.connection,
+            type(source).model_validate(payload),
+        )
+
+    assert results == []
 
 
 @dataclass(frozen=True)

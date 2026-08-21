@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from klei import Region, RoomData, Season
+from klei import RoomData, Season
 
 
 def room_data(**overrides: object) -> RoomData:
@@ -16,7 +16,7 @@ def room_data(**overrides: object) -> RoomData:
         "maxconnections": 6,
         "password": False,
         "serverpaused": False,
-        "region": Region.AP_EAST,
+        "region": "ap-east-1",
         "season": Season.AUTUMN,
         "data": "day=12",
         **overrides,

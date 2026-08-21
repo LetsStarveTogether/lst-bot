@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from base64 import b64encode
+from decimal import Decimal
 
 import pytest
 from bot import (
@@ -22,7 +23,7 @@ from bot.protocol.actions import (
     LatestEventsParams,
     UploadFileBaseParams,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_serializer
 
 ACTION_CASES: dict[str, dict[str, object]] = {
     "get_latest_events": {"limit": 10, "timeout": 0},
@@ -94,7 +95,7 @@ def test_each_standard_action_round_trips_json(
 
 
 def test_action_matrix_covers_every_declared_standard_action() -> None:
-    assert set(map(Action, ACTION_CASES)) == set(Action)
+    assert set(ACTION_CASES) == {action.value for action in Action}
 
 
 @pytest.mark.parametrize(
@@ -323,10 +324,6 @@ def test_action_response_round_trips_required_null_data_and_omits_null_echo() ->
     "payload",
     [
         pytest.param(
-            {"status": "ok", "retcode": 0, "data": None, "message": ""},
-            id="ok",
-        ),
-        pytest.param(
             {"status": "failed", "retcode": 1, "data": None, "message": "failed"},
             id="failed-minimum-retcode",
         ),
@@ -347,8 +344,7 @@ def test_action_response_accepts_status_retcode_contract(
 ) -> None:
     response = ActionResponse.model_validate(payload)
 
-    assert response.status == payload["status"]
-    assert ActionResponse.model_validate_json(response.model_dump_json()) == response
+    assert response.model_dump(mode="json", by_alias=True) == payload
 
 
 @pytest.mark.parametrize(
@@ -580,6 +576,20 @@ class VendorParams(BaseModel):
     enabled: bool
 
 
+class VendorOperation(BaseModel):
+    from_: str = Field(alias="from")
+    amount: Decimal
+
+    @field_serializer("amount", when_used="json")
+    def serialize_amount(self, value: Decimal) -> str:
+        return f"decimal:{value}"
+
+
+class VendorRequest(BaseModel):
+    from_: str = Field(alias="from")
+    operations: list[VendorOperation]
+
+
 def test_return_action_serializes_python_parameter_values() -> None:
     params: dict[str, ActionParamInput] = {
         "bytes": b"\xff",
@@ -603,6 +613,39 @@ def test_return_action_serializes_python_parameter_values() -> None:
             "model": {"enabled": True},
             "text": "/w==",
         },
+    }
+
+
+def test_action_params_recursively_serialize_models_with_aliases() -> None:
+    operation = VendorOperation.model_validate({
+        "from": "nested",
+        "amount": Decimal("1.20"),
+    })
+    top_level = ActionCall.model_validate({
+        "action": "vendor.action",
+        "params": VendorRequest.model_validate({
+            "from": "top",
+            "operations": [operation],
+        }),
+    })
+    nested = ActionCall.model_validate({
+        "action": "vendor.action",
+        "params": {"operations": (operation,)},
+    })
+    expected = {
+        "from": "nested",
+        "amount": "decimal:1.20",
+    }
+
+    assert top_level.model_dump(mode="json", by_alias=True) == {
+        "action": "vendor.action",
+        "params": {
+            "from": "top",
+            "operations": [expected],
+        },
+    }
+    assert nested.model_dump(mode="json", by_alias=True)["params"] == {
+        "operations": [expected]
     }
 
 

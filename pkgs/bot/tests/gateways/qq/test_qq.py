@@ -1,0 +1,1286 @@
+from __future__ import annotations
+
+from asyncio import Event as AsyncEvent
+from asyncio import TaskGroup, timeout
+from http import HTTPMethod
+from string import Formatter
+from typing import cast
+from unittest.mock import AsyncMock, call
+
+import orjson
+import pytest
+from bot import (
+    Action,
+    ActionParamInput,
+    Bot,
+    BotSelf,
+    ChannelMessageEvent,
+    Event,
+    FriendDecreaseNoticeEvent,
+    FriendIncreaseNoticeEvent,
+    GroupMessageEvent,
+    GroupRequestEvent,
+    Injected,
+    MsgInput,
+    MsgSegmentType,
+    NoticeEvent,
+    PrivateMessageEvent,
+    ReturnAction,
+)
+from bot.gateways import qq as qq_gateway_module
+from bot.gateways.base import WebsocketsConnection
+from bot.gateways.qq import QQDispatch, QQGateway
+from bot.gateways.qq_api import (
+    QQ_ROUTES,
+    QQAction,
+    QQAPIError,
+    QQAsyncResult,
+    QQAudioControlRequest,
+    QQFileUploadFields,
+    QQGatewayInfo,
+    QQGuildList,
+    QQGuildListParams,
+    QQJoinRequestList,
+    QQMenuItem,
+    QQMenuLinkItem,
+    QQNoContent,
+    QQRestClient,
+    QQRoleMemberListParams,
+    QQSchedulePatch,
+    QQSendC2CMessageRequest,
+    QQSendGroupMessageRequest,
+    QQSentMessage,
+    QQStrategyGroups,
+    QQStrategyList,
+    QQStreamMessageRequest,
+)
+from bot.testing import ScriptedWebSocket
+from pydantic import JsonValue, TypeAdapter, ValidationError
+from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
+
+from .support import (
+    CREDENTIAL,
+)
+from .support import (
+    Pool as FakePool,
+)
+from .support import (
+    client as _client,
+)
+from .support import (
+    gateway as _gateway,
+)
+from .support import (
+    response as _response,
+)
+
+
+def test_route_registry_preserves_qq_wire_modes() -> None:
+    assert set(QQAction) == set(QQ_ROUTES)
+    for route in QQ_ROUTES.values():
+        placeholders = {
+            field
+            for _, field, _, _ in Formatter().parse(route.path)
+            if field is not None
+        }
+        assert route.path.startswith("/")
+        assert "?" not in route.path
+        assert "#" not in route.path
+        assert placeholders <= route.request.model_fields.keys()
+
+    assert {action for action, route in QQ_ROUTES.items() if route.query} == {
+        QQAction.LIST_BOT_GUILDS,
+        QQAction.LIST_PANELS,
+        QQAction.RECALL_CHANNEL_MESSAGE,
+        QQAction.RECALL_DM_MESSAGE,
+        QQAction.LIST_GUILD_MEMBERS,
+        QQAction.LIST_GUILD_ROLE_MEMBERS,
+        QQAction.LIST_GROUP_APPROVAL_STRATEGIES,
+        QQAction.LIST_GROUP_JOIN_REQUESTS,
+        QQAction.LIST_MESSAGE_REACTION_USERS,
+        QQAction.LIST_SCHEDULES,
+    }
+    assert {action for action, route in QQ_ROUTES.items() if route.empty_body} == {
+        QQAction.GENERATE_SHARE_LINK,
+        QQAction.EXECUTE_GROUP_APPROVAL_STRATEGY,
+        QQAction.PUT_MENU,
+    }
+
+
+def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None:
+    assert QQGuildListParams(before="before", after="after").before == "before"
+
+    with pytest.raises(ValidationError, match="union_tag_invalid"):
+        TypeAdapter(QQMenuItem).validate_python({"name": "x", "type": "future"})
+
+    with pytest.raises(ValidationError, match="matching payload"):
+        QQSendGroupMessageRequest.model_validate({
+            "group_openid": "group",
+            "msg_type": 7,
+            "content": "wrong payload",
+            "msg_id": "source-message",
+        })
+
+    for model, payload in (
+        (
+            QQSendGroupMessageRequest,
+            {
+                "group_openid": "group",
+                "msg_type": 7,
+                "media": {"file_info": "media"},
+                "markdown": {"content": "incompatible"},
+            },
+        ),
+        (
+            QQSendC2CMessageRequest,
+            {
+                "user_openid": "user",
+                "msg_type": 7,
+                "media": {"file_info": "media"},
+                "input_notify": {"input_type": 1, "input_second": 1},
+            },
+        ),
+    ):
+        with pytest.raises(ValidationError, match="incompatible payloads"):
+            model.model_validate(payload)
+
+    for model, payload in (
+        (QQ_ROUTES[QQAction.UPDATE_CHANNEL].request, {"channel_id": "channel"}),
+        (
+            QQ_ROUTES[QQAction.UPDATE_GROUP_APPROVAL_STRATEGY].request,
+            {"strategy_id": "strategy"},
+        ),
+        (QQSchedulePatch, {"description": None}),
+    ):
+        with pytest.raises(ValidationError, match="at least one change"):
+            model.model_validate(payload)
+
+
+async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": "7200"},
+        [{"id": "guild", "name": "Guild"}],
+        {"id": "sent", "timestamp": "2026-08-17T00:00:00Z"},
+    )
+    client = _client(pool)
+
+    guilds = await client.request_qq(
+        QQAction.LIST_BOT_GUILDS,
+        after="cursor",
+        limit=10,
+    )
+    sent = await client.request_qq(
+        QQAction.SEND_GROUP_MESSAGE,
+        group_openid="group/one",
+        msg_type=0,
+        content="hello",
+        msg_id="source-message",
+    )
+
+    assert isinstance(guilds, QQGuildList)
+    assert guilds.root[0].name == "Guild"
+    assert isinstance(sent, QQSentMessage)
+    assert [request[:2] for request in pool.requests] == [
+        (HTTPMethod.POST, "https://qq.example/app/getAppAccessToken"),
+        (
+            HTTPMethod.GET,
+            "https://qq.example/users/@me/guilds?after=cursor&limit=10",
+        ),
+        (HTTPMethod.POST, "https://qq.example/v2/groups/group%2Fone/messages"),
+    ]
+    assert pool.requests[0][2]["json"] == {
+        "appId": "app",
+        "clientSecret": "secret",
+    }
+    assert pool.requests[1][2]["json"] is None
+    assert pool.requests[2][2]["json"] == {
+        "content": "hello",
+        "msg_id": "source-message",
+        "msg_type": 0,
+    }
+    for _, _, kwargs in pool.requests[1:]:
+        assert kwargs["headers"] == {
+            "Authorization": "QQBot token",
+            "Content-Type": "application/json",
+            "X-Union-Appid": "app",
+        }
+        assert kwargs["timeout"] == pytest.approx(30.0)
+
+
+async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = ScriptedWebSocket(
+        {"op": 10, "d": {"heartbeat_interval": 60_000}},
+        {
+            "op": 0,
+            "s": 1,
+            "t": "READY",
+            "d": {
+                "version": 1,
+                "session_id": "session",
+                "user": {"id": "bot", "username": "Bot", "bot": True},
+                "shard": [0, 1],
+            },
+        },
+        {
+            "id": "private-event",
+            "op": 0,
+            "s": 2,
+            "t": "C2C_MESSAGE_CREATE",
+            "d": {
+                "id": "private-message",
+                "author": {"user_openid": "user"},
+                "content": "private",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "message_type": 0,
+                "message_scene": {"source": "c2c", "ext": []},
+            },
+        },
+        {
+            "id": "group-event",
+            "op": 0,
+            "s": 3,
+            "t": "GROUP_AT_MESSAGE_CREATE",
+            "d": {
+                "id": "group-message",
+                "author": {"member_openid": "member"},
+                "content": "group",
+                "group_openid": "group",
+                "timestamp": "2026-08-17T00:00:01Z",
+                "message_type": 0,
+                "message_scene": {"source": "group", "ext": []},
+            },
+        },
+        {"op": 1},
+        {"op": 11},
+        {"op": 7},
+    )
+    second = ScriptedWebSocket(
+        {"op": 10, "d": {"heartbeat_interval": 60_000}},
+        {"op": 0, "s": 4, "t": "RESUMED", "d": ""},
+        {
+            "id": "future-event",
+            "op": 0,
+            "s": 5,
+            "t": "FUTURE_EVENT",
+            "d": {"new_field": True},
+        },
+        {"op": 1},
+        {"op": 11},
+    )
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"url": "wss://qq.example"},
+        {"url": "wss://qq.example"},
+    )
+    connect = AsyncMock(side_effect=[first, second])
+    reconnect_sleep = AsyncMock()
+    monkeypatch.setattr(qq_gateway_module, "sleep", reconnect_sleep)
+
+    bot = Bot()
+    gateway = QQGateway(
+        bot,
+        app_id="app",
+        client_secret=CREDENTIAL,
+        base_url="https://qq.example",
+        http_pool=cast(AsyncPoolManager, pool),
+        websocket_connector=connect,
+    )
+    bot.add_gateway(gateway)
+    events: dict[str, Event] = {}
+    all_received = AsyncEvent()
+
+    @bot.on_event(block=True)
+    def collect(event: Injected[Event]) -> None:
+        if isinstance(event, PrivateMessageEvent):
+            events["private"] = event
+        elif isinstance(event, GroupMessageEvent):
+            events["group"] = event
+        elif isinstance(event, NoticeEvent) and event.detail_type == "qq.future_event":
+            events["unknown"] = event
+        if len(events) == 3:
+            all_received.set()
+
+    async with timeout(3), bot:
+        await all_received.wait()
+        assert gateway._online  # ruff: ignore[private-member-access]
+        identify = orjson.loads(await first.sent.get())
+        first_heartbeat = orjson.loads(await first.sent.get())
+        resume = orjson.loads(await second.sent.get())
+        second_heartbeat = orjson.loads(await second.sent.get())
+
+    assert connect.await_args_list == [
+        call("wss://qq.example/", None),
+        call("wss://qq.example/", None),
+    ]
+    reconnect_sleep.assert_awaited_once_with(1.0)
+    assert identify == {
+        "op": 2,
+        "d": {
+            "token": "QQBot token",
+            "intents": 1 << 25,
+            "shard": [0, 1],
+        },
+    }
+    assert first_heartbeat == {"op": 1, "d": 3}
+    assert resume == {
+        "op": 6,
+        "d": {"token": "QQBot token", "session_id": "session", "seq": 3},
+    }
+    assert second_heartbeat == {"op": 1, "d": 5}
+    assert cast(PrivateMessageEvent, events["private"]).message.text == "private"
+    assert cast(GroupMessageEvent, events["group"]).group_id == "group"
+    assert events["unknown"].model_extra == {
+        "qq_event_type": "FUTURE_EVENT",
+        "qq_data": {"new_field": True},
+        "qq_raw": True,
+    }
+    assert first.closed.is_set()
+    assert second.closed.is_set()
+    assert not gateway._online  # ruff: ignore[private-member-access]
+
+
+def test_event_model_families_map_to_common_events() -> None:
+    legacy_message: dict[str, JsonValue] = {
+        "id": "message",
+        "channel_id": "channel",
+        "guild_id": "guild",
+        "content": "hello",
+        "timestamp": "2026-08-17T00:00:00Z",
+        "author": {"id": "user"},
+    }
+    payloads: dict[str, dict[str, JsonValue]] = {
+        "FRIEND_ADD": {
+            "timestamp": 1,
+            "openid": "user",
+        },
+        "FRIEND_DEL": {"timestamp": 1, "openid": "user"},
+        "C2C_MSG_RECEIVE": {"timestamp": 1, "openid": "user"},
+        "GROUP_ADD_ROBOT": {
+            "timestamp": 1,
+            "group_openid": "group",
+            "op_member_openid": "member",
+        },
+        "GROUP_MEMBER_ADD": {
+            "timestamp": 1,
+            "group_openid": "group",
+            "member_openid": "member",
+            "user_openid": "user",
+        },
+        "SUBSCRIBE_MESSAGE_STATUS": {
+            "result": [
+                {
+                    "template_id": 1,
+                    "custom_template_id": "template",
+                    "op": 1,
+                    "subscribe_id": "subscribe",
+                    "subscribe_ts": 1,
+                    "update_ts": 2,
+                }
+            ]
+        },
+        "GUILD_CREATE": {"id": "guild"},
+        "CHANNEL_CREATE": {"id": "channel", "guild_id": "guild"},
+        "AT_MESSAGE_CREATE": legacy_message,
+        "DIRECT_MESSAGE_CREATE": legacy_message,
+        "INTERACTION_CREATE": {
+            "id": "interaction",
+            "type": 11,
+            "scene": "c2c",
+            "timestamp": "2026-08-17T00:00:00Z",
+            "data": {"resolved": {}},
+            "version": 1,
+            "application_id": "app",
+        },
+    }
+    gateway = _gateway(FakePool())
+    for event_type, payload in payloads.items():
+        event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - one smoke payload per independent model family
+            QQDispatch.model_validate({
+                "id": "event",
+                "op": 0,
+                "s": 1,
+                "t": event_type,
+                "d": payload,
+            })
+        )
+        expected_type = {
+            "FRIEND_ADD": FriendIncreaseNoticeEvent,
+            "FRIEND_DEL": FriendDecreaseNoticeEvent,
+            "AT_MESSAGE_CREATE": ChannelMessageEvent,
+            "DIRECT_MESSAGE_CREATE": PrivateMessageEvent,
+        }.get(event_type, NoticeEvent)
+        expected_detail = {
+            "FRIEND_ADD": "friend_increase",
+            "FRIEND_DEL": "friend_decrease",
+            "AT_MESSAGE_CREATE": "channel",
+            "DIRECT_MESSAGE_CREATE": "private",
+        }.get(event_type, f"qq.{event_type.lower()}")
+        assert isinstance(event, expected_type), event_type
+        assert event.detail_type == expected_detail, event_type
+        if isinstance(event, NoticeEvent):
+            assert event.model_extra is not None
+            assert event.model_extra["qq_event_type"] == event_type
+            assert event.model_extra["qq_data"] == payload
+        else:
+            assert event.model_extra is not None
+            qq_data = event.model_extra["qq_data"]
+            assert isinstance(qq_data, dict)
+            assert qq_data["id"] == "message"
+            assert event.model_extra["qq_raw"] is False
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (
+            "pong",
+            {
+                "content": "pong",
+                "msg_id": "incoming-message",
+                "msg_seq": 1,
+                "msg_type": 0,
+            },
+        ),
+        (
+            [{"type": "image", "data": {"file_id": "uploaded-image"}}],
+            {
+                "media": {"file_info": "uploaded-image"},
+                "msg_id": "incoming-message",
+                "msg_seq": 1,
+                "msg_type": 7,
+            },
+        ),
+    ],
+    ids=["text", "image"],
+)
+async def test_common_reply_sends_the_incoming_message_id(
+    reply: MsgInput,
+    expected: dict[str, object],
+) -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
+    )
+    gateway = _gateway(pool)
+    event = PrivateMessageEvent.model_validate({
+        "id": "event",
+        "self": {"platform": "qq", "user_id": "bot"},
+        "time": 1.0,
+        "sub_type": "",
+        "message_id": "incoming-message",
+        "message": [{"type": "text", "data": {"text": "ping"}}],
+        "alt_message": "ping",
+        "user_id": "user",
+        "qq_scene": "c2c",
+    })
+
+    response = await gateway.connection_for(event.self_).execute_message_action(
+        event,
+        reply,
+    )
+
+    assert isinstance(response, QQSentMessage)
+    assert pool.requests[1][:2] == (
+        HTTPMethod.POST,
+        "https://qq.example/v2/users/user/messages",
+    )
+    assert pool.requests[1][2]["json"] == expected
+
+
+async def test_direct_message_reply_preserves_the_dm_target() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
+    )
+    gateway = _gateway(pool)
+    event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - verifies inbound metadata reaches reply routing
+        QQDispatch.model_validate({
+            "id": "event",
+            "op": 0,
+            "s": 1,
+            "t": "DIRECT_MESSAGE_CREATE",
+            "d": {
+                "id": "incoming-message",
+                "channel_id": "channel",
+                "guild_id": "guild",
+                "content": "ping",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "author": {"id": "user"},
+            },
+        })
+    )
+    assert isinstance(event, PrivateMessageEvent)
+
+    await gateway.connection_for(event.self_).execute_message_action(event, "pong")
+
+    assert pool.requests[1][:2] == (
+        HTTPMethod.POST,
+        "https://qq.example/dms/guild/messages",
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "path"),
+    [
+        (
+            {"detail_type": "private", "user_id": "user"},
+            "/v2/users/user/messages",
+        ),
+        (
+            {"detail_type": "group", "group_id": "group"},
+            "/v2/groups/group/messages",
+        ),
+        (
+            {
+                "detail_type": "channel",
+                "guild_id": "guild",
+                "channel_id": "channel",
+            },
+            "/channels/channel/messages",
+        ),
+        (
+            {
+                "detail_type": "private",
+                "qq_scene": "dm",
+                "user_id": "user",
+                "guild_id": "guild",
+                "channel_id": "channel",
+            },
+            "/dms/guild/messages",
+        ),
+    ],
+    ids=[
+        "c2c-default",
+        "group-default",
+        "channel-default",
+        "dm",
+    ],
+)
+async def test_common_send_message_maps_all_qq_scenes(
+    target: dict[str, str],
+    path: str,
+) -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
+    )
+    connection = _gateway(pool).connection_for(BotSelf(platform="qq", user_id="app"))
+
+    await connection.action(Action.SEND_MESSAGE, **target, message="hello")
+
+    assert pool.requests[1][:2] == (
+        HTTPMethod.POST,
+        f"https://qq.example{path}",
+    )
+    assert pool.requests[1][2]["json"] == {
+        "content": "hello",
+        **({"msg_type": 0} if path.startswith("/v2/") else {}),
+    }
+
+
+@pytest.mark.parametrize(
+    ("target", "path"),
+    [
+        (
+            {"detail_type": "private", "user_id": "user"},
+            "/v2/users/user/messages",
+        ),
+        (
+            {"detail_type": "group", "group_id": "group"},
+            "/v2/groups/group/messages",
+        ),
+    ],
+    ids=["c2c", "group"],
+)
+async def test_common_media_message_preserves_caption(
+    target: dict[str, str],
+    path: str,
+) -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
+    )
+    connection = _gateway(pool).connection_for(BotSelf(platform="qq", user_id="app"))
+
+    await connection.action(
+        Action.SEND_MESSAGE,
+        **target,
+        message=[
+            {"type": "text", "data": {"text": "caption"}},
+            {"type": "image", "data": {"file_id": "uploaded-image"}},
+        ],
+    )
+
+    assert pool.requests[1][:2] == (
+        HTTPMethod.POST,
+        f"https://qq.example{path}",
+    )
+    assert pool.requests[1][2]["json"] == {
+        "content": "caption",
+        "media": {"file_info": "uploaded-image"},
+        "msg_type": 7,
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "qq_action", "params", "expected"),
+    [
+        (
+            Action.GET_GROUP_INFO,
+            QQAction.GET_GROUP_INFO,
+            {"group_id": "group"},
+            {"group_openid": "group"},
+        ),
+        (
+            Action.GET_CHANNEL_INFO,
+            QQAction.GET_CHANNEL,
+            {"guild_id": "guild", "channel_id": "channel"},
+            {"channel_id": "channel"},
+        ),
+        (
+            Action.GET_CHANNEL_LIST,
+            QQAction.LIST_GUILD_CHANNELS,
+            {"guild_id": "guild", "joined_only": True},
+            {"guild_id": "guild"},
+        ),
+        (
+            Action.SET_CHANNEL_NAME,
+            QQAction.UPDATE_CHANNEL,
+            {
+                "guild_id": "guild",
+                "channel_id": "channel",
+                "channel_name": "renamed",
+            },
+            {"channel_id": "channel", "name": "renamed"},
+        ),
+    ],
+)
+async def test_common_actions_translate_onebot_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    action: Action,
+    qq_action: QQAction,
+    params: dict[str, ActionParamInput],
+    expected: dict[str, object],
+) -> None:
+    gateway = _gateway(FakePool())
+    request = AsyncMock(return_value=QQNoContent())
+    monkeypatch.setattr(gateway, "request_qq", request)
+
+    await gateway.connection_for(BotSelf(platform="qq", user_id="app")).action(
+        action,
+        **params,
+    )
+
+    request.assert_awaited_once_with(qq_action, **expected)
+
+
+async def test_channel_rejects_non_image_media() -> None:
+    pool = FakePool()
+    gateway = _gateway(pool)
+
+    with pytest.raises(ValueError, match="only support image"):
+        await gateway.connection_for(BotSelf(platform="qq", user_id="bot")).action(
+            Action.SEND_MESSAGE,
+            detail_type="channel",
+            guild_id="guild",
+            channel_id="channel",
+            msg_id="incoming-message",
+            message=[{"type": "voice", "data": {"file_id": "voice"}}],
+        )
+
+    assert not pool.requests
+
+
+async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
+    clean = ScriptedWebSocket(StopAsyncIteration())
+    fatal_native = AsyncMock()
+    fatal_native.recv.side_effect = (
+        orjson.dumps({"op": 10, "d": {"heartbeat_interval": 60_000}}).decode(),
+        ConnectionClosedError(Close(4014, "fatal"), None),
+    )
+    fatal = WebsocketsConnection(fatal_native)
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {"url": "wss://qq.example"},
+    )
+    connect = AsyncMock(return_value=fatal)
+
+    bot = Bot()
+    gateway = QQGateway(
+        bot,
+        app_id="app",
+        client_secret=CREDENTIAL,
+        http_pool=cast(AsyncPoolManager, pool),
+        websocket_connector=connect,
+    )
+
+    async with timeout(1):
+        with pytest.raises(ConnectionError, match="closed normally") as reconnect:
+            await gateway._serve_websocket(clean, "token")  # ruff: ignore[private-member-access]
+    assert type(reconnect.value).__name__ == "_ReconnectError"
+
+    gateway._session_id = "online-session"  # ruff: ignore[private-member-access]
+    gateway._seq = 0  # ruff: ignore[private-member-access]
+    gateway._online = True  # ruff: ignore[private-member-access]
+    async with timeout(1), bot:
+        await gateway._run_gateway()  # ruff: ignore[private-member-access]
+
+    assert gateway._session_id is None  # ruff: ignore[private-member-access]
+    assert not gateway._online  # ruff: ignore[private-member-access]
+    assert clean.closed.is_set()
+    fatal_native.close.assert_awaited_once()
+
+
+def test_proactive_messages_and_stream_defaults_follow_the_wire_contract() -> None:
+    group = QQSendGroupMessageRequest(
+        group_openid="group",
+        msg_type=0,
+        content="proactive",
+    )
+    c2c = QQSendC2CMessageRequest(
+        user_openid="user",
+        msg_type=0,
+        content="proactive",
+    )
+    stream = QQStreamMessageRequest(
+        user_openid="user",
+        input_mode="replace",
+        input_state=1,
+        index=0,
+        content_type="markdown",
+        content_raw="stream",
+        event_id="event",
+        msg_id="message",
+        msg_seq=0,
+    )
+
+    assert group.msg_id is group.event_id is c2c.msg_id is c2c.event_id is None
+    assert stream.input_mode == "replace"
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        QQSendGroupMessageRequest(
+            group_openid="group",
+            msg_type=0,
+            content="reply",
+            msg_id="message",
+            event_id="event",
+        )
+
+
+async def test_group_pagination_uses_query_parameters_and_parses_items() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {
+            "list": [
+                {
+                    "join_request_id": "request",
+                    "member_openid": "member",
+                    "username": "Member",
+                    "apply_at": "2026-08-17T00:00:00Z",
+                    "apply_source": "self_apply",
+                }
+            ],
+            "next_cursor": "next",
+        },
+        {"strategies": []},
+        {"strategies": []},
+    )
+    client = _client(pool)
+
+    requests = await client.request_qq(
+        QQAction.LIST_GROUP_JOIN_REQUESTS,
+        group_openid="group",
+        cursor="join-cursor",
+        limit=10,
+    )
+    strategies = await client.request_qq(
+        QQAction.LIST_GROUP_APPROVAL_STRATEGIES,
+        cursor="strategy-cursor",
+        limit=20,
+    )
+    empty_strategy_page = await client.request_qq(
+        QQAction.LIST_GROUP_APPROVAL_STRATEGIES
+    )
+
+    assert isinstance(requests, QQJoinRequestList)
+    assert requests.list[0].member_openid == "member"
+    assert isinstance(strategies, QQStrategyList)
+    assert isinstance(empty_strategy_page, QQStrategyList)
+    assert [request[:2] for request in pool.requests[1:]] == [
+        (
+            HTTPMethod.GET,
+            "https://qq.example/v2/groups/group/join_request_list?cursor=join-cursor&limit=10",
+        ),
+        (
+            HTTPMethod.GET,
+            "https://qq.example/v2/groups/join_approval_strategy?cursor=strategy-cursor&limit=20",
+        ),
+        (
+            HTTPMethod.GET,
+            "https://qq.example/v2/groups/join_approval_strategy",
+        ),
+    ]
+    assert [request[2]["json"] for request in pool.requests[1:]] == [None, None, None]
+
+
+async def test_rest_reports_business_and_token_errors() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {
+            "code": 0,
+            "err_code": 40011027,
+            "message": "business failure",
+            "trace_id": "body-trace",
+        },
+    )
+    client = _client(pool)
+
+    with pytest.raises(QQAPIError) as business_error:
+        await client.request_qq(
+            QQAction.SEND_CHANNEL_MESSAGE,
+            channel_id="channel",
+            content="message",
+        )
+    assert (
+        business_error.value.status,
+        business_error.value.code,
+        business_error.value.trace_id,
+    ) == (200, 40011027, "body-trace")
+
+    token_client = _client(FakePool({"code": 100007, "message": "appid invalid"}))
+    with pytest.raises(QQAPIError) as token_error:
+        await token_client.access_token()
+    assert (token_error.value.status, token_error.value.code) == (200, 100007)
+
+
+async def test_rest_maps_created_accepted_and_empty_successes() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        _response(
+            201,
+            {"code": 304023, "message": "created"},
+            headers={"X-Trace-ID": "created-trace"},
+        ),
+        _response(
+            202,
+            {"code": 304023, "message": "accepted"},
+            headers={"X-Tps-Trace-ID": "accepted-trace"},
+        ),
+        _response(204),
+    )
+    client = _client(pool)
+
+    results = [
+        await client.request_qq(
+            QQAction.SEND_GROUP_MESSAGE,
+            group_openid="group",
+            msg_type=0,
+            content="proactive",
+        )
+        for _ in range(2)
+    ]
+    no_content = await client.request_qq(
+        QQAction.SEND_CHANNEL_MESSAGE,
+        channel_id="channel",
+        content="message",
+    )
+
+    assert all(isinstance(result, QQAsyncResult) for result in results)
+    assert [
+        (result.status, result.err_code, result.trace_id)
+        for result in cast(list[QQAsyncResult], results)
+    ] == [
+        (201, 304023, "created-trace"),
+        (202, 304023, "accepted-trace"),
+    ]
+    assert isinstance(no_content, QQNoContent)
+
+
+@pytest.mark.parametrize(
+    ("status", "payload"),
+    [
+        (401, {"message": "unauthorized"}),
+        (200, {"code": 11244, "message": "token expired"}),
+    ],
+    ids=["http-401", "business-11244"],
+)
+async def test_rest_refreshes_an_expired_token_at_most_once(
+    status: int,
+    payload: JsonValue,
+) -> None:
+    pool = FakePool(
+        {"access_token": "stale", "expires_in": 7200},
+        _response(status, payload),
+        {"access_token": "fresh", "expires_in": 7200},
+        [],
+    )
+    client = _client(pool)
+
+    assert isinstance(
+        await client.request_qq(QQAction.LIST_BOT_GUILDS),
+        QQGuildList,
+    )
+
+    assert [
+        cast(dict[str, str], pool.requests[index][2]["headers"])["Authorization"]
+        for index in (1, 3)
+    ] == [
+        "QQBot stale",
+        "QQBot fresh",
+    ]
+    client.invalidate_token("stale")
+    assert await client.access_token() == "fresh"
+    assert len(pool.requests) == 4
+
+
+async def test_access_token_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool()
+    started = AsyncEvent()
+    joined = AsyncEvent()
+    release = AsyncEvent()
+
+    async def request_token(*args: object, **kwargs: object) -> AsyncHTTPResponse:
+        _ = args, kwargs
+        started.set()
+        await release.wait()
+        return _response(200, {"access_token": "shared", "expires_in": 7200})
+
+    request = AsyncMock(side_effect=request_token)
+    monkeypatch.setattr(pool, "request", request)
+    client = _client(pool)
+
+    async def join_request() -> str:
+        joined.set()
+        return await client.access_token()
+
+    async with timeout(1), TaskGroup() as tasks:
+        first = tasks.create_task(client.access_token())
+        await started.wait()
+        second = tasks.create_task(join_request())
+        await joined.wait()
+        release.set()
+
+    assert [first.result(), second.result()] == ["shared", "shared"]
+    request.assert_awaited_once()
+
+
+async def test_group_join_request_maps_and_can_be_declined() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {},
+    )
+    gateway = _gateway(pool)
+    dispatch = QQDispatch.model_validate({
+        "id": "event",
+        "op": 0,
+        "s": 1,
+        "t": "GROUP_JOIN_REQUEST",
+        "d": {
+            "group_openid": "group",
+            "join_request_id": "request",
+            "member_openid": "member",
+            "username": "Member",
+            "apply_at": "2026-08-17T00:00:00Z",
+            "apply_source": "self_apply",
+            "verify_info": {
+                "method": "verify_message",
+                "verify_message": "let me in",
+            },
+        },
+    })
+    event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests the gateway conversion boundary
+        dispatch
+    )
+
+    assert isinstance(event, GroupRequestEvent)
+    assert (
+        event.group_id,
+        event.user_id,
+        event.flag,
+        event.sub_type,
+        event.comment,
+    ) == ("group", "member", "request", "add", "let me in")
+    connection = gateway.connection_for(event.self_)
+    with pytest.raises(TypeError, match="remark"):
+        await connection.execute_return_action(
+            event,
+            ReturnAction.request(True, remark="unsupported"),
+        )
+    assert not pool.requests
+
+    response = await connection.execute_return_action(
+        event,
+        ReturnAction.request(False, reason="declined"),
+    )
+
+    assert isinstance(response, QQNoContent)
+    assert pool.requests[1][:2] == (
+        HTTPMethod.POST,
+        "https://qq.example/v2/groups/group/approval_join_request/member",
+    )
+    assert pool.requests[1][2]["json"] == {
+        "join_request_id": "request",
+        "op": "decline",
+        "reject_reason": "declined",
+    }
+
+    assert isinstance(dispatch.d, qq_gateway_module.QQGroupJoinRequest)
+    invited = QQDispatch.model_validate({
+        **dispatch.model_dump(mode="json"),
+        "d": {
+            **dispatch.d.model_dump(mode="json"),
+            "apply_source": "invited",
+            "verify_info": {
+                "method": "admin_review_qa",
+                "review_qa_list": [{"question": "Q", "answer": "A"}],
+            },
+        },
+    })
+    invite_event = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests invitation and QA mapping
+        invited
+    )
+    assert isinstance(invite_event, GroupRequestEvent)
+    assert (invite_event.sub_type, invite_event.comment) == ("invite", "Q: A")
+
+    auto_approved = QQDispatch.model_validate({
+        **dispatch.model_dump(mode="json"),
+        "d": {
+            **dispatch.d.model_dump(mode="json"),
+            "auto_approved": {"strategy_id": "strategy"},
+        },
+    })
+    notice = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests the gateway conversion boundary
+        auto_approved
+    )
+    assert isinstance(notice, NoticeEvent)
+    assert not isinstance(notice, GroupRequestEvent)
+
+
+async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> None:
+    pool = FakePool(
+        {"access_token": "token", "expires_in": 7200},
+        {},
+    )
+    gateway = _gateway(pool)
+    connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
+
+    supported = await connection.action(Action.GET_SUPPORTED_ACTIONS)
+    assert Action.DELETE_MESSAGE.value not in supported.root  # ty: ignore[unresolved-attribute]
+    with pytest.raises(LookupError, match="does not support"):
+        await connection.action(Action.DELETE_MESSAGE, message_id="message")
+    response = await connection.action(
+        QQAction.RECALL_DM_MESSAGE,
+        message_id="message",
+        guild_id="guild",
+        hidetip=True,
+    )
+
+    assert isinstance(response, QQNoContent)
+    assert pool.requests[1][:2] == (
+        HTTPMethod.DELETE,
+        "https://qq.example/dms/guild/messages/message?hidetip=true",
+    )
+    assert pool.requests[1][2]["json"] is None
+
+    await gateway.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        await connection.action(QQAction.GET_GATEWAY)
+    assert len(pool.requests) == 2
+
+
+async def test_websocket_hello_timeout_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = _gateway(FakePool())
+    stalled = ScriptedWebSocket()
+    monkeypatch.setattr(qq_gateway_module, "_HELLO_TIMEOUT", 0)
+
+    async with timeout(1):
+        with pytest.raises(TimeoutError):
+            await gateway._serve_websocket(  # ruff: ignore[private-member-access] - exercises the connection boundary
+                stalled, "token"
+            )
+    assert stalled.closed.is_set()
+
+
+@pytest.mark.parametrize(
+    ("resumable", "reset_session"),
+    [(True, False), (False, True)],
+    ids=["resume", "identify"],
+)
+async def test_websocket_invalid_session_selects_authentication_mode(
+    resumable: bool,
+    reset_session: bool,
+) -> None:
+    websocket = ScriptedWebSocket(
+        {"op": 10, "d": {"heartbeat_interval": 60_000}},
+        {"op": 9, "d": resumable},
+    )
+
+    async with timeout(1):
+        with pytest.raises(ConnectionError) as caught:
+            await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises the opcode boundary
+                websocket,
+                "token",
+            )
+
+    assert type(caught.value).__name__ == "_ReconnectError"
+    assert vars(caught.value)["reset_session"] is reset_session
+    assert websocket.closed.is_set()
+
+
+@pytest.mark.parametrize(
+    ("code", "policy"),
+    [
+        (4004, (True, False, None)),
+        (4006, (False, True, None)),
+        (4008, (False, False, 60.0)),
+        (4900, (False, True, None)),
+        (4913, (False, True, None)),
+        (4999, (False, False, None)),
+    ],
+)
+async def test_websocket_close_code_recovery_policy(
+    code: int,
+    policy: tuple[bool, bool, float | None],
+) -> None:
+    native = AsyncMock()
+    closed = ConnectionClosedError(Close(code, "closed"), None)
+    native.recv.side_effect = closed
+
+    with pytest.raises(ConnectionError) as caught:
+        await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises native close normalization and QQ policy
+            WebsocketsConnection(native),
+            "token",
+        )
+
+    error = caught.value
+    assert type(error).__name__ == "_ReconnectError"
+    assert (
+        getattr(error, "reset_token", False),
+        getattr(error, "reset_session", False),
+        getattr(error, "delay", None),
+    ) == policy
+    assert error.__cause__ is not None
+    assert error.__cause__.__cause__ is closed
+    native.close.assert_awaited_once()
+
+
+async def test_websocket_rejects_a_missed_heartbeat_ack() -> None:
+    websocket = ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 1}})
+
+    with pytest.raises(ConnectionError) as caught:
+        async with timeout(1):
+            await _gateway(FakePool())._serve_websocket(  # ruff: ignore[private-member-access] - exercises heartbeat liveness
+                websocket,
+                "token",
+            )
+
+    assert str(caught.value.__cause__) == "QQ Gateway heartbeat was not acknowledged"
+    assert websocket.sent.qsize() == 2
+    assert websocket.closed.is_set()
+
+
+def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
+    for base_url in ("ws://qq.example", "https://qq.example?environment=test"):
+        with pytest.raises(ValueError, match="base URL"):
+            QQRestClient("app", CREDENTIAL, base_url=base_url)
+
+    with pytest.raises(ValidationError):
+        qq_gateway_module.QQJoinVerification.model_validate({
+            "method": "admin_review_qa",
+            "review_qa_list": None,
+        })
+    with pytest.raises(ValidationError, match="srv_send_msg"):
+        QQFileUploadFields.model_validate({"file_type": 1, "file_data": "YQ=="})
+
+    for model, payload in (
+        (QQGatewayInfo, {"url": "https://qq.example"}),
+        (QQFileUploadFields, {"file_type": 1, "url": "https://"}),
+        (
+            QQAudioControlRequest,
+            {"channel_id": "channel", "status": 0, "audio_url": "https://"},
+        ),
+        (
+            QQMenuLinkItem,
+            {"name": "link", "type": "link", "link": "http://qq.example"},
+        ),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
+
+    role_page = QQRoleMemberListParams(
+        guild_id="guild",
+        role_id="role",
+        start_index="next",
+    )
+    groups = QQStrategyGroups(group_ids=[2**64 - 1])
+    assert role_page.start_index == "next"
+    assert groups.group_ids == [2**64 - 1]
+    for group_id in (-1, 2**64, "1"):
+        with pytest.raises(ValidationError):
+            QQStrategyGroups.model_validate({"group_ids": [group_id]})
+
+    for stream in (
+        {"input_state": 10, "index": 0},
+        {"input_state": 1, "index": 0, "stream_msg_id": "unexpected"},
+        {"input_state": 1, "index": 1},
+    ):
+        with pytest.raises(ValidationError):
+            QQStreamMessageRequest.model_validate({
+                "user_openid": "user",
+                "input_mode": "replace",
+                "content_type": "markdown",
+                "content_raw": "stream",
+                "event_id": "event",
+                "msg_id": "message",
+                "msg_seq": 0,
+                **stream,
+            })
+
+    with pytest.raises(ValidationError, match="rejection fields"):
+        QQ_ROUTES[QQAction.APPROVE_GROUP_JOIN_REQUEST].request.model_validate({
+            "group_openid": "group",
+            "member_openid": "member",
+            "op": "approve",
+            "reject_reason": "not allowed for approval",
+        })
+    with pytest.raises(ValidationError, match="Chinese counts as two"):
+        QQMenuLinkItem(
+            name="测试测试测试",
+            type="link",
+            link="https://qq.example",
+        )
+    QQMenuLinkItem(
+        name="éééééééééé",
+        type="link",
+        link="https://qq.example",
+    )
+
+    gateway = _gateway(FakePool())
+    voice = gateway._event_from_dispatch(  # ruff: ignore[private-member-access] - tests the message conversion boundary
+        QQDispatch.model_validate({
+            "id": "event",
+            "op": 0,
+            "s": 1,
+            "t": "C2C_MESSAGE_CREATE",
+            "d": {
+                "id": "message",
+                "author": {"user_openid": "user"},
+                "content": "",
+                "timestamp": "2026-08-17T00:00:00Z",
+                "message_type": 3,
+                "message_scene": {"source": "c2c"},
+                "attachments": [
+                    {"url": "https://qq.example/voice", "content_type": "voice"}
+                ],
+            },
+        })
+    )
+    assert isinstance(voice, PrivateMessageEvent)
+    assert voice.message[0].type is MsgSegmentType.VOICE
