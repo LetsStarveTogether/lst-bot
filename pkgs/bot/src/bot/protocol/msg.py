@@ -41,10 +41,6 @@ class MentionSegmentData(Model):
     user_id: StrictStr
 
 
-class EmptySegmentData(Model):
-    pass
-
-
 class FileSegmentData(Model):
     file_id: StrictStr
 
@@ -85,31 +81,17 @@ class MentionSegment(Model):
 
 class MentionAllSegment(Model):
     type: Literal[MsgSegmentType.MENTION_ALL] = MsgSegmentType.MENTION_ALL
-    data: EmptySegmentData
+    data: Model
 
 
-class ImageSegment(Model):
-    type: Literal[MsgSegmentType.IMAGE] = MsgSegmentType.IMAGE
-    data: FileSegmentData
-
-
-class VoiceSegment(Model):
-    type: Literal[MsgSegmentType.VOICE] = MsgSegmentType.VOICE
-    data: FileSegmentData
-
-
-class AudioSegment(Model):
-    type: Literal[MsgSegmentType.AUDIO] = MsgSegmentType.AUDIO
-    data: FileSegmentData
-
-
-class VideoSegment(Model):
-    type: Literal[MsgSegmentType.VIDEO] = MsgSegmentType.VIDEO
-    data: FileSegmentData
-
-
-class FileSegment(Model):
-    type: Literal[MsgSegmentType.FILE] = MsgSegmentType.FILE
+class MediaSegment(Model):
+    type: Literal[
+        MsgSegmentType.IMAGE,
+        MsgSegmentType.VOICE,
+        MsgSegmentType.AUDIO,
+        MsgSegmentType.VIDEO,
+        MsgSegmentType.FILE,
+    ]
     data: FileSegmentData
 
 
@@ -132,11 +114,11 @@ type MsgSegment = Annotated[
     Annotated[TextSegment, Tag(MsgSegmentType.TEXT)]
     | Annotated[MentionSegment, Tag(MsgSegmentType.MENTION)]
     | Annotated[MentionAllSegment, Tag(MsgSegmentType.MENTION_ALL)]
-    | Annotated[ImageSegment, Tag(MsgSegmentType.IMAGE)]
-    | Annotated[VoiceSegment, Tag(MsgSegmentType.VOICE)]
-    | Annotated[AudioSegment, Tag(MsgSegmentType.AUDIO)]
-    | Annotated[VideoSegment, Tag(MsgSegmentType.VIDEO)]
-    | Annotated[FileSegment, Tag(MsgSegmentType.FILE)]
+    | Annotated[MediaSegment, Tag(MsgSegmentType.IMAGE)]
+    | Annotated[MediaSegment, Tag(MsgSegmentType.VOICE)]
+    | Annotated[MediaSegment, Tag(MsgSegmentType.AUDIO)]
+    | Annotated[MediaSegment, Tag(MsgSegmentType.VIDEO)]
+    | Annotated[MediaSegment, Tag(MsgSegmentType.FILE)]
     | Annotated[LocationSegment, Tag(MsgSegmentType.LOCATION)]
     | Annotated[ReplySegment, Tag(MsgSegmentType.REPLY)]
     | Annotated[ExtensionSegment, Tag(MsgSegmentType.EXTENSION)],
@@ -148,17 +130,6 @@ type MsgSegmentInput = MsgSegment | Mapping[str, JsonValue]
 
 class Msg(RootModel[list[MsgSegment]]):
     root: list[MsgSegment] = Field(default_factory=list)
-
-    @classmethod
-    def t(cls, text: str) -> Msg:
-        return cls.from_input(text)
-
-    @classmethod
-    def mention(cls, user_id: str, message: MsgInput = None) -> Msg:
-        return cls([
-            MentionSegment(data=MentionSegmentData(user_id=user_id)),
-            *cls.from_input(message).root,
-        ])
 
     @classmethod
     def reply(
@@ -202,12 +173,6 @@ class Msg(RootModel[list[MsgSegment]]):
             segment.data.text if isinstance(segment, TextSegment) else ""
             for segment in self.root
         )
-
-    def append(self, segment: MsgSegmentInput | str) -> None:
-        self.extend(segment)
-
-    def extend(self, segments: MsgInput) -> None:
-        self.root.extend(_MSG_INPUT_ADAPTER.validate_python(segments).root)
 
 
 type MsgInput = Msg | MsgSegmentInput | Iterable[MsgSegmentInput] | str | None

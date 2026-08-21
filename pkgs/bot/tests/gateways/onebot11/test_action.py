@@ -14,8 +14,10 @@ from bot import (
     EventPayload,
     GroupMessageEvent,
     Msg,
+    MsgSegmentInput,
     ReturnAction,
 )
+from bot.gateways import onebot11 as onebot11_module
 from bot.gateways.onebot11 import (
     HttpAction,
     OneBot11Gateway,
@@ -85,6 +87,27 @@ async def test_raw_actions_preserve_name_null_and_message_array() -> None:
         ("/vendor%2Faction", {"optional": None}),
         ("/send_group_msg", {"group_id": 42, "message": message}),
     ]
+
+
+def test_message_media_uses_onebot11_wire_types() -> None:
+    for segment_type, wire_type in (
+        ("image", "image"),
+        ("video", "video"),
+        ("voice", "record"),
+        ("audio", "record"),
+    ):
+        message: list[MsgSegmentInput] = [
+            {"type": segment_type, "data": {"file_id": "resource"}}
+        ]
+        converted = onebot11_module._dump_ob11_message(message)  # ruff: ignore[private-member-access]
+        assert converted.model_dump(mode="json") == [
+            {"type": wire_type, "data": {"file": "resource"}}
+        ]
+
+    with pytest.raises(TypeError, match="does not define a file"):
+        onebot11_module._dump_ob11_message(  # ruff: ignore[private-member-access]
+            [{"type": "file", "data": {"file_id": "resource"}}]
+        )
 
 
 async def test_http_action_checks_status_before_decoding_body() -> None:
@@ -385,7 +408,10 @@ async def test_message_return_uses_group_action() -> None:
                 ReturnAction.message(
                     Msg.reply(
                         "msg-1",
-                        Msg.mention("42", " hello"),
+                        [
+                            {"type": "mention", "data": {"user_id": "42"}},
+                            {"type": "text", "data": {"text": " hello"}},
+                        ],
                         user_id="42",
                     )
                 ),

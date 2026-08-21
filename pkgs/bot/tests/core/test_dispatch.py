@@ -112,7 +112,7 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
         await connection.action(
             "send_message",
             user_id=event.user_id,
-            message=Msg.t(greeter.reply(cmd.arg)),
+            message=greeter.reply(cmd.arg),
         )
 
     async with bot:
@@ -197,7 +197,7 @@ async def test_dispatch_auto_replies_string_return() -> None:
     assert results[0].values == ["pong"]
     assert len(results[0].effects) == 1
     effect = results[0].effects[0]
-    assert effect.action.msg == Msg.t("pong")
+    assert effect.action.msg == Msg.from_input("pong")
     assert isinstance(effect.outcome, ActionResponse)
     assert effect.outcome.data == {"status": "ok"}
     assert gateway.actions[0].model_dump(mode="json", by_alias=True) == {

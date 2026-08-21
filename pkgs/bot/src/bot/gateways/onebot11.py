@@ -55,7 +55,7 @@ from bot.protocol.actions import (
 )
 from bot.protocol.base import Model
 from bot.protocol.common import BotSelf, BotStatus, Status
-from bot.protocol.enums import Action, ApiStatus
+from bot.protocol.enums import Action, ApiStatus, MsgSegmentType
 from bot.protocol.events import (
     Event,
     EventPayload,
@@ -65,11 +65,9 @@ from bot.protocol.events import (
     NoticeEvent,
 )
 from bot.protocol.msg import (
-    AudioSegment,
     ExtensionSegment,
-    FileSegment,
-    ImageSegment,
     LocationSegment,
+    MediaSegment,
     MentionAllSegment,
     MentionSegment,
     Msg,
@@ -77,8 +75,6 @@ from bot.protocol.msg import (
     MsgSegment,
     ReplySegment,
     TextSegment,
-    VideoSegment,
-    VoiceSegment,
 )
 from bot.protocol.returns import ReturnAction
 
@@ -153,13 +149,6 @@ _NOTICE_SUB_TYPES = {
     ("group_decrease", "kick_me"): "kick",
     ("group_increase", "approve"): "join",
 }
-_OB11_MEDIA_SEGMENT_TYPES: Mapping[type[MsgSegment], str] = {
-    ImageSegment: "image",
-    VideoSegment: "video",
-    VoiceSegment: "record",
-    AudioSegment: "record",
-}
-
 type OneBot11Id = StrictInt | StrictStr
 type OneBot11Time = StrictInt | StrictFloat
 type WebSocketRole = Literal["api", "event", "universal"]
@@ -1228,11 +1217,16 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
         return _ob11_segment("at", {"qq": segment.data.user_id})
     if isinstance(segment, MentionAllSegment):
         return _ob11_segment("at", {"qq": "all"})
-    if isinstance(segment, ImageSegment | VoiceSegment | AudioSegment | VideoSegment):
-        return _ob11_segment(
-            _OB11_MEDIA_SEGMENT_TYPES[type(segment)],
-            _file_segment_data(segment.data),
+    if isinstance(segment, MediaSegment):
+        if segment.type is MsgSegmentType.FILE:
+            msg = "OneBot 11 does not define a file message segment"
+            raise TypeError(msg)
+        segment_type = (
+            "record"
+            if segment.type in {MsgSegmentType.VOICE, MsgSegmentType.AUDIO}
+            else segment.type
         )
+        return _ob11_segment(segment_type, _file_segment_data(segment.data))
     if isinstance(segment, LocationSegment):
         data = segment.data.model_dump(
             mode="json",
@@ -1256,10 +1250,6 @@ def _dump_ob11_segment(segment: MsgSegment) -> OneBot11MessageSegment:
         if ob11_type is not None and "type" not in restored:
             restored["type"] = ob11_type
         return _ob11_segment(segment.type, _segment_data(restored))
-    if isinstance(segment, FileSegment):
-        msg = "OneBot 11 does not define a file message segment"
-        raise TypeError(msg)
-
     msg = f"{segment.type} is not supported by OneBot 11"
     raise TypeError(msg)
 

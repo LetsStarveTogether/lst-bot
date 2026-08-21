@@ -46,10 +46,11 @@ def test_each_message_segment_variant_round_trips_json(
     assert Msg.model_validate_json(message.model_dump_json()) == message
 
 
-def test_message_text_and_mutation_helpers_use_protocol_segments() -> None:
-    message = Msg.mention("42", " hello")
-    message.append({"type": "text", "data": {"text": " world"}})
-    message.extend([
+def test_message_text_uses_protocol_segments() -> None:
+    message = Msg.from_input([
+        {"type": "mention", "data": {"user_id": "42"}},
+        {"type": "text", "data": {"text": " hello"}},
+        {"type": "text", "data": {"text": " world"}},
         {"type": "mention_all", "data": {}},
         {"type": "text", "data": {"text": "!"}},
     ])
@@ -76,10 +77,9 @@ def test_reply_helper_omits_null_user_id_on_wire() -> None:
 
 def test_message_accepts_text_segment_model_and_preserves_whitespace() -> None:
     message = Msg.from_input(TextSegment(data=TextSegmentData(text="  hello  ")))
-    message.append(TextSegment(data=TextSegmentData(text="world")))
 
-    assert str(message) == "  hello  world"
-    assert message.text == "hello  world"
+    assert str(message) == "  hello  "
+    assert message.text == "hello"
 
 
 @pytest.mark.parametrize(
