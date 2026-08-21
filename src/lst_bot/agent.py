@@ -1,23 +1,19 @@
 from functools import partial
-from typing import Final
+from typing import Any
 
 from fastmcp.client.transports import StreamableHttpTransport
 from httpx import AsyncClient
-from pydantic_ai import Agent
+from pydantic_ai import Agent, WebSearchTool
 from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.openrouter import OpenRouterModel
-from pydantic_ai.native_tools import WebSearchTool
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from .settings import Settings
 
-OPENROUTER_MODEL: Final = "deepseek/deepseek-v4-pro-0813"
-DOSU_API_KEY_HEADER: Final = "X-Dosu-API-Key"
-DOSU_MCP_TOOL_NAME: Final = "ask"
-REQUEST_TIMEOUT: Final = 600
+REQUEST_TIMEOUT = 600
 
-DST_AGENT_INSTRUCTIONS: Final = """\
+DST_AGENT_INSTRUCTIONS = """\
 你是《饥荒联机版》（Don't Starve Together）的问答助手，名字叫拾什。
 目前你作为机器人在聊天平台的群聊中回答玩家关于 DST 的问题。
 你服务的是一个玩家自发组织的开放 DST 社区，
@@ -56,6 +52,11 @@ DST_AGENT_INSTRUCTIONS: Final = """\
 """
 
 
+def mcp_http_client(configured_proxy: str | None, **kwargs: Any) -> AsyncClient:
+    kwargs.update(proxy=configured_proxy, trust_env=False, follow_redirects=False)
+    return AsyncClient(**kwargs)
+
+
 def build_question_agent(
     settings: Settings,
     *,
@@ -64,7 +65,7 @@ def build_question_agent(
     proxy = str(settings.http_proxy) if settings.http_proxy else None
     return Agent(
         OpenRouterModel(
-            OPENROUTER_MODEL,
+            "deepseek/deepseek-v4-pro-0813",
             provider=OpenRouterProvider(
                 api_key=settings.openrouter_api_key.get_secret_value(),
                 http_client=http_client,
@@ -76,17 +77,13 @@ def build_question_agent(
                 StreamableHttpTransport(
                     settings.dosu_mcp_endpoint,
                     headers={
-                        DOSU_API_KEY_HEADER: settings.dosu_api_key.get_secret_value()
+                        "X-Dosu-API-Key": settings.dosu_api_key.get_secret_value()
                     },
-                    httpx_client_factory=partial(
-                        AsyncClient,
-                        proxy=proxy,
-                        trust_env=False,
-                    ),
+                    httpx_client_factory=partial(mcp_http_client, proxy),  # ty: ignore[invalid-argument-type]
                 ),
                 init_timeout=REQUEST_TIMEOUT,
                 read_timeout=REQUEST_TIMEOUT,
-            ).filtered(lambda _, tool_def: tool_def.name == DOSU_MCP_TOOL_NAME)
+            ).filtered(lambda _, tool_def: tool_def.name == "ask")
         ],
         capabilities=[NativeTool(WebSearchTool())],
     )

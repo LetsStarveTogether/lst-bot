@@ -1,6 +1,7 @@
 from datetime import timedelta
 from logging import DEBUG, INFO
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -8,26 +9,27 @@ from pydantic import ValidationError
 from lst_bot.settings import Settings
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {
+            "openrouter_api_key": "",
+            "dosu_mcp_endpoint": "https://example.com/mcp",
+        },
+        {"openrouter_api_key": "test", "dosu_mcp_endpoint": "invalid"},
+        {"openrouter_api_key": "test", "dosu_mcp_endpoint": "http://example.com/mcp"},
+    ],
+)
 def test_ai_service_settings_are_required_and_validated(
     monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY")
     monkeypatch.delenv("DOSU_MCP_ENDPOINT")
 
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-    with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None,
-            openrouter_api_key="",
-            dosu_mcp_endpoint="https://example.com/mcp",
-        )
-    with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None,
-            openrouter_api_key="test",
-            dosu_mcp_endpoint="invalid",
-        )
+        Settings(_env_file=None, **overrides)
 
 
 def test_empty_http_proxy_means_direct_connection() -> None:
@@ -94,10 +96,7 @@ def test_bot_timeout_configuration() -> None:
 
 def test_unknown_dotenv_field_is_rejected(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text(
-        "UNKNOWN_SETTING=value\n",
-        encoding="utf-8",
-    )
+    env_file.write_text("UNKNOWN_SETTING=value\n", encoding="utf-8")
 
     with pytest.raises(ValidationError, match="unknown_setting"):
         Settings(_env_file=env_file)

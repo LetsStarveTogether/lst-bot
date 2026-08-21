@@ -57,7 +57,7 @@ flowchart LR
 | `KLEI_ACCESS_TOKEN` | Klei 访问令牌 |
 | `KLEI_HOST_ID` | 托管的 DST 主机 ID |
 | `OPENROUTER_API_KEY` | 必填的 AI 服务凭据 |
-| `DOSU_MCP_ENDPOINT` | 必填的 HTTP(S) 知识服务地址 |
+| `DOSU_MCP_ENDPOINT` | 必填的 HTTPS 知识服务地址 |
 | `DOSU_API_KEY` | 知识服务凭据 |
 | `HTTP_PROXY` | 外部服务和 Telegram/Discord 流量使用的 HTTP 代理（包括 Discord Gateway）；留空即直连 |
 | `LOG_LEVEL` | 日志等级 |

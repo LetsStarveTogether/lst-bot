@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from bot import BotSelf
-from bot.gateways.discord import DiscordGateway, DiscordIntent
+from bot.gateways.discord import DiscordGateway
 from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
@@ -15,6 +15,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from urllib3_future import AsyncPoolManager
 
+from lst_bot.agent import mcp_http_client
 from lst_bot.main import build_bot, run
 from lst_bot.settings import Settings
 
@@ -36,6 +37,11 @@ async def test_run_closes_model_client_when_agent_build_fails(
         await run(Settings(_env_file=None, http_proxy=""))
 
     assert clients[0].is_closed
+
+
+async def test_mcp_client_refuses_redirects_that_could_leak_api_key() -> None:
+    async with mcp_http_client(None, follow_redirects=True) as client:
+        assert client.follow_redirects is False
 
 
 def test_build_bot_registers_runtime_settings() -> None:
@@ -76,9 +82,8 @@ def test_build_bot_registers_runtime_settings() -> None:
     assert isinstance(discord, DiscordGateway)
     bot.resolve_gateway(OneBot11Gateway)
     assert telegram.http_pool is discord.http_pool
-    assert telegram.http_pool is hitokoto.http_pool is klei.http_pool
-    assert telegram.http_pool is http_pool
-    assert discord.intents == DiscordIntent(settings.discord_intents)
+    assert telegram.http_pool is hitokoto.http_pool is klei.http_pool is http_pool
+    assert discord.intents == settings.discord_intents
     (report_job,) = bot.scheduler.jobs
     assert report_job.gateway_type is OneBot11Gateway
     assert report_job.self_ == BotSelf(platform="qq", user_id="10000")

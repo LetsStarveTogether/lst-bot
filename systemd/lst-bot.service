@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=/srv/lst-bot
-ExecStart=/srv/lst-bot/.venv/bin/python3 -OO -m lst_bot.main
+ExecStart=/srv/lst-bot/.venv/bin/lst-bot
+KillSignal=SIGINT
 Restart=on-failure
 RestartSec=5s
 PrivateTmp=true

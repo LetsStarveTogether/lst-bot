@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     SecretStr,
     StrictInt,
+    UrlConstraints,
     field_validator,
     model_validator,
 )
@@ -19,10 +20,11 @@ type _OptionalHttpUrl = Annotated[
     AnyHttpUrl | None,
     BeforeValidator(lambda value: None if value == "" else value),
 ]
+type _HttpsUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
+    model_config = SettingsConfigDict(env_file=".env")
 
     bot_cmd_prefixes: tuple[str, ...] = ("/",)
     bot_admin: dict[str, frozenset[str]] = Field(default_factory=dict)
@@ -43,7 +45,7 @@ class Settings(BaseSettings):
     klei_host_id: str = ""
 
     openrouter_api_key: SecretStr = Field(min_length=1)
-    dosu_mcp_endpoint: AnyHttpUrl
+    dosu_mcp_endpoint: _HttpsUrl
     dosu_api_key: SecretStr = SecretStr("")
 
     report_group_id: str = ""

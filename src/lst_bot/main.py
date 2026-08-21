@@ -4,7 +4,7 @@ from functools import partial
 
 from bot import Bot, BotSelf
 from bot.gateways.base import connect_websocket
-from bot.gateways.discord import DiscordGateway, DiscordIntent
+from bot.gateways.discord import DiscordGateway
 from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAction
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
@@ -70,7 +70,7 @@ def build_bot(
             DiscordGateway(
                 bot,
                 token=settings.discord_bot_token,
-                intents=DiscordIntent(settings.discord_intents),
+                intents=settings.discord_intents,
                 http_pool=http_pool,
                 websocket_connector=partial(
                     connect_websocket,
@@ -128,7 +128,3 @@ def main() -> None:
     for name in ("httpcore", "urllib3_future", "websockets", "mcp"):
         logging.getLogger(name).setLevel(logging.INFO)
     asyncio.run(run(settings))
-
-
-if __name__ == "__main__":
-    main()

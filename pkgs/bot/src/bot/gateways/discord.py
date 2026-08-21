@@ -1505,7 +1505,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         bot: Bot,
         *,
         token: SecretStr | str,
-        intents: DiscordIntent = DEFAULT_DISCORD_INTENTS,
+        intents: int = DEFAULT_DISCORD_INTENTS,
         shard: tuple[int, int] = (0, 1),
         base_url: str = DISCORD_API_BASE_URL,
         http_pool: AsyncPoolManager | None = None,
