@@ -2118,7 +2118,7 @@ class QQRestClient:
                 HTTPMethod.POST,
                 f"{self.base_url}/app/getAppAccessToken",
                 headers={"Content-Type": "application/json"},
-                json=payload.model_dump(mode="json", by_alias=True),
+                json=payload.model_dump(mode="json"),
             )
             self._ensure_open(closed_event)
             response_payload = self._parse_payload(data, response.status)
@@ -2340,7 +2340,6 @@ class QQRestClient:
     ) -> tuple[str, dict[str, JsonValue] | None]:
         payload = request.model_dump(
             mode="json",
-            by_alias=True,
             exclude_none=True,
         )
         path_fields = {

@@ -33,13 +33,11 @@ class ReturnAction:
         *,
         self_: BotSelf | None = None,
     ) -> ReturnAction:
-        payload: Mapping[str, ActionParamInput] | BaseModel
-        payload = params if isinstance(params, BaseModel) else dict(params or {})
         return cls(
             kind="call",
             action_call=ActionCall.model_validate({
                 "action": action,
-                "params": payload,
+                "params": {} if params is None else params,
             }),
             self_=self_,
         )

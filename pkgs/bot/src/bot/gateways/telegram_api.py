@@ -611,7 +611,7 @@ class TelegramUpdate(Model):
 
     @property
     def raw(self) -> dict[str, JsonValue]:
-        return self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class TelegramWebhookInfo(Model):

@@ -605,7 +605,7 @@ class QQGateway(Gateway, QQRestClient):
         if self._closing:
             msg = "QQ gateway is closed"
             raise RuntimeError(msg)
-        data = params.model_dump(mode="python", by_alias=True, exclude_none=True)
+        data = params.model_dump(mode="python", exclude_none=True)
         if action == Action.SEND_MESSAGE:
             return await self._send_message(data)
         if action == Action.GET_SUPPORTED_ACTIONS:

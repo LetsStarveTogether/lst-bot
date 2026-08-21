@@ -51,7 +51,7 @@ async def test_build_question_combines_reply_and_command_text() -> None:
     question = await build_question(gateway.connection, event, "new question")
 
     assert question == "被回复的消息：\nold question\n\n用户问题：\nnew question"
-    action = gateway.actions[0].model_dump(mode="json", by_alias=True)
+    action = gateway.actions[0].model_dump(mode="json")
     assert action["action"] == "get_msg"
     assert action["params"] == {"message_id": "source-message"}
 
@@ -84,7 +84,7 @@ async def test_question_command_sends_reply_from_injected_agent() -> None:
             private_message_event("/问 巨鹿什么时候来？"),
         )
 
-    action = gateway.actions[0].model_dump(mode="json", by_alias=True)
+    action = gateway.actions[0].model_dump(mode="json")
     assert action["action"] == "send_message"
     assert action["params"]["message"][0]["type"] == "reply"
     assert action["params"]["message"][1]["data"]["text"] == "答案"

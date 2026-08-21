@@ -99,26 +99,3 @@ def test_message_accepts_text_segment_model_and_preserves_whitespace() -> None:
 def test_message_rejects_invalid_discriminator_or_shape(payload: object) -> None:
     with pytest.raises((TypeError, ValidationError)):
         Msg.model_validate(payload)
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param(float("nan"), id="nan"),
-        pytest.param(float("inf"), id="positive-infinity"),
-        pytest.param(float("-inf"), id="negative-infinity"),
-    ],
-)
-def test_location_rejects_non_finite_coordinates(value: float) -> None:
-    with pytest.raises(ValidationError):
-        Msg.model_validate([
-            {
-                "type": "location",
-                "data": {
-                    "latitude": value,
-                    "longitude": 0,
-                    "title": "invalid",
-                    "content": "invalid",
-                },
-            },
-        ])

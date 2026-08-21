@@ -29,7 +29,7 @@ async def test_admin_permission_rejects_non_hashable_sender_role(
     bot.add_router(router)
     gateway = recording_gateway(bot)
     source = private_message_event("hello")
-    payload = source.model_dump(mode="json", by_alias=True)
+    payload = source.model_dump(mode="json")
     payload["sender"] = {"role": role}
 
     async with bot:

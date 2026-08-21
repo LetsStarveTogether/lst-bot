@@ -8,10 +8,8 @@ from pydantic import (
     JsonValue,
     RootModel,
     StrictFloat,
-    StrictInt,
     StrictStr,
     Tag,
-    TypeAdapter,
     model_validator,
 )
 
@@ -19,18 +17,17 @@ from .base import Model
 from .enums import MsgSegmentType
 
 
-def _tag_value(value: object, key: str) -> object:
-    if isinstance(value, Mapping):
-        return value.get(key)
-    return getattr(value, key, None)
-
-
 def _segment_tag(value: object) -> MsgSegmentType:
-    segment_type = _tag_value(value, "type")
-    try:
-        return MsgSegmentType(segment_type)
-    except ValueError:
-        return MsgSegmentType.EXTENSION
+    segment_type = (
+        value.get("type")
+        if isinstance(value, Mapping)
+        else getattr(value, "type", None)
+    )
+    return (
+        MsgSegmentType(segment_type)
+        if segment_type in MsgSegmentType
+        else MsgSegmentType.EXTENSION
+    )
 
 
 class TextSegmentData(Model):
@@ -46,8 +43,8 @@ class FileSegmentData(Model):
 
 
 class LocationSegmentData(Model):
-    latitude: StrictInt | StrictFloat
-    longitude: StrictInt | StrictFloat
+    latitude: StrictFloat
+    longitude: StrictFloat
     title: StrictStr
     content: StrictStr
 
@@ -151,7 +148,7 @@ class Msg(RootModel[list[MsgSegment]]):
 
     @classmethod
     def from_input(cls, value: MsgInput) -> Msg:
-        return _MSG_INPUT_ADAPTER.validate_python(value)
+        return cls.model_validate(_msg_input_value(value))
 
     def __len__(self) -> int:
         return len(self.root)
@@ -196,5 +193,3 @@ def _msg_input_value(value: object) -> object:
 
 
 type MsgValue = Annotated[Msg, BeforeValidator(_msg_input_value)]
-
-_MSG_INPUT_ADAPTER = TypeAdapter(MsgValue)

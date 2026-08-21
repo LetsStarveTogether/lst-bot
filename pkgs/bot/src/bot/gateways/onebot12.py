@@ -280,7 +280,6 @@ class OneBot12Gateway(Gateway):
                 [
                     action.model_dump(
                         mode="json",
-                        by_alias=True,
                         exclude_unset=True,
                     )
                     for action in actions
@@ -324,7 +323,6 @@ class OneBot12Gateway(Gateway):
                     echo=echo,
                     self=connection.self_,
                 ).model_dump_json(
-                    by_alias=True,
                     exclude_unset=True,
                 ),
             )
@@ -353,7 +351,6 @@ class OneBot12Gateway(Gateway):
                 headers=self._authorization_headers,
                 json=request.model_dump(
                     mode="json",
-                    by_alias=True,
                     exclude_unset=True,
                 ),
             )

@@ -355,7 +355,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
             msg = "Telegram action targets an unknown bot self"
             raise LookupError(msg)
 
-        data = params.model_dump(mode="python", by_alias=True, exclude_none=True)
+        data = params.model_dump(mode="python", exclude_none=True)
         try:
             common_action = Action(action)
         except ValueError:

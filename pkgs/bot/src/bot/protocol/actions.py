@@ -9,7 +9,6 @@ from pydantic import (
     BeforeValidator,
     Discriminator,
     Field,
-    InstanceOf,
     JsonValue,
     PlainSerializer,
     SerializeAsAny,
@@ -492,7 +491,7 @@ _ACTION_PARAM_ADAPTERS = {
 
 class ActionCall(Model):
     action: StrictStr
-    params: SerializeAsAny[InstanceOf[ActionParamModel]]
+    params: SerializeAsAny[ActionParamModel]
 
     @field_validator("params", mode="before")
     @classmethod
@@ -501,10 +500,7 @@ class ActionCall(Model):
         value: object,
         info: ValidationInfo,
     ) -> ActionParamModel:
-        action = info.data.get("action")
-        adapter = (
-            _ACTION_PARAM_ADAPTERS.get(action, _DEFAULT_ACTION_PARAMS)
-            if isinstance(action, str)
-            else _DEFAULT_ACTION_PARAMS
-        )
-        return adapter.validate_python(value)
+        return _ACTION_PARAM_ADAPTERS.get(
+            info.data.get("action"),
+            _DEFAULT_ACTION_PARAMS,
+        ).validate_python(value)

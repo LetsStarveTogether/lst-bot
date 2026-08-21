@@ -1391,7 +1391,7 @@ class DiscordGatewayCommand(DiscordRequestModel):
                 "op": self.opcode,
                 "d": cast(
                     JsonValue,
-                    data.model_dump(mode="json", by_alias=True, exclude_unset=True),
+                    data.model_dump(mode="json", exclude_unset=True),
                 ),
             },
             data,
@@ -1607,7 +1607,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         if connection.gateway is not self or connection.self_ != self._self:
             msg = "Discord action connection has the wrong BotSelf"
             raise ValueError(msg)
-        data = params.model_dump(mode="python", by_alias=True, exclude_none=True)
+        data = params.model_dump(mode="python", exclude_none=True)
         if action == "discord.request":
             request = DiscordRequest.model_validate(data)
             return await self._request_discord(request)
