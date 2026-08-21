@@ -255,9 +255,13 @@ async def test_none_target_connection_injection_failure_is_logged(
     def bad(connection: Injected[Connection]) -> None:
         _ = connection
 
+    (job,) = bot.scheduler.jobs
     async with bot:
         await sleep.advance()
         await sleep.next_call()
+        running = job._running  # ruff: ignore[private-member-access]
+        assert running is not None
+        await wait_for(running, timeout=1)
 
     assert any(
         "Scheduled job failed" in message and "bad" in message
