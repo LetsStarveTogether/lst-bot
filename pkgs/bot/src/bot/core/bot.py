@@ -57,7 +57,7 @@ logger = getLogger(__name__)
 _EVENT_QUEUE_CAPACITY = 64
 type _TaskOwner = tuple[object, Task[None]]
 type _TaskOwners = tuple[_TaskOwner, ...]
-type _LifecycleOwners = tuple[tuple[object, object], ...]
+type _LifecycleOwners = tuple[tuple[Bot, object], ...]
 
 _CURRENT_DISPATCHER: ContextVar[_TaskOwners] = ContextVar(
     "bot_current_dispatcher",
@@ -205,7 +205,12 @@ class Bot(EventRouter):
             owner = object()
             self._lifecycle_owner = owner
             try:
-                with _CURRENT_LIFECYCLE.set((*_CURRENT_LIFECYCLE.get(), (self, owner))):
+                owners = tuple(
+                    (bot, active_owner)
+                    for bot, active_owner in _CURRENT_LIFECYCLE.get()
+                    if bot._lifecycle_owner is active_owner  # ruff: ignore[private-member-access] - prune inactive lineage
+                )
+                with _CURRENT_LIFECYCLE.set((*owners, (self, owner))):
                     if self._pending_cleanup:
                         msg = "Bot shutdown is incomplete; call close() again"
                         raise RuntimeError(msg)
@@ -240,7 +245,12 @@ class Bot(EventRouter):
             owner = object()
             self._lifecycle_owner = owner
             try:
-                with _CURRENT_LIFECYCLE.set((*_CURRENT_LIFECYCLE.get(), (self, owner))):
+                owners = tuple(
+                    (bot, active_owner)
+                    for bot, active_owner in _CURRENT_LIFECYCLE.get()
+                    if bot._lifecycle_owner is active_owner  # ruff: ignore[private-member-access] - prune inactive lineage
+                )
+                with _CURRENT_LIFECYCLE.set((*owners, (self, owner))):
                     if not self._running.is_set() and not self._pending_cleanup:
                         return
                     self._running.clear()

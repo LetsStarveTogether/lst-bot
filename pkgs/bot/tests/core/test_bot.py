@@ -3,6 +3,7 @@ from typing import override
 
 import pytest
 from bot import Bot, Gateway
+from bot.core import bot as bot_module
 from bot.testing import RecordingGateway, private_message_event
 
 
@@ -333,6 +334,44 @@ async def test_stale_lifecycle_context_waits_for_the_current_operation() -> None
         await task
         assert starts == 2
         await bot.close()
+
+
+async def test_background_restarts_prune_stale_lifecycle_owners() -> None:
+    depths: list[int] = []
+
+    async def restart(bot: Bot) -> None:
+        await bot.close()
+        await bot.start()
+
+    class RestartingGateway(Gateway):
+        starts = 0
+        restart_task: Task[None] | None = None
+
+        @override
+        async def start(self) -> None:
+            self.starts += 1
+            depths.append(len(bot_module._CURRENT_LIFECYCLE.get()))  # ruff: ignore[private-member-access]
+            self.restart_task = (
+                create_task(restart(self.bot)) if self.starts < 3 else None
+            )
+
+        @override
+        async def close(self) -> None:
+            depths.append(len(bot_module._CURRENT_LIFECYCLE.get()))  # ruff: ignore[private-member-access]
+
+    bot = Bot()
+    gateway = RestartingGateway(bot)
+    bot.add_gateway(gateway)
+    async with timeout(1):
+        await bot.start()
+        try:
+            for _ in range(2):
+                task = gateway.restart_task
+                assert task is not None
+                await task
+            assert depths == [1] * 5
+        finally:
+            await bot.close()
 
 
 async def test_gateway_registration_freezes_after_startup_begins() -> None:
