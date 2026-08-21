@@ -471,6 +471,9 @@ async def test_dispatch_uses_request_scoped_container_dependencies() -> None:
     def handle(service: Injected[RequestService]) -> None:
         seen.append(service.value)
 
+    contract_count = len(
+        bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
+    )
     async with bot:
         await bot.dispatch(
             gateway.connection,
@@ -482,6 +485,12 @@ async def test_dispatch_uses_request_scoped_container_dependencies() -> None:
         )
 
     assert seen == [1, 2]
+    assert (
+        len(
+            bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
+        )
+        == contract_count
+    )
 
 
 async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers() -> None:

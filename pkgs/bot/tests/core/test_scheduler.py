@@ -210,11 +210,21 @@ async def test_none_target_job_has_fresh_state_and_dependencies() -> None:
         state["value"] = service.value
         await seen.put((str(state["value"]), fresh))
 
+    contract_count = len(
+        bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
+    )
     async with bot:
         await sleep.advance()
         await sleep.advance()
         assert await wait_for(seen.get(), timeout=1) == ("ready", True)
         assert await wait_for(seen.get(), timeout=1) == ("ready", True)
+
+    assert (
+        len(
+            bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
+        )
+        == contract_count
+    )
 
 
 async def test_none_target_connection_injection_failure_is_logged() -> None:

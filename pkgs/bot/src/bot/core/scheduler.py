@@ -15,7 +15,7 @@ from logbook import Logger
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
 
-from .di import InjectionContext, State, call_with_injection, request_scope
+from .di import InjectionContext, State, call_with_injection, inject, request_scope
 
 if TYPE_CHECKING:
     from .bot import Bot
@@ -63,6 +63,9 @@ class CronJob:
     sleep: Sleep
     _runner: Task[None] | None = None
     _running: Task[None] | None = None
+
+    def __post_init__(self) -> None:
+        self.handler = inject(self.handler)
 
     def __str__(self) -> str:
         return f"{self.name}[{self.expr}]"

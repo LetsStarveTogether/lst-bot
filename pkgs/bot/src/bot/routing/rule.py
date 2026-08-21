@@ -5,7 +5,7 @@ from typing import Self
 
 from diwire import Injected, ResolverProtocol
 
-from bot.core.di import InjectionContext, call_with_injection
+from bot.core.di import InjectionContext, call_with_injection, inject
 from bot.protocol.events import UserEvent
 
 
@@ -17,6 +17,10 @@ def _is_bot_admin(event: UserEvent, context: InjectionContext) -> bool:
 class Rule:
     checker: Callable
     raw: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.raw:
+            self.checker = inject(self.checker)
 
     def __and__(self, other: Rule | Callable | None) -> Self:
         if other is None:

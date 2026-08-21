@@ -7,7 +7,14 @@ from dataclasses import dataclass
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
-from diwire import Container, Lifetime, ResolverProtocol, Scope, resolver_context
+from diwire import (
+    Container,
+    DependencyRegistrationPolicy,
+    Lifetime,
+    ResolverProtocol,
+    Scope,
+    resolver_context,
+)
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.events import Event
@@ -20,10 +27,15 @@ if TYPE_CHECKING:
 
 type State = dict[str, object]
 
+inject = resolver_context.inject(
+    dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
+    auto_open_scope=False,
+)
+
 
 @asynccontextmanager
 async def request_scope(container: Container) -> AsyncIterator[ResolverProtocol]:
-    async with container.enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
+    async with container.compile().enter_scope(Scope.REQUEST) as resolver:  # ty: ignore[invalid-context-manager]
         yield resolver
 
 
@@ -57,15 +69,11 @@ async def call_with_injection(
     context: InjectionContext,
     resolver: ResolverProtocol,
 ) -> object:
-    token = _CURRENT_CONTEXT.set(context)
-    try:
-        injected = resolver_context.inject(scope=Scope.REQUEST)(func)
-        value = injected(diwire_resolver=resolver)
+    with _CURRENT_CONTEXT.set(context):
+        value = func(diwire_resolver=resolver)
         if isawaitable(value):
             return await value
         return value
-    finally:
-        _CURRENT_CONTEXT.reset(token)
 
 
 def register_context_providers(

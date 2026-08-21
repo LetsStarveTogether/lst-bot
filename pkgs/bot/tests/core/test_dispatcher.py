@@ -180,6 +180,29 @@ async def test_recursive_dispatch_is_rejected() -> None:
     assert result[0].exception is None
 
 
+async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
+    first = Bot()
+    second = Bot()
+    first_gateway = RecordingGateway(first)
+    second_gateway = RecordingGateway(second)
+    seen: list[Bot] = []
+
+    @second.on_msg(block=True)
+    def inner(bot: Injected[Bot]) -> None:
+        seen.append(bot)
+
+    @first.on_msg(block=True)
+    async def outer(bot: Injected[Bot]) -> None:
+        seen.append(bot)
+        await second.dispatch(second_gateway.connection, event("inner"))
+
+    async with first, second:
+        result = await first.dispatch(first_gateway.connection, event("outer"))
+
+    assert result[0].exception is None
+    assert seen == [first, second]
+
+
 async def test_close_from_a_handler_is_rejected() -> None:
     bot = Bot()
     gateway = RecordingGateway(bot)
