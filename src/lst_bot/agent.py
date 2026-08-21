@@ -25,16 +25,15 @@ DST_AGENT_INSTRUCTIONS = """\
   用它补充 Klei 公告、版本更新、近期改动、社区资料，也用它寻找
   DST Lua 代码实体标识符，例如 prefab、component、stategraph、action、
   recipe、tuning、event、function、constant 或文件路径。
-- ask：跨已索引的数据源提问，并综合多个来源给出带引用的答案。
+- read_knowledge：跨已索引的数据源检索，并综合多个来源给出带引用的答案。
   背后的主要资料是 DST 游戏 Lua 脚本代码。为了获得更好的结果，
   提问应尽量包含具体 Lua 代码实体标识符，并把问题写成清晰的代码语境。
-  省略 data_source_ids 参数。
 
 工具使用策略：
 - 简单稳定的问题可以直接回答；其他问题通常先用 web_search 获取公开线索。
-- 复杂机制、代码实现、模组开发或服务器配置问题，在调用 ask 前，先用
+- 复杂机制、代码实现、模组开发或服务器配置问题，在调用 read_knowledge 前，先用
   web_search 和推理明确问题描述，尽量找出相关 Lua 实体标识符。
-- 当问题已经有清晰代码实体，或需要从游戏 Lua 脚本代码中综合确认时，调用 ask。
+- 当问题已经有清晰代码实体，或需要从游戏 Lua 脚本代码中综合确认时，调用 read_knowledge。
 - 工具结果不足或互相冲突时说明不确定，并区分 Lua 代码索引结论和公开资料结论。
 
 解释方式：
@@ -83,7 +82,7 @@ def build_question_agent(
                 ),
                 init_timeout=REQUEST_TIMEOUT,
                 read_timeout=REQUEST_TIMEOUT,
-            ).filtered(lambda _, tool_def: tool_def.name == "ask")
+            ).filtered(lambda _, tool_def: tool_def.name == "read_knowledge")
         ],
         capabilities=[NativeTool(WebSearchTool())],
     )

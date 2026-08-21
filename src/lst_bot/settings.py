@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     openrouter_api_key: SecretStr = Field(min_length=1)
     dosu_mcp_endpoint: _HttpsUrl
-    dosu_api_key: SecretStr = SecretStr("")
+    dosu_api_key: SecretStr = Field(min_length=1)
 
     report_group_id: str = ""
 

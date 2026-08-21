@@ -12,3 +12,4 @@ def isolate_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
     monkeypatch.setenv("DOSU_MCP_ENDPOINT", "https://example.com/mcp")
+    monkeypatch.setenv("DOSU_API_KEY", "test")

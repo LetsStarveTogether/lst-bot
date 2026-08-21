@@ -16,9 +16,23 @@ from lst_bot.settings import Settings
         {
             "openrouter_api_key": "",
             "dosu_mcp_endpoint": "https://example.com/mcp",
+            "dosu_api_key": "test",
         },
-        {"openrouter_api_key": "test", "dosu_mcp_endpoint": "invalid"},
-        {"openrouter_api_key": "test", "dosu_mcp_endpoint": "http://example.com/mcp"},
+        {
+            "openrouter_api_key": "test",
+            "dosu_mcp_endpoint": "invalid",
+            "dosu_api_key": "test",
+        },
+        {
+            "openrouter_api_key": "test",
+            "dosu_mcp_endpoint": "http://example.com/mcp",
+            "dosu_api_key": "test",
+        },
+        {
+            "openrouter_api_key": "test",
+            "dosu_mcp_endpoint": "https://example.com/mcp",
+            "dosu_api_key": "",
+        },
     ],
 )
 def test_ai_service_settings_are_required_and_validated(
@@ -27,6 +41,7 @@ def test_ai_service_settings_are_required_and_validated(
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY")
     monkeypatch.delenv("DOSU_MCP_ENDPOINT")
+    monkeypatch.delenv("DOSU_API_KEY")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **overrides)

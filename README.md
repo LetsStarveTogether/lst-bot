@@ -58,7 +58,7 @@ The app reads `.env` from the repository root.
 | `KLEI_HOST_ID` | Managed DST host ID |
 | `OPENROUTER_API_KEY` | Required AI provider credentials |
 | `DOSU_MCP_ENDPOINT` | Required HTTPS knowledge service endpoint |
-| `DOSU_API_KEY` | Knowledge service credentials |
+| `DOSU_API_KEY` | Required knowledge service credentials |
 | `HTTP_PROXY` | HTTP proxy for external services and Telegram/Discord traffic, including the Discord Gateway; empty connects directly |
 | `LOG_LEVEL` | Log level |
 
