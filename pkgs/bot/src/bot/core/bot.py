@@ -455,7 +455,9 @@ class Bot(EventRouter):
         item: _QueuedEvent,
     ) -> None:
         owner = cast(Task[None], current_task())
-        owners = tuple(item for item in _CURRENT_DISPATCHER.get() if not item[1].done())
+        owners = tuple(
+            owner for owner in _CURRENT_DISPATCHER.get() if not owner[1].done()
+        )
         with _CURRENT_DISPATCHER.set((*owners, (self, owner))):
             await self._dispatch_event(
                 item.connection,
