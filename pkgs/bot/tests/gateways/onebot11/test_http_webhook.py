@@ -233,6 +233,8 @@ def test_robyn_route_enforces_onebot11_http_headers_and_signature() -> None:
     app = Robyn(__file__)
     gateway.mount(app)
     gateway.mount(app)
+    with pytest.raises(ValueError, match="only be mounted on one server"):
+        gateway.mount(Robyn(__file__))
     body = dumpb(private_msg_payload())
     signature = "sha1=" + new(credential.encode(), body, sha1).hexdigest()
 

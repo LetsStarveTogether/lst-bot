@@ -344,7 +344,7 @@ class Connection:
 class Gateway:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
-        self._mounted_servers: list[RobynServer] = []
+        self._mounted = False
 
     def __str__(self) -> str:
         return type(self).__name__
@@ -428,21 +428,10 @@ class Gateway:
         raise TypeError(msg)
 
     def _mount_server_once(self, server: RobynServer) -> bool:
-        if any(mounted is server for mounted in self._mounted_servers):
-            logger.debug(
-                "gateway already mounted: %s@%s",
-                type(self).__name__,
-                type(server).__name__,
-            )
-            return False
-
         self.bot.mount_server(server)
-        self._mounted_servers.append(server)
-        logger.debug(
-            "mount bot lifecycle hooks: %s@%s",
-            type(self).__name__,
-            type(server).__name__,
-        )
+        if self._mounted:
+            return False
+        self._mounted = True
         return True
 
 
@@ -572,15 +561,15 @@ def json_response(status: int, payload: BaseModel | JsonValue) -> Response:
         )
     else:
         body = dumpb(payload)
-    return Response(status, {"Content-Type": "application/json"}, body)
+    return Response(status, {"Content-Type": "application/json"}, body=body)
 
 
 def text_response(status: int, text: str) -> Response:
-    return Response(status, {"Content-Type": "text/plain; charset=utf-8"}, text)
+    return Response(status, {"Content-Type": "text/plain; charset=utf-8"}, body=text)
 
 
 def empty_response(status: int) -> Response:
-    return Response(status, {}, "")
+    return Response(status, {}, body="")
 
 
 def access_token_value(access_token: AccessToken) -> str | None:
