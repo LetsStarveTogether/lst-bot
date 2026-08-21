@@ -47,6 +47,12 @@ def test_add_gateway_is_identity_idempotent_and_rejects_a_foreign_owner() -> Non
         bot.add_gateway(RecordingGateway(Bot()))
 
 
+def test_recording_gateway_preserves_injected_responses() -> None:
+    responses = {}
+
+    assert RecordingGateway(Bot(), responses=responses).responses is responses
+
+
 async def test_bot_async_context_runs_lifecycle_and_closes_gateways() -> None:
     class LifecycleGateway(RecordingGateway):
         @override
