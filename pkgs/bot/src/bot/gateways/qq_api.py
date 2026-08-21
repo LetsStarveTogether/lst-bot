@@ -1504,7 +1504,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/users/@me/guilds",
         QQGuildListParams,
         QQGuildList,
-        query=True,
     ),
     QQAction.GENERATE_SHARE_LINK: QQRoute(
         HTTPMethod.POST,
@@ -1624,7 +1623,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/v2/groups/{group_openid}/join_request_list",
         QQJoinRequestListParams,
         QQJoinRequestList,
-        query=True,
     ),
     QQAction.APPROVE_GROUP_JOIN_REQUEST: QQRoute(
         HTTPMethod.POST,
@@ -1647,7 +1645,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/v2/groups/join_approval_strategy",
         QQStrategyListParams,
         QQStrategyList,
-        query=True,
     ),
     QQAction.CREATE_GROUP_APPROVAL_STRATEGY: QQRoute(
         HTTPMethod.POST,
@@ -1691,7 +1688,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/v2/panels",
         QQPanelListParams,
         QQPanelList,
-        query=True,
     ),
     QQAction.CREATE_PANEL: QQRoute(
         HTTPMethod.POST, "/v2/panels", QQCreatePanelRequest, QQPanelIDResult
@@ -1754,14 +1750,12 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/guilds/{guild_id}/members",
         QQMemberListParams,
         QQMemberList,
-        query=True,
     ),
     QQAction.LIST_GUILD_ROLE_MEMBERS: QQRoute(
         HTTPMethod.GET,
         "/guilds/{guild_id}/roles/{role_id}/members",
         QQRoleMemberListParams,
         QQRoleMemberList,
-        query=True,
     ),
     QQAction.GET_GUILD_MEMBER: QQRoute(
         HTTPMethod.GET,
@@ -1847,7 +1841,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "{emoji_type}/{emoji_id}",
         QQReactionUsersParams,
         QQReactionUsers,
-        query=True,
     ),
     QQAction.MUTE_GUILD: QQRoute(
         HTTPMethod.PATCH,
@@ -1892,7 +1885,6 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
         "/channels/{channel_id}/schedules",
         QQScheduleListParams,
         QQScheduleList,
-        query=True,
     ),
     QQAction.GET_SCHEDULE: QQRoute(
         HTTPMethod.GET,
@@ -2301,7 +2293,7 @@ class QQRestClient:
         path = route.path.format_map({
             name: quote(str(payload.pop(name)), safe="") for name in path_fields
         })
-        if route.query:
+        if route.method is HTTPMethod.GET or route.query:
             query = {
                 name: (str(value).lower() if isinstance(value, bool) else str(value))
                 for name, value in payload.items()
