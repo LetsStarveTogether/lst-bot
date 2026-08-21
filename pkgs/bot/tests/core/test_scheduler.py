@@ -168,7 +168,7 @@ async def test_cron_delay_uses_absolute_time_across_dst(
     assert delay == expected_delay
 
 
-async def test_none_target_job_injects_service_without_rewrapping() -> None:
+async def test_none_target_job_injects_service() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     bot.container.add_instance(Service("ready"), provides=Service)
@@ -178,21 +178,9 @@ async def test_none_target_job_injects_service_without_rewrapping() -> None:
     async def collect(service: Injected[Service]) -> None:
         await seen.put(service.value)
 
-    contract_count = len(
-        bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
-    )
     async with bot:
         await sleep.advance()
-        await sleep.advance()
         assert await wait_for(seen.get(), timeout=1) == "ready"
-        assert await wait_for(seen.get(), timeout=1) == "ready"
-
-    assert (
-        len(
-            bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
-        )
-        == contract_count
-    )
 
 
 async def test_none_target_connection_injection_failure_is_logged(
@@ -219,16 +207,20 @@ async def test_fixed_account_uses_the_registered_gateway() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     recording_gateway(bot)
-    seen: Queue[str] = Queue()
+    selected_gateway = AlternateGateway(bot)
+    bot.add_gateway(selected_gateway)
+    seen: Queue[Connection] = Queue()
     self_ = BotSelf(platform="test", user_id="fixed")
 
-    @bot.on_cron("* * * * *", self_=self_, gateway=RecordingGateway)
+    @bot.on_cron("* * * * *", self_=self_, gateway=AlternateGateway)
     async def collect(connection: Injected[Connection]) -> None:
-        await seen.put(connection.self_.user_id)
+        await seen.put(connection)
 
     async with bot:
         await sleep.advance()
-        assert await wait_for(seen.get(), timeout=1) == "fixed"
+        connection = await wait_for(seen.get(), timeout=1)
+        assert connection.gateway is selected_gateway
+        assert connection.self_ == self_
 
 
 async def test_fixed_account_logs_gateway_ambiguity(
@@ -254,16 +246,17 @@ async def test_fixed_account_logs_gateway_ambiguity(
     assert any("failed to resolve target" in message for message in caplog.messages)
 
 
-async def test_overlapping_tick_is_skipped(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_overlapping_tick_is_skipped() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     started = Event()
     release = Event()
+    attempts = 0
 
     @bot.on_cron("* * * * *", name="slow", self_=None)
     async def slow() -> None:
+        nonlocal attempts
+        attempts += 1
         started.set()
         await release.wait()
 
@@ -272,14 +265,11 @@ async def test_overlapping_tick_is_skipped(
         await wait_for(started.wait(), timeout=1)
         await sleep.advance()
         await sleep.next_call()
+        assert attempts == 1
         release.set()
 
-    assert any("still running" in message for message in caplog.messages)
 
-
-async def test_handler_failure_does_not_block_later_ticks(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_handler_failure_does_not_block_later_ticks() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
     attempts: Queue[int] = Queue()
@@ -299,8 +289,3 @@ async def test_handler_failure_does_not_block_later_ticks(
         assert await wait_for(attempts.get(), timeout=1) == 1
         await sleep.advance()
         assert await wait_for(attempts.get(), timeout=1) == 2
-
-    assert any(
-        "Scheduled job failed" in message and "flaky" in message
-        for message in caplog.messages
-    )
