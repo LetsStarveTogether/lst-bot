@@ -2,11 +2,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from diwire import ResolverProtocol
-from pydantic import BaseModel
 
 from bot.core.di import InjectionContext, call_with_injection, inject
 from bot.protocol.enums import EventKind
-from bot.protocol.returns import ReturnAction
 
 from .rule import Permission, Rule
 
@@ -42,17 +40,3 @@ class EventRoute:
         for dependency in self.dependencies:
             await call_with_injection(dependency, context, resolver)
         return True
-
-
-@dataclass(slots=True, kw_only=True, match_args=False)
-class DispatchEffect:
-    action: ReturnAction
-    outcome: BaseModel
-
-
-@dataclass(slots=True, kw_only=True, match_args=False)
-class DispatchResult:
-    route: EventRoute
-    values: list[object]
-    effects: list[DispatchEffect] = field(default_factory=list)
-    exception: BaseException | None = None

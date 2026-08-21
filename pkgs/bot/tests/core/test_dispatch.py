@@ -84,12 +84,9 @@ async def test_connection_action_failed_response_raises() -> None:
 
     with LogbookTestHandler() as handler:
         async with bot:
-            results = await bot.dispatch(gateway.connection, make_event("ping"))
+            await bot.dispatch(gateway.connection, make_event("ping"))
 
-    exception = results[0].exception
-    assert isinstance(exception, RuntimeError)
-    assert str(exception) == "Action failed with retcode 10001: bad target"
-    assert results[0].effects == []
+    assert [action.action for action in gateway.actions] == ["send_message"]
     assert any(
         "Dispatch route" in record.message
         and "Action failed with retcode 10001: bad target" in record.message
@@ -116,13 +113,11 @@ async def test_dispatch_injects_connection_and_enforces_permission() -> None:
         )
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             make_event("!ping hi", user_id="u1"),
         )
 
-    assert len(results) == 1
-    assert results[0].values == []
     action = gateway.actions[0]
     assert action.action == "send_message"
     assert action.params.model_dump(mode="json", by_alias=True)["message"] == [
@@ -169,18 +164,19 @@ async def test_admin_permission_allows_bot_admin_or_sender_admin() -> None:
 async def test_bot_admin_permission_namespaces_user_ids_by_platform() -> None:
     bot = Bot(admin_ids={"qq": {"42"}})
     gateway = recording_gateway(bot)
+    seen: list[str] = []
 
     @bot.on_cmd("secure", permission=Permission.bot_admin(), block=True)
     def secure() -> None:
-        pytest.fail("same user ID on another platform must not be an admin")
+        seen.append("matched")
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             make_event("/secure", user_id="42"),
         )
 
-    assert results == []
+    assert seen == []
 
 
 async def test_dispatch_auto_replies_string_return() -> None:
@@ -192,14 +188,8 @@ async def test_dispatch_auto_replies_string_return() -> None:
         return "pong"
 
     async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("ping"))
+        await bot.dispatch(gateway.connection, make_event("ping"))
 
-    assert results[0].values == ["pong"]
-    assert len(results[0].effects) == 1
-    effect = results[0].effects[0]
-    assert effect.action.msg == Msg.from_input("pong")
-    assert isinstance(effect.outcome, ActionResponse)
-    assert effect.outcome.data == {"status": "ok"}
     assert gateway.actions[0].model_dump(mode="json", by_alias=True) == {
         "action": "send_message",
         "params": {
@@ -219,15 +209,8 @@ async def test_dispatch_executes_list_returns_in_order() -> None:
         return [Msg.from_input("one"), Msg.from_input("two")]
 
     async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("ping"))
+        await bot.dispatch(gateway.connection, make_event("ping"))
 
-    effects = results[0].effects
-    messages = [effect.action.msg for effect in effects]
-    assert all(message is not None for message in messages)
-    assert [message.text for message in messages if message is not None] == [
-        "one",
-        "two",
-    ]
     assert [
         action.params.model_dump(mode="json", by_alias=True)["message"]
         for action in gateway.actions
@@ -259,13 +242,12 @@ async def test_dispatch_executes_action_returns() -> None:
         ]
 
     async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("ping"))
+        await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [action.action for action in gateway.actions] == [
         "send_message",
         "get_user_info",
     ]
-    assert [effect.action.kind for effect in results[0].effects] == ["call", "call"]
 
 
 async def test_dispatch_rejects_unsupported_return_values() -> None:
@@ -280,16 +262,17 @@ async def test_dispatch_rejects_unsupported_return_values() -> None:
 
         bot.on_msg(block=True)(lambda value=value: value)
 
-        async with bot:
-            results = await bot.dispatch(
-                gateway.connection,
-                make_event(f"ping-{type_name}"),
-            )
+        with LogbookTestHandler() as handler:
+            async with bot:
+                await bot.dispatch(
+                    gateway.connection,
+                    make_event(f"ping-{type_name}"),
+                )
 
-        assert len(results) == 1
-        exception = results[0].exception
-        assert isinstance(exception, TypeError)
-        assert str(exception) == f"Unsupported handler return value: {type_name}"
+        assert any(
+            f"Unsupported handler return value: {type_name}" in record.message
+            for record in handler.records
+        )
 
 
 async def test_dispatch_stops_batch_on_return_execution_error() -> None:
@@ -304,14 +287,15 @@ async def test_dispatch_stops_batch_on_return_execution_error() -> None:
             Msg.from_input("never"),
         ]
 
-    async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("ping"))
+    with LogbookTestHandler() as handler:
+        async with bot:
+            await bot.dispatch(gateway.connection, make_event("ping"))
 
     assert [action.action for action in gateway.actions] == ["send_message"]
-    assert len(results) == 1
-    exception = results[0].exception
-    assert isinstance(exception, TypeError)
-    assert str(exception) == "Unsupported handler return value: dict"
+    assert any(
+        "Unsupported handler return value: dict" in record.message
+        for record in handler.records
+    )
 
 
 @pytest.mark.parametrize(
@@ -336,13 +320,15 @@ async def test_dispatch_continues_after_failed_blocking_route(
     def recover() -> None:
         seen.append("recovered")
 
-    async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("anything"))
+    with LogbookTestHandler() as handler:
+        async with bot:
+            await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["recovered"]
-    assert len(results) == 2
-    assert results[0].exception is error
-    assert results[1].exception is None
+    assert any(
+        type(error).__name__ in record.message and str(error) in record.message
+        for record in handler.records
+    )
 
 
 async def test_dispatch_records_check_and_dependency_exceptions() -> None:
@@ -381,15 +367,20 @@ async def test_dispatch_records_check_and_dependency_exceptions() -> None:
 
     bot.add_router(router)
 
-    async with bot:
-        results = await bot.dispatch(gateway.connection, make_event("anything"))
+    with LogbookTestHandler() as handler:
+        async with bot:
+            await bot.dispatch(gateway.connection, make_event("anything"))
 
     assert seen == ["recovered"]
-    exceptions = [result.exception for result in results]
-    assert isinstance(exceptions[0], ValueError)
-    assert isinstance(exceptions[1], PermissionError)
-    assert isinstance(exceptions[2], LookupError)
-    assert exceptions[3] is None
+    assert [
+        record.message.rsplit("(", 1)[-1].rstrip(")")
+        for record in handler.records
+        if "Dispatch route failed" in record.message
+    ] == [
+        "ValueError: rule failed",
+        "PermissionError: permission failed",
+        "LookupError: dependency failed",
+    ]
 
 
 async def test_dispatch_respects_priority_and_block() -> None:
@@ -516,20 +507,18 @@ async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers() -> 
     def fast() -> None:
         seen.append("fast")
 
-    async with timeout(1):
-        async with bot:
-            results = await bot.dispatch(gateway.connection, make_event("slow"))
-            fast_results = await bot.dispatch(
-                gateway.connection,
-                make_event("fast", event_id="evt-fast"),
-            )
+    with LogbookTestHandler() as handler:
+        async with timeout(1):
+            async with bot:
+                await bot.dispatch(gateway.connection, make_event("slow"))
+                await bot.dispatch(
+                    gateway.connection,
+                    make_event("fast", event_id="evt-fast"),
+                )
 
     assert slow_cancelled.is_set()
-    assert len(results) == 1
-    assert isinstance(results[0].exception, TimeoutError)
     assert seen == ["fast"]
-    assert len(fast_results) == 1
-    assert fast_results[0].exception is None
+    assert sum("timed out" in record.message for record in handler.records) == 1
 
 
 async def test_dispatch_external_cancellation_propagates() -> None:

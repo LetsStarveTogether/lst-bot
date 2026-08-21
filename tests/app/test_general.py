@@ -33,10 +33,11 @@ async def test_hitokoto_command_dispatches_with_injected_client() -> None:
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(gateway.connection, private_message_event("/一言"))
+        await bot.dispatch(gateway.connection, private_message_event("/一言"))
 
     client.get_hitokoto.assert_awaited_once_with(use_cache=True)
-    assert results[0].values == ["今日一言"]
+    message = gateway.actions[0].params.model_dump(mode="json")["message"]
+    assert message[0]["data"]["text"] == "今日一言"
 
 
 async def test_versions_command_dispatches_with_injected_client() -> None:
@@ -52,18 +53,17 @@ async def test_versions_command_dispatches_with_injected_client() -> None:
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/最新版本"),
         )
 
     client.get_latest_versions.assert_awaited_once_with()
-    assert results[0].values == [
-        (
-            "发布版本：9\n发布类型：Release\n发布日期：2026-08-09\n\n\n"
-            "发布版本：8\n发布类型：Test\n发布日期：2026-08-08"
-        ),
-    ]
+    message = gateway.actions[0].params.model_dump(mode="json")["message"]
+    assert message[0]["data"]["text"] == (
+        "发布版本：9\n发布类型：Release\n发布日期：2026-08-09\n\n\n"
+        "发布版本：8\n发布类型：Test\n发布日期：2026-08-08"
+    )
 
 
 async def test_search_player_command_filters_active_rooms() -> None:
@@ -79,18 +79,18 @@ async def test_search_player_command_filters_active_rooms() -> None:
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/搜索玩家 Wendy"),
         )
 
     client.get_lobby_data.assert_awaited_once_with(platforms=(Platform.Steam,))
     client.get_room_data.assert_awaited_once()
-    result = results[0].values[0]
-    assert isinstance(result, str)
-    assert result.startswith("🔍️ 1/2\n")
-    assert "Alpha" in result
-    assert "Beta" not in result
+    message = gateway.actions[0].params.model_dump(mode="json")["message"]
+    reply = message[0]["data"]["text"]
+    assert reply.startswith("🔍️ 1/2\n")
+    assert "Alpha" in reply
+    assert "Beta" not in reply
 
 
 async def test_report_uses_injected_settings_for_room_and_message_targets() -> None:

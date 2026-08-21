@@ -6,6 +6,7 @@ from typing import override
 import pytest
 from bot import Bot, Injected, PrivateMessageEvent
 from bot.testing import RecordingGateway, private_message_event
+from logbook import TestHandler as LogbookTestHandler
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
 
@@ -174,10 +175,9 @@ async def test_recursive_dispatch_is_rejected() -> None:
         rejected = True
 
     async with bot:
-        result = await bot.dispatch(gateway.connection, event("outer"))
+        await bot.dispatch(gateway.connection, event("outer"))
 
     assert rejected
-    assert result[0].exception is None
 
 
 async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
@@ -197,29 +197,32 @@ async def test_nested_dispatch_uses_the_destination_bot_container() -> None:
         await second.dispatch(second_gateway.connection, event("inner"))
 
     async with first, second:
-        result = await first.dispatch(first_gateway.connection, event("outer"))
+        await first.dispatch(first_gateway.connection, event("outer"))
 
-    assert result[0].exception is None
     assert seen == [first, second]
 
 
 async def test_close_from_a_handler_is_rejected() -> None:
     bot = Bot()
     gateway = RecordingGateway(bot)
+    seen: list[str] = []
 
     @bot.on_msg(block=True)
     async def handle(message: Injected[PrivateMessageEvent]) -> None:
+        seen.append(message.id)
         if message.id == "close":
             await bot.close()
 
-    async with bot:
-        result = await bot.dispatch(gateway.connection, event("close"))
-        after = await bot.dispatch(gateway.connection, event("after"))
+    with LogbookTestHandler() as handler:
+        async with bot:
+            await bot.dispatch(gateway.connection, event("close"))
+            await bot.dispatch(gateway.connection, event("after"))
 
-    exception = result[0].exception
-    assert isinstance(exception, RuntimeError)
-    assert str(exception) == "Bot cannot be closed from a dispatch handler"
-    assert after[0].exception is None
+    assert seen == ["close", "after"]
+    assert any(
+        "Bot cannot be closed from a dispatch handler" in record.message
+        for record in handler.records
+    )
 
 
 async def test_close_cancels_running_and_queued_events() -> None:

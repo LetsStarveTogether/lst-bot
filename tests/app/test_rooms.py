@@ -73,7 +73,7 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/房间列表"),
         )
@@ -83,9 +83,8 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
     assert room_data_call is not None
     room_refs = list(room_data_call.args[0])
     assert room_refs == [("1", "ap-east-1")]
-    result = results[0].values[0]
-    assert isinstance(result, str)
-    assert "Alpha" in result
+    message = gateway.actions[0].params.model_dump(mode="json")["message"]
+    assert "Alpha" in message[0]["data"]["text"]
 
 
 @pytest.mark.parametrize(
@@ -126,14 +125,15 @@ async def test_admin_room_commands_dispatch_to_lst(
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event(command, user_id="admin"),
         )
 
     method = getattr(client, method_name)
     method.assert_called_once_with(*expected_args)
-    assert results[0].values == [expected_reply]
+    message = gateway.actions[0].params.model_dump(mode="json")["message"]
+    assert message[0]["data"]["text"] == expected_reply
 
 
 def test_restart_room_hides_internal_error() -> None:
@@ -150,11 +150,10 @@ async def test_room_admin_command_rejects_non_admin() -> None:
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/房间存档 1", user_id="member"),
         )
 
-    assert results == []
     client.send_console_command.assert_not_called()
     assert gateway.actions == []

@@ -53,7 +53,6 @@ from bot.protocol.returns import ReturnAction
 
 if TYPE_CHECKING:
     from bot.core import Bot
-    from bot.routing import DispatchResult
 
 logger = Logger(__name__)
 
@@ -309,11 +308,11 @@ class Gateway:
     def connection_for(self, self_: BotSelf) -> Connection:
         return Connection(self, self_)
 
-    async def dispatch_event(self, event: Event) -> list[DispatchResult]:
+    async def dispatch_event(self, event: Event) -> None:
         connection = (
             self.connection_for(event.self_) if event.self_ is not None else None
         )
-        return await self.bot.dispatch(connection, event, gateway=self)
+        await self.bot.dispatch(connection, event, gateway=self)
 
     def enqueue_event(self, event: Event) -> None:
         connection = (

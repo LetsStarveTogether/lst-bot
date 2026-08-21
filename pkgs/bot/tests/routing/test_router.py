@@ -31,10 +31,11 @@ async def test_admin_permission_rejects_non_hashable_sender_role(
 ) -> None:
     bot = Bot()
     router = EventRouter()
+    seen: list[str] = []
 
     @router.on_msg(permission=Permission.admin(), block=True)
-    def protected() -> str:
-        return "allowed"
+    def protected() -> None:
+        seen.append("allowed")
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
@@ -43,12 +44,12 @@ async def test_admin_permission_rejects_non_hashable_sender_role(
     payload["sender"] = {"role": role}
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             type(source).model_validate(payload),
         )
 
-    assert results == []
+    assert seen == []
 
 
 @dataclass(frozen=True)
@@ -78,52 +79,53 @@ async def test_router_cmd_uses_diwire_injected_service() -> None:
     bot.container.add_instance(Repository("repo"), provides=Repository)
     bot.container.add(Service)
     router = EventRouter(name="admin")
+    seen: list[str] = []
 
     @router.on_cmd("ping", block=True)
-    def ping(service: Injected[Service], cmd: Injected[Cmd]) -> str:
-        return service.render(cmd.arg)
+    def ping(service: Injected[Service], cmd: Injected[Cmd]) -> None:
+        seen.append(service.render(cmd.arg))
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/ping ok", user_id="42"),
         )
 
-    assert results[0].route.name == "admin.ping"
-    assert results[0].values == ["repo:ok"]
+    assert seen == ["repo:ok"]
 
 
 async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
     bot = Bot(cmd_prefixes=("/", "!"))
     router = EventRouter()
+    seen: list[str] = []
 
     @router.on_cmd("ping", aliases=("p",), block=True)
-    def ping(cmd: Injected[Cmd]) -> str:
-        return f"{cmd.name}:{cmd.raw}:{cmd.arg}"
+    def ping(cmd: Injected[Cmd]) -> None:
+        seen.append(f"{cmd.name}:{cmd.raw}:{cmd.arg}")
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
     async with bot:
-        partial_results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("/pingpong now", event_id="partial"),
         )
-        alias_results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("!p now", event_id="alias"),
         )
 
-    assert partial_results == []
-    assert alias_results[0].values == ["p:!p:now"]
+    assert seen == ["p:!p:now"]
 
 
 async def test_context_route_and_cmd_are_resolved_from_current_route() -> None:
     bot = Bot()
     router = EventRouter()
+    seen: list[str] = []
 
     def first_cmd(context: Injected[InjectionContext]) -> None:
         context.cmd = Cmd(name="first", raw="/first", arg="")
@@ -132,23 +134,20 @@ async def test_context_route_and_cmd_are_resolved_from_current_route() -> None:
         context.cmd = Cmd(name="second", raw="/second", arg="")
 
     @router.on_msg(name="first", dependencies=[first_cmd])
-    def first(route: Injected[EventRoute], cmd: Injected[Cmd]) -> str:
-        return f"{route.name}:{cmd.name}"
+    def first(route: Injected[EventRoute], cmd: Injected[Cmd]) -> None:
+        seen.append(f"{route.name}:{cmd.name}")
 
     @router.on_msg(name="second", dependencies=[second_cmd])
-    def second(route: Injected[EventRoute], cmd: Injected[Cmd]) -> str:
-        return f"{route.name}:{cmd.name}"
+    def second(route: Injected[EventRoute], cmd: Injected[Cmd]) -> None:
+        seen.append(f"{route.name}:{cmd.name}")
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(gateway.connection, private_message_event("hello"))
+        await bot.dispatch(gateway.connection, private_message_event("hello"))
 
-    assert [result.values[0] for result in results] == [
-        "first:first",
-        "second:second",
-    ]
+    assert seen == ["first:first", "second:second"]
 
 
 async def test_container_factory_dependency() -> None:
@@ -160,41 +159,43 @@ async def test_container_factory_dependency() -> None:
         lifetime=Lifetime.SCOPED,
     )
     router = EventRouter()
+    seen: list[str] = []
 
     @router.on_msg(block=True)
-    def collect(tenant: Injected[Tenant]) -> str:
-        return tenant.user_id
+    def collect(tenant: Injected[Tenant]) -> None:
+        seen.append(tenant.user_id)
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("hello", user_id="7"),
         )
 
-    assert results[0].values == ["7"]
+    assert seen == ["7"]
 
 
 async def test_route_dependencies_run_before_handler() -> None:
     bot = Bot()
     router = EventRouter()
+    seen: list[str] = []
 
     def mark(state: Injected[State]) -> None:
         state["ready"] = True
 
     @router.on_msg(block=True, dependencies=[mark])
-    def collect(state: Injected[State]) -> str:
-        return "ready" if state["ready"] else "missing"
+    def collect(state: Injected[State]) -> None:
+        seen.append("ready" if state["ready"] else "missing")
 
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
     async with bot:
-        results = await bot.dispatch(
+        await bot.dispatch(
             gateway.connection,
             private_message_event("hello"),
         )
 
-    assert results[0].values == ["ready"]
+    assert seen == ["ready"]

@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import timedelta, tzinfo
+from functools import partial
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Self
 
@@ -30,17 +31,12 @@ from diwire import (
 from logbook import Logger
 
 from bot.gateways import Connection, Gateway
-from bot.protocol.actions import ActionCall, ActionRequest, ActionResponse
+from bot.protocol.actions import ActionCall
 from bot.protocol.common import BotSelf
 from bot.protocol.events import Event
 from bot.protocol.msg import Msg
 from bot.protocol.returns import ReturnAction
-from bot.routing import (
-    DispatchEffect,
-    DispatchResult,
-    EventRoute,
-    EventRouter,
-)
+from bot.routing import EventRoute, EventRouter
 
 from .di import (
     InjectionContext,
@@ -80,7 +76,7 @@ class _QueuedEvent:
     event: Event
     gateway: Gateway | None
     context: Context
-    result: Future[list[DispatchResult]] | None = None
+    result: Future[None] | None = None
     deadline: float | None = None
 
 
@@ -334,13 +330,13 @@ class Bot(EventRouter):
         event: Event,
         *,
         gateway: Gateway | None = None,
-    ) -> list[DispatchResult]:
+    ) -> None:
         if _CURRENT_DISPATCHER.get() is self:
             msg = "Recursive dispatch is not supported"
             raise RuntimeError(msg)
         result = get_running_loop().create_future()
         self._submit_event(connection, event, gateway=gateway, result=result)
-        return await result
+        await result
 
     def _submit_event(
         self,
@@ -348,7 +344,7 @@ class Bot(EventRouter):
         event: Event,
         *,
         gateway: Gateway | None,
-        result: Future[list[DispatchResult]] | None = None,
+        result: Future[None] | None = None,
     ) -> None:
         queue = self._event_queue
         if not self._running.is_set() or queue is None:
@@ -416,7 +412,7 @@ class Bot(EventRouter):
                 context=item.context,
             )
             try:
-                results = await task
+                await task
             except CancelledError:
                 if item.result is not None and not item.result.done():
                     item.result.cancel()
@@ -433,15 +429,15 @@ class Bot(EventRouter):
                     )
             else:
                 if item.result is not None and not item.result.done():
-                    item.result.set_result(results)
+                    item.result.set_result(None)
 
     async def _dispatch_queued_event(
         self,
         item: _QueuedEvent,
-    ) -> list[DispatchResult]:
+    ) -> None:
         token = _CURRENT_DISPATCHER.set(self)
         try:
-            return await self._dispatch_event(
+            await self._dispatch_event(
                 item.connection,
                 item.event,
                 gateway=item.gateway,
@@ -457,7 +453,7 @@ class Bot(EventRouter):
         *,
         gateway: Gateway | None,
         deadline: float | None,
-    ) -> list[DispatchResult]:
+    ) -> None:
         active_gateway = connection.gateway if connection is not None else gateway
         self._remember_recent_connection(active_gateway, event)
 
@@ -475,7 +471,6 @@ class Bot(EventRouter):
 
         async with request_scope(self.container) as resolver:
             state: State = {}
-            results: list[DispatchResult] = []
 
             for route in self.routes:
                 if route.event_type is not None and route.event_type != event.type:
@@ -488,30 +483,24 @@ class Bot(EventRouter):
                     state=state,
                     route=route,
                 )
-                route_result = await self._dispatch_route(
-                    context,
-                    route,
-                    resolver,
-                    deadline,
-                )
-                if route_result is None:
-                    continue
-
-                result, timed_out = route_result
-                results.append(result)
-                if timed_out:
+                try:
+                    if not await self._before_deadline(
+                        deadline,
+                        partial(route.check, context, resolver),
+                    ):
+                        continue
+                    await self._before_deadline(
+                        deadline,
+                        partial(self._run_route, context, route, resolver),
+                    )
+                except _DispatchTimeoutError:
+                    self._log_dispatch_timeout(context, route)
                     break
-                if result.exception is None and route.block:
-                    break
-
-            if __debug__:
-                logger.trace(
-                    "dispatch event done : {event!r} {gateway} {results!r}",
-                    event=event,
-                    gateway=active_gateway,
-                    results=results,
-                )
-            return results
+                except Exception as exc:
+                    self._log_dispatch_exception(context, route, exc)
+                else:
+                    if route.block:
+                        break
 
     def _remember_recent_connection(
         self,
@@ -528,47 +517,12 @@ class Bot(EventRouter):
                 )
             self._recent_connection = (gateway, self_)
 
-    async def _dispatch_route(
-        self,
-        context: InjectionContext,
-        route: EventRoute,
-        resolver: ResolverProtocol,
-        deadline: float | None,
-    ) -> tuple[DispatchResult, bool] | None:
-        try:
-            if not await self._before_deadline(
-                deadline,
-                lambda: route.check(context, resolver),
-            ):
-                return None
-            if __debug__:
-                logger.trace(
-                    "route matched : {route!r} {event!r}",
-                    route=route,
-                    event=context.event,
-                )
-            result = await self._before_deadline(
-                deadline,
-                lambda: self._run_route(context, route, resolver),
-            )
-        except _DispatchTimeoutError:
-            exc = TimeoutError()
-            self._log_dispatch_timeout(context, route)
-            return DispatchResult(route=route, values=[], exception=exc), True
-        except Exception as exc:
-            self._log_dispatch_exception(context, route, exc)
-            return DispatchResult(route=route, values=[], exception=exc), False
-
-        return result, False
-
     async def _before_deadline[T](
         self,
         deadline: float | None,
         operation: Callable[[], Awaitable[T]],
     ) -> T:
-        if deadline is None:
-            return await operation()
-        if get_running_loop().time() >= deadline:
+        if deadline is not None and get_running_loop().time() >= deadline:
             raise _DispatchTimeoutError
 
         timeout_scope = timeout_at(deadline)
@@ -585,41 +539,10 @@ class Bot(EventRouter):
         context: InjectionContext,
         route: EventRoute,
         resolver: ResolverProtocol,
-    ) -> DispatchResult:
-        values: list[object] = []
-        effects: list[DispatchEffect] = []
-        exception: BaseException | None = None
-        try:
-            self._log_handler_run(context, route, route.handler)
-            value = await call_with_injection(route.handler, context, resolver)
-            if value is not None:
-                values.append(value)
-                await self._execute_return_value(context, value, effects)
-        except Exception as exc:
-            exception = exc
-            self._log_dispatch_exception(context, route, exc)
-
-        return DispatchResult(
-            route=route,
-            values=values,
-            effects=effects,
-            exception=exception,
-        )
-
-    def _log_handler_run(
-        self,
-        context: InjectionContext,
-        route: EventRoute,
-        handler: Callable,
     ) -> None:
-        if not __debug__:
-            return
-        logger.trace(
-            "run handler : {handler} {route!r} {event!r}",
-            handler=handler,
-            route=route,
-            event=context.event,
-        )
+        value = await call_with_injection(route.handler, context, resolver)
+        if value is not None:
+            await self._execute_return_value(context, value)
 
     def _log_dispatch_exception(
         self,
@@ -656,15 +579,14 @@ class Bot(EventRouter):
         self,
         context: InjectionContext,
         value: object,
-        effects: list[DispatchEffect],
     ) -> None:
         if isinstance(value, list | tuple):
             for item in value:
-                await self._execute_return_value(context, item, effects)
+                await self._execute_return_value(context, item)
             return
 
         action = self._return_action_from_value(value)
-        await self._execute_return_action(context, action, effects)
+        await self._execute_return_action(context, action)
 
     def _return_action_from_value(self, value: object) -> ReturnAction:
         if isinstance(value, ReturnAction):
@@ -681,7 +603,6 @@ class Bot(EventRouter):
         self,
         context: InjectionContext,
         action: ReturnAction,
-        effects: list[DispatchEffect],
     ) -> None:
         event = context.event
         connection = context.connection
@@ -698,57 +619,8 @@ class Bot(EventRouter):
                 raise TypeError(msg)
             connection = context.gateway.connection_for(self_)
 
-        route = context.route
-        gateway = context.gateway or connection.gateway
-        if __debug__:
-            logger.debug(
-                "execute return action: {action} @ {event} via {connection}",
-                action=action,
-                event=event or "-",
-                connection=connection,
-            )
-            logger.trace(
-                "execute return action : {action!r} {route!r} {event!r} "
-                "{gateway} {connection}",
-                action=action,
-                route=route,
-                event=event,
-                gateway=gateway,
-                connection=connection,
-            )
-        try:
-            outcome = await gateway.execute_return_action(connection, event, action)
-        except Exception as exc:
-            error = str(exc)
-            logger.exception(
-                "return action failed: {action} @ {event} via {connection} ({error})",
-                action=action,
-                event=event or "-",
-                connection=connection,
-                error=f"{type(exc).__name__}: {error}" if error else type(exc).__name__,
-            )
-            raise
-
-        if __debug__:
-            outcome_text = (
-                str(outcome)
-                if isinstance(outcome, ActionRequest | ActionResponse)
-                else type(outcome).__name__
-            )
-            logger.debug(
-                "return action done: {action} @ {event} = {outcome}",
-                action=action,
-                event=event or "-",
-                outcome=outcome_text,
-            )
-            logger.trace(
-                "return action done : {action!r} {route!r} {event!r} "
-                "{gateway} {connection} {outcome!r}",
-                action=action,
-                route=route,
-                event=event,
-                gateway=gateway,
-                connection=connection,
-                outcome=outcome,
-            )
-        effects.append(DispatchEffect(action=action, outcome=outcome))
+        await (context.gateway or connection.gateway).execute_return_action(
+            connection,
+            event,
+            action,
+        )

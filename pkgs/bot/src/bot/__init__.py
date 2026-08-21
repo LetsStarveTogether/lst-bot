@@ -62,8 +62,6 @@ from .protocol.msg import Msg, MsgInput, MsgSegment, MsgSegmentInput
 from .protocol.returns import ReturnAction
 from .routing import (
     Cmd,
-    DispatchEffect,
-    DispatchResult,
     EventRoute,
     EventRouter,
     Permission,
@@ -92,8 +90,6 @@ __all__ = [
     "Connection",
     "CronJob",
     "CronScheduler",
-    "DispatchEffect",
-    "DispatchResult",
     "Event",
     "EventDetailType",
     "EventKind",

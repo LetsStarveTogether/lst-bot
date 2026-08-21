@@ -18,7 +18,6 @@ from bot import (
 )
 from bot.gateways import Gateway
 from bot.gateways.onebot12 import HttpWebhook, OneBot12Gateway
-from bot.routing import DispatchResult
 from robyn import Robyn
 from robyn.testing import TestClient as RobynTestClient
 
@@ -45,12 +44,11 @@ class ImmediateBot(Bot):
         event: Event,
         *,
         gateway: Gateway | None = None,
-    ) -> list[DispatchResult]:
+    ) -> None:
         _ = connection, gateway
         if self.overloaded:
             raise QueueFull
         self.events.append(event)
-        return []
 
     @override
     async def wait_until_running(self) -> None:
