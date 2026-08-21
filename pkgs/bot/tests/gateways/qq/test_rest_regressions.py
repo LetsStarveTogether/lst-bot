@@ -5,6 +5,7 @@ from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
+from bot import BotSelf
 from bot.gateways import qq_api
 from bot.gateways.qq_api import (
     QQAction,
@@ -28,7 +29,7 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
 from tests.gateways.support import response
 
-from .support import Pool, client
+from .support import Pool, client, gateway
 
 
 class GatedResponse:
@@ -70,7 +71,10 @@ def test_keyboard_permission_subjects_match_type(
         "type": permission_type,
         **subjects,
     })
-    assert permission.type == permission_type
+    assert permission.model_dump(mode="json", exclude_none=True) == {
+        "type": permission_type,
+        **subjects,
+    }
 
 
 @pytest.mark.parametrize(
@@ -244,9 +248,11 @@ async def test_channel_file_image_uses_multipart() -> None:
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, {"id": "message", "timestamp": "2026-08-21T00:00:00Z"}),
     )
-    rest = client(pool)
+    connection = gateway(pool, online=True).connection_for(
+        BotSelf(platform="qq", user_id="app")
+    )
 
-    await rest.request_qq(
+    await connection.action(
         QQAction.SEND_CHANNEL_MESSAGE,
         channel_id="channel",
         content="caption",
@@ -270,7 +276,7 @@ async def test_channel_file_image_uses_multipart() -> None:
     assert request["json"] is None
 
     with pytest.raises(ValidationError):
-        await rest.request_qq(
+        await connection.action(
             QQAction.SEND_DM_MESSAGE,
             guild_id="guild",
             content="caption",

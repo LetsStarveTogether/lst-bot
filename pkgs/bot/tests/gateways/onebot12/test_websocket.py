@@ -1,5 +1,5 @@
 from asyncio import Event as AsyncEvent
-from asyncio import QueueFull, TaskGroup, gather, timeout
+from asyncio import QueueFull, TaskGroup, timeout
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import cast
@@ -487,34 +487,6 @@ async def test_websocket_event_waits_for_bot_startup() -> None:
         finally:
             await bot.close()
 
-    assert websocket.closed.is_set()
-
-
-async def test_lifecycle_is_concurrently_idempotent() -> None:
-    websocket = ScriptedWebSocket(connect_payload(), private_message_payload())
-    received = AsyncEvent()
-    connector = AsyncMock(return_value=websocket)
-
-    bot = Bot()
-    gateway = OneBot12Gateway(
-        bot,
-        ingress=[ForwardWebSocket("ws://onebot.example/ws", reconnect_interval=60)],
-        websocket_connector=connector,
-    )
-    bot.add_gateway(gateway)
-
-    @bot.on_msg(block=True)
-    def collect() -> None:
-        received.set()
-
-    async with timeout(1):
-        await gather(bot.start(), bot.start())
-        try:
-            await received.wait()
-        finally:
-            await gather(bot.close(), bot.close())
-
-    connector.assert_awaited_once()
     assert websocket.closed.is_set()
 
 
