@@ -20,7 +20,6 @@ from bot.gateways.telegram_api import (
     TelegramRestClient,
     TelegramResult,
     TelegramUpdate,
-    TelegramUpload,
     TelegramUser,
     TelegramVenue,
 )
@@ -387,15 +386,17 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
 
 async def test_multipart_preserves_file_metadata() -> None:
     pool = Pool({"ok": True, "result": True})
-    await client(pool).call_json(
+    instance = make_gateway(pool)
+    instance._self = BotSelf(platform="telegram", user_id="123")  # ruff: ignore[private-member-access]
+    await instance.connection_for(instance._self).action(  # ruff: ignore[private-member-access]
         "sendDocument",
-        {"chat_id": 42},
-        {
-            "document": TelegramUpload(
-                data=b"content",
-                filename="report.txt",
-                content_type="text/plain",
-            )
+        chat_id=42,
+        files={
+            "document": {
+                "data": "Y29udGVudA==",
+                "filename": "report.txt",
+                "content_type": "text/plain",
+            }
         },
     )
     body = pool.requests[0][2]["body"]
@@ -403,6 +404,7 @@ async def test_multipart_preserves_file_metadata() -> None:
     assert pool.requests[0][2]["retries"] is False
     assert b'filename="report.txt"' in body
     assert b"Content-Type: text/plain" in body
+    assert b"content" in body
 
 
 async def test_file_download_is_streamed_bounded_and_token_safe() -> None:

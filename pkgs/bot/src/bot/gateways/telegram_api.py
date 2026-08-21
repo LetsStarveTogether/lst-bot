@@ -3,7 +3,6 @@ from asyncio import (
     Lock,
     timeout,
 )
-from base64 import b64encode
 from collections.abc import Mapping
 from contextlib import suppress
 from hashlib import sha256
@@ -18,11 +17,9 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    PlainSerializer,
     RootModel,
     SecretStr,
     StrictBool,
-    StrictBytes,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -34,6 +31,7 @@ from urllib3_future.exceptions import HTTPError
 from urllib3_future.filepost import encode_multipart_formdata
 
 from bot.json import dumpb, loads
+from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model
 
 from .base import run_while_open, validate_https_base_url
@@ -166,14 +164,6 @@ type Longitude = Annotated[
 ]
 type Heading = Annotated[StrictInt, Field(ge=1, le=360)]
 type ProximityAlertRadius = Annotated[StrictInt, Field(ge=1, le=100_000)]
-type TelegramFileData = Annotated[
-    StrictBytes,
-    PlainSerializer(
-        lambda value: b64encode(value).decode(),
-        return_type=str,
-        when_used="json",
-    ),
-]
 
 
 class TelegramUpload(BaseModel):
@@ -183,7 +173,7 @@ class TelegramUpload(BaseModel):
         hide_input_in_errors=True,
     )
 
-    data: StrictBytes = Field(repr=False)
+    data: WireBytes = Field(repr=False)
     filename: Annotated[
         StrictStr,
         Field(min_length=1, max_length=255, pattern=r"^[^/\\\r\n]+$"),
@@ -196,7 +186,7 @@ class TelegramUpload(BaseModel):
 
 class TelegramDownloadedFile(Model):
     name: Annotated[StrictStr, Field(min_length=1)]
-    data: TelegramFileData = Field(repr=False)
+    data: WireBytes = Field(repr=False)
     sha256: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -211,7 +201,7 @@ type TelegramParams = dict[
 type TelegramObject = dict[StrictStr, JsonValue]
 type TelegramFiles = dict[
     Annotated[StrictStr, Field(min_length=1, pattern=r"^[A-Za-z0-9_]+$")],
-    StrictBytes | TelegramUpload,
+    WireBytes | TelegramUpload,
 ]
 
 _STRICT_CONFIG = ConfigDict(
