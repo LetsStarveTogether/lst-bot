@@ -43,16 +43,12 @@ class RecordingPool(AsyncPoolManager):
         json: Any = None,
         **urlopen_kw: Any,
     ) -> Any:
-        _ = body, headers, json, urlopen_kw
+        _ = body, fields, headers, json, urlopen_kw
         call: dict[str, object] = {"method": method, "url": url}
-        if fields is not None:
-            call["fields"] = list(fields)
         self.calls.append(call)
         result = self.routes[url]
         if result is None:
             return await get_running_loop().create_future()
-        if isinstance(result, Exception):
-            raise result
         if isinstance(result, AsyncHTTPResponse | PendingBodyResponse):
             return result
         payload = result if isinstance(result, bytes) else dumps(result).encode()
@@ -108,6 +104,7 @@ def bundle(text: str = "cached hello", *, include_game: bool = False) -> list[Hi
 def bundle_routes(text: str = "cached hello") -> dict[str, object]:
     return {
         f"{BUNDLE_URL}version.json": {
+            "protocol_version": "1.0.0",
             "sentences": [{"path": "./sentences/a.json"}],
         },
         f"{BUNDLE_URL}sentences/a.json": [
@@ -116,7 +113,7 @@ def bundle_routes(text: str = "cached hello") -> dict[str, object]:
     }
 
 
-def test_model_strictly_validates_identifiers_and_parses_official_time() -> None:
+def test_models_validate_official_boundaries() -> None:
     payload = hitokoto_payload() | {"created_at": "1468605909"}
     assert Hitokoto.model_validate(payload).created_at.timestamp() == 1468605909
 
@@ -125,6 +122,19 @@ def test_model_strictly_validates_identifiers_and_parses_official_time() -> None
             Hitokoto.model_validate(payload | {field: True})
     with pytest.raises(ValidationError):
         Hitokoto.model_validate(payload | {"id": -1})
+    with pytest.raises(ValidationError):
+        client_module._BundleVersion.model_validate({  # ruff: ignore[private-member-access] - protocol boundary
+            "protocol_version": "2.0.0",
+            "sentences": [{"path": "./sentences/a.json"}],
+        })
+
+
+def test_client_requires_official_https_transport() -> None:
+    pool = RecordingPool({})
+    with pytest.raises(ValidationError):
+        HitokotoClient(url="http://hitokoto.test", http_pool=pool)
+    with pytest.raises(ValidationError):
+        HitokotoClient(bundle_url="http://bundle.test", http_pool=pool)
 
 
 async def test_client_requests_api() -> None:
@@ -296,6 +306,7 @@ async def test_bundle_allows_an_empty_part_when_another_has_sentences(
 ) -> None:
     routes = bundle_routes()
     routes[f"{BUNDLE_URL}version.json"] = {
+        "protocol_version": "1.0.0",
         "sentences": [
             {"path": "./sentences/a.json"},
             {"path": "./sentences/empty.json"},

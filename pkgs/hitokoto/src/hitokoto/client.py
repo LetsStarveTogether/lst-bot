@@ -2,11 +2,11 @@ from asyncio import Lock, TaskGroup, timeout
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from weakref import WeakValueDictionary
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import AnyUrl, BaseModel, Field, TypeAdapter, UrlConstraints
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
@@ -18,6 +18,9 @@ _HITOKOTO_SENTENCES = TypeAdapter(list[Hitokoto])
 _HITOKOTO_BUNDLE = TypeAdapter(
     Annotated[list[Hitokoto], Field(min_length=1)],
 )
+_HTTPS_URL = TypeAdapter(
+    Annotated[AnyUrl, UrlConstraints(allowed_schemes=["https"], host_required=True)]
+)
 _CACHE_LOCKS: WeakValueDictionary[Path, Lock] = WeakValueDictionary()
 logger = getLogger(__name__)
 
@@ -27,6 +30,7 @@ class _BundleSentenceMeta(BaseModel):
 
 
 class _BundleVersion(BaseModel):
+    protocol_version: Literal["1.0.0"]
     sentences: Annotated[list[_BundleSentenceMeta], Field(min_length=1)]
 
 
@@ -39,8 +43,8 @@ class HitokotoClient:
         http_pool: AsyncPoolManager,
         cache_path: str | Path = Path(".cache/hitokoto.db"),
     ) -> None:
-        self.url = url
-        self.bundle_url = bundle_url
+        self.url = str(_HTTPS_URL.validate_python(url))
+        self.bundle_url = str(_HTTPS_URL.validate_python(bundle_url))
         self.http_pool = http_pool
         self.cache_path = Path(cache_path)
         self._cache_lock = _CACHE_LOCKS.setdefault(self.cache_path.resolve(), Lock())
@@ -104,11 +108,7 @@ class HitokotoClient:
 
 
 def _bundle_base_url(url: str) -> str:
-    value = url.strip()
-    if not value:
-        msg = "hitokoto bundle URL is empty"
-        raise RuntimeError(msg)
-    parsed = urlsplit(value if "://" in value else f"https://{value.lstrip('/')}")
+    parsed = urlsplit(url)
     return parsed._replace(
         path=f"{parsed.path.rstrip('/')}/",
         query="",
