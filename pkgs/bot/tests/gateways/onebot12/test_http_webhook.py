@@ -191,22 +191,6 @@ async def test_http_quick_action_context_expires_with_response() -> None:
     assert errors == [LookupError]
 
 
-def test_http_webhook_dispatches_through_robyn_test_client() -> None:
-    bot = ImmediateBot()
-    client = mounted_client(bot)
-
-    with client:
-        response = client.post(
-            "/onebot",
-            json_data=private_message_payload(),
-            headers=dict(IDENTITY_HEADERS),
-        )
-
-    assert response.status_code == HTTPStatus.NO_CONTENT
-    assert len(bot.events) == 1
-    assert isinstance(bot.events[0], PrivateMessageEvent)
-
-
 @pytest.mark.parametrize(
     ("headers", "query", "status"),
     [
@@ -235,7 +219,8 @@ def test_http_webhook_authentication(
     query: dict[str, str],
     status: HTTPStatus,
 ) -> None:
-    client = mounted_client(ImmediateBot(), token=AUTH)
+    bot = ImmediateBot()
+    client = mounted_client(bot, token=AUTH)
 
     with client:
         response = client.post(
@@ -246,6 +231,7 @@ def test_http_webhook_authentication(
         )
 
     assert response.status_code == status
+    assert len(bot.events) == (status == HTTPStatus.NO_CONTENT)
 
 
 @pytest.mark.parametrize(
