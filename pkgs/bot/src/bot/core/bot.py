@@ -33,7 +33,6 @@ from logbook import Logger
 from bot.gateways import Connection, Gateway
 from bot.protocol.actions import ActionCall, ActionRequest, ActionResponse
 from bot.protocol.common import BotSelf
-from bot.protocol.enums import EventKind
 from bot.protocol.events import Event
 from bot.protocol.msg import Msg
 from bot.protocol.returns import ReturnAction
@@ -42,8 +41,6 @@ from bot.routing import (
     DispatchResult,
     EventRoute,
     EventRouter,
-    Permission,
-    Rule,
 )
 
 from .di import (
@@ -92,7 +89,7 @@ class _DispatchTimeoutError(Exception):
     pass
 
 
-class Bot:
+class Bot(EventRouter):
     def __init__(
         self,
         *,
@@ -103,6 +100,7 @@ class Bot:
         scheduler_timezone: tzinfo | None = None,
         container: Container | None = None,
     ) -> None:
+        super().__init__()
         if isinstance(max_dispatches, bool) or not isinstance(max_dispatches, int):
             msg = "max_dispatches must be an integer"
             raise TypeError(msg)
@@ -129,7 +127,6 @@ class Bot:
         self._gateways: list[Gateway] = []
         self._gateway_provider_types: set[type[Gateway]] = set()
         register_context_providers(self.container, self._gateway_provider_types)
-        self._router = EventRouter()
         self._start_hooks: list[Callable] = []
         self._close_hooks: list[Callable] = []
         self._recent_connection: tuple[Gateway, BotSelf] | None = None
@@ -179,10 +176,6 @@ class Bot:
         server.shutdown_handler(self.close)
         self._mounted_server = server
 
-    def add_router(self, router: EventRouter) -> EventRouter:
-        self._router.add_router(router)
-        return router
-
     @property
     def recent_connection(self) -> tuple[Gateway, BotSelf] | None:
         return self._recent_connection
@@ -211,59 +204,6 @@ class Bot:
             raise LookupError(msg)
         msg = f"Multiple gateways of type {gateway_type.__name__} are registered"
         raise LookupError(msg)
-
-    def on_event(
-        self,
-        event_type: EventKind | None = None,
-        *,
-        rule: Rule | Callable | None = None,
-        permission: Permission | Callable | None = None,
-        priority: int = 1,
-        block: bool = False,
-        name: str | None = None,
-    ) -> Callable:
-        return self._router.on_event(
-            event_type,
-            rule=rule,
-            permission=permission,
-            priority=priority,
-            block=block,
-            name=name,
-        )
-
-    def on_msg(
-        self,
-        *,
-        rule: Rule | Callable | None = None,
-        permission: Permission | Callable | None = None,
-        priority: int = 1,
-        block: bool = False,
-        name: str | None = None,
-    ) -> Callable:
-        return self._router.on_msg(
-            rule=rule,
-            permission=permission,
-            priority=priority,
-            block=block,
-            name=name,
-        )
-
-    def on_cmd(
-        self,
-        cmd: str,
-        *,
-        permission: Permission | Callable | None = None,
-        priority: int = 1,
-        block: bool = True,
-        name: str | None = None,
-    ) -> Callable:
-        return self._router.on_cmd(
-            cmd,
-            permission=permission,
-            priority=priority,
-            block=block,
-            name=name,
-        )
 
     def on_cron(
         self,
@@ -573,7 +513,7 @@ class Bot:
             state: State = {}
             results: list[DispatchResult] = []
 
-            for route in self._router.routes:
+            for route in self.routes:
                 if route.event_type is not None and route.event_type != event.type:
                     continue
                 context = InjectionContext(
