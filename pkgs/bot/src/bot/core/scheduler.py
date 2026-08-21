@@ -33,6 +33,11 @@ CURRENT_SCHEDULER_BOT: ContextVar[tuple[object, Task[None]] | None] = ContextVar
 )
 
 
+def _scheduled_handler_is_active_for(bot: Bot) -> bool:
+    owner = CURRENT_SCHEDULER_BOT.get()
+    return owner is not None and owner[0] is bot and not owner[1].done()
+
+
 def _raise_errors(message: str, errors: list[BaseException]) -> None:
     if len(errors) == 1:
         raise errors[0]
@@ -229,8 +234,7 @@ class CronScheduler:
             job.start()
 
     async def close(self) -> None:
-        owner = CURRENT_SCHEDULER_BOT.get()
-        if owner is not None and owner[0] is self.bot and not owner[1].done():
+        if _scheduled_handler_is_active_for(self.bot):
             msg = "Scheduler cannot be closed from a scheduled handler"
             raise RuntimeError(msg)
         self._running = False

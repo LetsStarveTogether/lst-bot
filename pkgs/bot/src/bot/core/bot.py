@@ -14,7 +14,8 @@ from asyncio import (
     timeout_at,
 )
 from asyncio import Event as AsyncEvent
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
 from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import timedelta, tzinfo
@@ -44,9 +45,9 @@ from .di import (
     register_context_providers,
 )
 from .scheduler import (
-    CURRENT_SCHEDULER_BOT,
     CronScheduler,
     _raise_errors,
+    _scheduled_handler_is_active_for,
 )
 
 if TYPE_CHECKING:
@@ -55,8 +56,7 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 _EVENT_QUEUE_CAPACITY = 64
-type _TaskOwner = tuple[object, Task[None]]
-type _TaskOwners = tuple[_TaskOwner, ...]
+type _TaskOwners = tuple[tuple[Bot, Task[None]], ...]
 type _LifecycleOwners = tuple[tuple[Bot, object], ...]
 
 _CURRENT_DISPATCHER: ContextVar[_TaskOwners] = ContextVar(
@@ -201,67 +201,56 @@ class Bot(EventRouter):
     async def start(self) -> None:
         self._reject_lifecycle_reentry()
         self._lifecycle_started = True
-        async with self._lifecycle_lock:
-            owner = object()
-            self._lifecycle_owner = owner
+        async with self._lifecycle_scope():
+            if self._pending_cleanup:
+                msg = "Bot shutdown is incomplete; call close() again"
+                raise RuntimeError(msg)
+            if self._running.is_set():
+                return
             try:
-                owners = tuple(
-                    (bot, active_owner)
-                    for bot, active_owner in _CURRENT_LIFECYCLE.get()
-                    if bot._lifecycle_owner is active_owner  # ruff: ignore[private-member-access] - prune inactive lineage
+                await self._start_once()
+            except BaseException:
+                logger.exception(
+                    "bot startup failed: gateways=%s",
+                    len(self._gateways),
                 )
-                with _CURRENT_LIFECYCLE.set((*owners, (self, owner))):
-                    if self._pending_cleanup:
-                        msg = "Bot shutdown is incomplete; call close() again"
-                        raise RuntimeError(msg)
-                    if self._running.is_set():
-                        return
-                    try:
-                        await self._start_once()
-                    except BaseException:
-                        logger.exception(
-                            "bot startup failed: gateways=%s",
-                            len(self._gateways),
-                        )
-                        raise
-                    self._running.set()
-            finally:
-                self._lifecycle_owner = None
+                raise
+            self._running.set()
 
     async def close(self) -> None:
         if _task_is_active_for(_CURRENT_DISPATCHER.get(), self):
             msg = "Bot cannot be closed from a dispatch handler"
             raise RuntimeError(msg)
-        scheduler_owner = CURRENT_SCHEDULER_BOT.get()
-        if (
-            scheduler_owner is not None
-            and scheduler_owner[0] is self
-            and not scheduler_owner[1].done()
-        ):
+        if _scheduled_handler_is_active_for(self):
             msg = "Bot cannot be closed from a scheduled handler"
             raise RuntimeError(msg)
         self._reject_lifecycle_reentry()
+        async with self._lifecycle_scope():
+            if not self._running.is_set() and not self._pending_cleanup:
+                return
+            self._running.clear()
+            if not self._pending_cleanup:
+                self._pending_cleanup = self._cleanup_callbacks(
+                    self._gateways,
+                    close_container=True,
+                )
+            failed, errors = await self._run_cleanup(self._pending_cleanup)
+            self._pending_cleanup = failed
+            _raise_errors("Bot cleanup failed", errors)
+
+    @asynccontextmanager
+    async def _lifecycle_scope(self) -> AsyncIterator[None]:
         async with self._lifecycle_lock:
             owner = object()
             self._lifecycle_owner = owner
+            owners = tuple(
+                (bot, active_owner)
+                for bot, active_owner in _CURRENT_LIFECYCLE.get()
+                if bot._lifecycle_owner is active_owner  # ruff: ignore[private-member-access] - prune inactive lineage
+            )
             try:
-                owners = tuple(
-                    (bot, active_owner)
-                    for bot, active_owner in _CURRENT_LIFECYCLE.get()
-                    if bot._lifecycle_owner is active_owner  # ruff: ignore[private-member-access] - prune inactive lineage
-                )
                 with _CURRENT_LIFECYCLE.set((*owners, (self, owner))):
-                    if not self._running.is_set() and not self._pending_cleanup:
-                        return
-                    self._running.clear()
-                    if not self._pending_cleanup:
-                        self._pending_cleanup = self._cleanup_callbacks(
-                            self._gateways,
-                            close_container=True,
-                        )
-                    failed, errors = await self._run_cleanup(self._pending_cleanup)
-                    self._pending_cleanup = failed
-                    _raise_errors("Bot cleanup failed", errors)
+                    yield
             finally:
                 self._lifecycle_owner = None
 
@@ -371,8 +360,8 @@ class Bot(EventRouter):
             if gateway is not None and gateway is not connection.gateway:
                 msg = "Connection and gateway do not match"
                 raise ValueError(msg)
-        active_gateway = connection.gateway if connection is not None else gateway
-        if active_gateway is not None and active_gateway.bot is not self:
+            gateway = connection.gateway
+        if gateway is not None and gateway.bot is not self:
             msg = "Gateway belongs to another bot"
             raise ValueError(msg)
 
@@ -434,7 +423,7 @@ class Bot(EventRouter):
         _raise_errors("Bot dispatcher shutdown failed", errors)
 
     async def _dispatch_worker(self, queue: Queue[_QueuedEvent]) -> None:
-        worker = current_task()
+        worker = cast(Task[None], current_task())
         while True:
             item = await queue.get()
             task = create_task(
@@ -446,7 +435,7 @@ class Bot(EventRouter):
             except CancelledError:
                 if item.result is not None and not item.result.done():
                     item.result.cancel()
-                if worker is not None and worker.cancelling():
+                if worker.cancelling():
                     raise
             except BaseException as exc:
                 if item.result is not None and not item.result.done():
@@ -484,14 +473,12 @@ class Bot(EventRouter):
         gateway: Gateway | None,
         deadline: float | None,
     ) -> None:
-        active_gateway = connection.gateway if connection is not None else gateway
-
         logger.info(
             "dispatch event: %s/%s#%s via %s",
             event.type,
             event.detail_type,
             event.id,
-            active_gateway or "-",
+            gateway or "-",
         )
 
         async with self.container.enter_scope(Scope.REQUEST) as resolver:
@@ -500,7 +487,7 @@ class Bot(EventRouter):
                     continue
                 context = InjectionContext(
                     bot=self,
-                    gateway=active_gateway,
+                    gateway=gateway,
                     connection=connection,
                     event=event,
                 )
