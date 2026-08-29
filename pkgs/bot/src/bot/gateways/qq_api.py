@@ -41,7 +41,12 @@ from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictIntLiteral
 
-from .base import header_value, run_while_open, validate_https_base_url
+from .base import (
+    header_value,
+    read_http_body,
+    run_while_open,
+    validate_https_base_url,
+)
 
 QQ_API_BASE_URL = "https://api.bot.qq.com"
 _HTTP_TIMEOUT = 30.0
@@ -2342,10 +2347,12 @@ class QQRestClient:
             headers=headers,
             body=body,
             json=json if file_image is None else None,
+            preload_content=False,
+            redirect=False,
             retries=False,
             timeout=_HTTP_TIMEOUT,
         )
-        return response, await response.data
+        return response, await read_http_body(response)
 
     def _prepare_request(
         self,

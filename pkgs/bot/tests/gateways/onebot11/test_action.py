@@ -1,6 +1,5 @@
-from asyncio import Event, create_task, get_running_loop, timeout
+from asyncio import Event, create_task, timeout
 from http import HTTPStatus
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, patch
 
@@ -32,7 +31,7 @@ from pydantic import JsonValue, RootModel, ValidationError
 from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server
 
-from tests.gateways.support import ActionServer
+from tests.gateways.support import ActionServer, HangingBodyResponse, response
 
 from .support import action_response_payload
 
@@ -227,12 +226,9 @@ async def test_restart_finishes_cleanup_before_opening_transports() -> None:
 
 
 async def test_http_action_timeout_covers_response_body() -> None:
-    body = get_running_loop().create_future()
+    hanging = HangingBodyResponse()
     pool = AsyncMock(spec=AsyncPoolManager)
-    pool.request.return_value = SimpleNamespace(
-        status=HTTPStatus.OK,
-        data=body,
-    )
+    pool.request.return_value = hanging
     gateway = OneBot11Gateway(
         Bot(),
         action=HttpAction(
@@ -248,9 +244,14 @@ async def test_http_action_timeout_covers_response_body() -> None:
             with pytest.raises(TimeoutError):
                 await connection.action("vendor_action")
 
-    assert body.cancelled()
+    assert hanging.cancelled.is_set()
+    assert hanging.close_called.is_set()
+    assert hanging.decode_content is True
     pool.request.assert_awaited_once()
-    assert pool.request.await_args.kwargs["retries"] is False
+    kwargs = pool.request.await_args.kwargs
+    assert kwargs["preload_content"] is False
+    assert kwargs["redirect"] is False
+    assert kwargs["retries"] is False
 
 
 async def test_closed_gateway_rejects_new_http_actions() -> None:
@@ -276,10 +277,7 @@ async def test_http_action_cannot_cross_close_and_restart() -> None:
         async def request(self, *_: object, **__: object) -> object:
             self.started.set()
             await self.release.wait()
-            return SimpleNamespace(
-                status=HTTPStatus.OK,
-                data=AsyncMock(return_value=b'{"status":"ok","retcode":0,"data":{}}')(),
-            )
+            return response(200, {"status": "ok", "retcode": 0, "data": {}})
 
     pool = BlockingPool()
     gateway = OneBot11Gateway(

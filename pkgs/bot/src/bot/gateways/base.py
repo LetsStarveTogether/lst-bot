@@ -32,7 +32,8 @@ from pydantic import (
     UrlConstraints,
 )
 from robyn import Response
-from urllib3_future import AsyncPoolManager
+from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future.exceptions import HTTPError
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
@@ -72,6 +73,8 @@ _HTTP_BASE_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 _HTTPS_BASE_URL_ADAPTER = TypeAdapter(
     Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
 )
+# ponytail: one shared ceiling; split only for a documented upstream limit.
+_MAX_HTTP_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 def validate_https_base_url(value: str, platform: str) -> str:
@@ -92,6 +95,25 @@ def url_has_credentials(value: object) -> bool:
         getattr(value, "username", None) is not None
         or getattr(value, "password", None) is not None
     )
+
+
+async def read_http_body(
+    response: AsyncHTTPResponse,
+    max_bytes: int = _MAX_HTTP_RESPONSE_BYTES,
+) -> bytes:
+    try:
+        body = await response.read(max_bytes + 1, decode_content=True)
+        if len(body) > max_bytes:
+            msg = f"HTTP response exceeds the {max_bytes}-byte limit"
+            raise HTTPError(msg)
+        return body
+    finally:
+
+        async def close() -> None:
+            with suppress(Exception):
+                await response.close()
+
+        await await_cleanup(create_task(close()))
 
 
 async def run_while_open[T](

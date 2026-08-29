@@ -81,6 +81,7 @@ from .base import (
     WebSocketConnector,
     connect_websocket,
     header_value,
+    read_http_body,
     validate_https_base_url,
 )
 
@@ -1088,10 +1089,12 @@ class DiscordRestClient:
             headers=headers,
             body=body,
             json=json,
+            preload_content=False,
+            redirect=False,
             retries=False,
             timeout=_API_TIMEOUT,
         )
-        return response, await response.data
+        return response, await read_http_body(response)
 
     def _url(self, request: DiscordRequest) -> str:
         url = f"{self.base_url}{request.path}"

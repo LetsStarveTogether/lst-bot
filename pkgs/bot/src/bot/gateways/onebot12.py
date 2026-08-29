@@ -70,6 +70,7 @@ from .base import (
     empty_response,
     header_value,
     json_response,
+    read_http_body,
     request_target_path,
     run_while_open,
     token_matches,
@@ -395,8 +396,11 @@ class OneBot12Gateway(Gateway):
                 backend.base_url,
                 headers=self._authorization_headers,
                 json=request.model_dump(mode="json"),
+                preload_content=False,
+                redirect=False,
                 retries=False,
             )
+            body = await read_http_body(response)
             if response.status != HTTPStatus.OK:
                 msg = f"OneBot 12 action request failed: HTTP {response.status}"
                 raise RuntimeError(msg)
@@ -410,7 +414,6 @@ class OneBot12Gateway(Gateway):
                     f"{content_type or '-'}"
                 )
                 raise RuntimeError(msg)
-            body = await response.data
         return _OneBot12ActionResponse.model_validate_json(body)
 
     @property

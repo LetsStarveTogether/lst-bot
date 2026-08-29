@@ -1,7 +1,6 @@
 from asyncio import Event as AsyncEvent
 from asyncio import create_task, timeout
 from http import HTTPStatus
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, patch
 
@@ -12,7 +11,7 @@ from bot.protocol.actions import ActionParamModel
 from pydantic import ValidationError
 from urllib3_future import AsyncPoolManager
 
-from tests.gateways.support import ActionServer
+from tests.gateways.support import ActionServer, HangingBodyResponse, response
 
 from .support import SELF
 
@@ -205,12 +204,10 @@ async def test_start_retries_failed_cleanup() -> None:
 
 
 async def test_http_action_timeout_includes_response_body() -> None:
+    hanging = HangingBodyResponse()
+    hanging.headers["Content-Type"] = "application/json"
     pool = AsyncMock(spec=AsyncPoolManager)
-    pool.request.return_value = SimpleNamespace(
-        status=HTTPStatus.OK,
-        headers={"Content-Type": "application/json"},
-        data=AsyncEvent().wait(),
-    )
+    pool.request.return_value = hanging
     bot = Bot()
     gateway = OneBot12Gateway(
         bot,
@@ -228,7 +225,13 @@ async def test_http_action_timeout_includes_response_body() -> None:
                 await gateway.connection_for(SELF).action("get_version")
 
     pool.request.assert_awaited_once()
-    assert pool.request.await_args.kwargs["retries"] is False
+    kwargs = pool.request.await_args.kwargs
+    assert kwargs["preload_content"] is False
+    assert kwargs["redirect"] is False
+    assert kwargs["retries"] is False
+    assert hanging.cancelled.is_set()
+    assert hanging.close_called.is_set()
+    assert hanging.decode_content is True
 
 
 async def test_closed_gateway_rejects_actions() -> None:
@@ -256,13 +259,7 @@ async def test_http_action_cannot_cross_close_and_restart() -> None:
         async def request(self, *_: object, **__: object) -> object:
             self.started.set()
             await self.release.wait()
-            return SimpleNamespace(
-                status=HTTPStatus.OK,
-                headers={"Content-Type": "application/json"},
-                data=AsyncMock(
-                    return_value=ActionResponse.ok().model_dump_json().encode()
-                )(),
-            )
+            return response(200, ACTION_RESPONSE)
 
     pool = BlockingPool()
     gateway = OneBot12Gateway(

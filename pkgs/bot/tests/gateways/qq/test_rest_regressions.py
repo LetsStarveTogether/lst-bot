@@ -6,7 +6,6 @@ from asyncio import (
     sleep,
     timeout,
 )
-from collections.abc import Awaitable
 from http import HTTPMethod
 from typing import cast
 from unittest.mock import AsyncMock
@@ -46,15 +45,22 @@ class GatedResponse:
         self.body = body
         self.entered = entered
         self.release = release
+        self.closed = False
+        self.decode_content: bool | None = None
 
-    @property
-    def data(self) -> Awaitable[bytes]:
-        return self.read()
-
-    async def read(self) -> bytes:
+    async def read(
+        self,
+        _: int,
+        decode_content: bool | None = None,
+    ) -> bytes:
+        self.decode_content = decode_content
+        assert decode_content is True
         self.entered.set()
         await self.release.wait()
         return self.body
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.parametrize(

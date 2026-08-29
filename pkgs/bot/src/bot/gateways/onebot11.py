@@ -101,6 +101,7 @@ from .base import (
     empty_response,
     header_value,
     json_response,
+    read_http_body,
     request_target_path,
     run_while_open,
     text_response,
@@ -836,12 +837,15 @@ class OneBot11Gateway(Gateway):
                     mode="json",
                     exclude_unset=True,
                 ),
+                preload_content=False,
+                redirect=False,
                 retries=False,
             )
+            body = await read_http_body(response)
             if response.status != HTTPStatus.OK:
                 msg = f"OneBot 11 action request failed with HTTP {response.status}"
                 raise RuntimeError(msg)
-            payload = loads(await response.data)
+            payload = loads(body)
         return decode_action_response(payload)
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:

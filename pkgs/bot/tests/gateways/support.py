@@ -2,6 +2,7 @@ from asyncio import Event, to_thread
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from threading import Thread
 from typing import Self, cast
 
@@ -23,10 +24,12 @@ def response(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
 ) -> AsyncHTTPResponse:
+    content = (b"" if payload is None else dumpb(payload)) if body is None else body
     return AsyncHTTPResponse(
-        body=(b"" if payload is None else dumpb(payload)) if body is None else body,
+        body=BytesIO(content),
         status=status,
         headers=({"Content-Type": "application/json"} if headers is None else headers),
+        preload_content=False,
     )
 
 
@@ -34,14 +37,25 @@ class HangingBodyResponse(AsyncHTTPResponse):
     def __init__(self) -> None:
         super().__init__(status=HTTPStatus.OK)
         self.cancelled = Event()
+        self.close_called = Event()
+        self.decode_content: bool | None = None
 
-    @property
-    async def data(self) -> bytes:
+    async def read(
+        self,
+        amt: int | None = None,
+        decode_content: bool | None = None,
+        cache_content: bool = False,
+    ) -> bytes:
+        _ = amt, cache_content
+        self.decode_content = decode_content
         try:
             await Event().wait()
             return b""
         finally:
             self.cancelled.set()
+
+    async def close(self) -> None:
+        self.close_called.set()
 
 
 class Pool:

@@ -364,7 +364,12 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
     assert b'name="files[0]"' in multipart
     assert b"payload_json" not in multipart
     assert b"\r\n\r\nhello\r\n" in multipart
-    assert all(kwargs["retries"] is False for _, _, kwargs in pool.requests)
+    assert all(
+        kwargs["retries"] is False
+        and kwargs["preload_content"] is False
+        and kwargs["redirect"] is False
+        for _, _, kwargs in pool.requests
+    )
 
 
 async def test_rest_timeout_includes_response_body(
@@ -376,6 +381,8 @@ async def test_rest_timeout_includes_response_body(
         with pytest.raises(ConnectionError, match="transport failed"):
             await client(Pool(hanging)).request_discord("GET", "/gateway/bot")
     assert hanging.cancelled.is_set()
+    assert hanging.close_called.is_set()
+    assert hanging.decode_content is True
 
 
 async def test_payload_json_multipart_supports_named_files_and_nested_json() -> None:

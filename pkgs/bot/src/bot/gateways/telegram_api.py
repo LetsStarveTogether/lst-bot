@@ -36,7 +36,7 @@ from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
-from .base import run_while_open, validate_https_base_url
+from .base import read_http_body, run_while_open, validate_https_base_url
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
@@ -928,6 +928,8 @@ class TelegramRestClient:
                         url,
                         body=body,
                         headers={"Content-Type": content_type},
+                        preload_content=False,
+                        redirect=False,
                         retries=False,
                         timeout=request_timeout,
                     )
@@ -936,10 +938,12 @@ class TelegramRestClient:
                         "POST",
                         url,
                         json=params,
+                        preload_content=False,
+                        redirect=False,
                         retries=False,
                         timeout=request_timeout,
                     )
-                data = await response.data
+                data = await read_http_body(response)
         except HTTPError, TimeoutError:
             msg = f"Telegram API request failed for {method}"
             raise ConnectionError(msg) from None
@@ -985,6 +989,8 @@ async def _download_response(
                 "GET",
                 url,
                 headers={"Accept-Encoding": "identity"},
+                decode_content=False,
+                redirect=False,
                 retries=False,
                 timeout=request_timeout,
                 preload_content=False,
@@ -1029,16 +1035,10 @@ async def _read_download(
     response: AsyncHTTPResponse,
     max_bytes: int,
 ) -> tuple[bytes, str]:
-    chunks: list[bytes] = []
-    size = 0
-    digest = sha256()
-    async for chunk in response.stream(64 * 1024, decode_content=False):
-        size += len(chunk)
-        if size > max_bytes:
-            _raise_file_too_large(max_bytes)
-        digest.update(chunk)
-        chunks.append(chunk)
-    return b"".join(chunks), digest.hexdigest()
+    data = await response.read(max_bytes + 1, decode_content=False)
+    if len(data) > max_bytes:
+        _raise_file_too_large(max_bytes)
+    return data, sha256(data).hexdigest()
 
 
 def _raise_file_too_large(max_bytes: int) -> Never:

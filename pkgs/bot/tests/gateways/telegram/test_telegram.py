@@ -8,7 +8,7 @@ from asyncio import (
     sleep,
     timeout,
 )
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from hashlib import sha256
 from typing import cast
 from unittest.mock import AsyncMock
@@ -67,15 +67,16 @@ class StreamResponse:
         self.chunks = chunks
         self.closed = False
 
-    async def stream(
+    async def read(
         self,
-        _: int,
-        *,
-        decode_content: bool,
-    ) -> AsyncIterator[bytes]:
+        amt: int | None = None,
+        decode_content: bool | None = None,
+        cache_content: bool = False,
+    ) -> bytes:
         assert decode_content is False
-        for chunk in self.chunks:
-            yield chunk
+        _ = cache_content
+        body = b"".join(self.chunks)
+        return body if amt is None else body[:amt]
 
     async def close(self) -> None:
         self.closed = True
@@ -539,6 +540,8 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
         "stopped_message_generation",
     } <= set(cast(list[str], params["allowed_updates"]))
     assert pool.requests[0][2]["retries"] is False
+    assert pool.requests[0][2]["preload_content"] is False
+    assert pool.requests[0][2]["redirect"] is False
     assert cast(float, pool.requests[0][2]["timeout"]) > 30
     assert await rest.get_updates(offset=-1, poll_timeout=0) == []
     assert cast(dict[str, object], pool.requests[1][2]["json"])["offset"] == -1
@@ -584,6 +587,8 @@ async def test_rest_timeout_includes_response_body() -> None:
         with pytest.raises(ConnectionError, match="request failed"):
             await client(Pool(hanging)).call_json("getMe", request_timeout=0.01)
     assert hanging.cancelled.is_set()
+    assert hanging.close_called.is_set()
+    assert hanging.decode_content is True
 
 
 async def test_multipart_preserves_file_metadata() -> None:
@@ -604,12 +609,14 @@ async def test_multipart_preserves_file_metadata() -> None:
     body = pool.requests[0][2]["body"]
     assert isinstance(body, bytes)
     assert pool.requests[0][2]["retries"] is False
+    assert pool.requests[0][2]["preload_content"] is False
+    assert pool.requests[0][2]["redirect"] is False
     assert b'filename="report.txt"' in body
     assert b"Content-Type: text/plain" in body
     assert b"content" in body
 
 
-async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
+async def test_file_download_is_bounded_and_token_safe() -> None:
     file = {"file_id": "file", "file_unique_id": "unique"}
     stream = StreamResponse(b"abc", b"def")
     pool = Pool({
@@ -636,6 +643,8 @@ async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
         f"https://telegram.example/file/bot{CREDENTIAL}/documents/a%20b.txt",
         {
             "headers": {"Accept-Encoding": "identity"},
+            "decode_content": False,
+            "redirect": False,
             "retries": False,
             "timeout": 30.0,
             "preload_content": False,
@@ -672,6 +681,17 @@ async def test_file_download_is_streamed_bounded_and_token_safe() -> None:
     assert CREDENTIAL not in str(error.value)
     assert oversized_stream.closed
 
+    exact_stream = StreamResponse(b"1234")
+    exact_pool = Pool({
+        "ok": True,
+        "result": file | {"file_path": "documents/file.bin"},
+    })
+    exact_pool.responses.append(cast(AsyncHTTPResponse, exact_stream))
+    exact = await client(exact_pool).download_file("file", max_bytes=4)
+    assert exact.data == b"1234"
+    assert exact.sha256 == sha256(b"1234").hexdigest()
+    assert exact_stream.closed
+
 
 async def test_file_download_finishes_close_after_repeated_cancellation() -> None:
     class BlockingStreamResponse(StreamResponse):
@@ -681,16 +701,17 @@ async def test_file_download_finishes_close_after_repeated_cancellation() -> Non
             self.closing = Event()
             self.release_close = Event()
 
-        async def stream(
+        async def read(
             self,
-            _: int,
-            *,
-            decode_content: bool,
-        ) -> AsyncIterator[bytes]:
+            amt: int | None = None,
+            decode_content: bool | None = None,
+            cache_content: bool = False,
+        ) -> bytes:
             assert decode_content is False
+            _ = amt, cache_content
             self.reading.set()
             await Event().wait()
-            yield b""
+            return b""
 
         async def close(self) -> None:
             self.closing.set()
@@ -900,7 +921,7 @@ async def test_owned_pool_cleanup_can_be_retried_after_cancellation(
 
 
 async def test_invalid_server_error_is_retryable_transport_failure() -> None:
-    invalid = AsyncHTTPResponse(body=b"bad gateway", status=502)
+    invalid = response(502, body=b"bad gateway")
     pool = Pool()
     pool.responses = [invalid]
     with pytest.raises(ConnectionError, match="invalid response"):

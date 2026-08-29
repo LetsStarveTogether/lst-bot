@@ -10,8 +10,10 @@ from asyncio import (
 from contextlib import suppress
 from dataclasses import FrozenInstanceError
 from gc import collect
+from gzip import compress
+from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from bot import ActionResponse, Bot, BotSelf, Gateway
@@ -29,6 +31,7 @@ from bot.gateways.base import (
     bearer_or_query_token,
     connect_websocket,
     header_value,
+    read_http_body,
     request_target_path,
     run_while_open,
     token_matches,
@@ -37,6 +40,8 @@ from bot.gateways.base import (
 from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from robyn import Headers
+from urllib3_future import AsyncHTTPResponse
+from urllib3_future.exceptions import HTTPError
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
 
@@ -182,6 +187,28 @@ def test_header_value_rejects_repeated_headers() -> None:
     headers.append("X-Self-ID", "second")
 
     assert header_value(headers, "X-Self-ID") is None
+
+
+@pytest.mark.parametrize("size", [4, 5])
+async def test_http_body_limit_applies_after_decompression(size: int) -> None:
+    encoded = compress(b"x" * size)
+    response = AsyncHTTPResponse(
+        body=BytesIO(encoded),
+        headers={
+            "Content-Encoding": "gzip",
+            "Content-Length": str(len(encoded)),
+        },
+        preload_content=False,
+    )
+
+    with patch.object(response, "read", wraps=response.read) as read:
+        if size == 4:
+            assert await read_http_body(response, max_bytes=4) == b"xxxx"
+        else:
+            with pytest.raises(HTTPError, match="4-byte limit"):
+                await read_http_body(response, max_bytes=4)
+        read.assert_awaited_once_with(5, decode_content=True)
+    assert response.closed
 
 
 def test_token_matches_supports_unicode_credentials() -> None:
