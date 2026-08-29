@@ -1583,10 +1583,7 @@ def _action_time(value: JsonValue) -> float:
 
 def decode_action_response(payload: object) -> ActionResponse:
     response = OneBot11ActionResponse.model_validate(_json_object(payload))
-    if response.echo is not None and not isinstance(response.echo, str):
-        msg = "OneBot 11 action response echo must be a string or null"
-        raise TypeError(msg)
-    echo = response.echo
+    echo = response.echo if isinstance(response.echo, str) else None
     if response.status == "ok":
         return ActionResponse.ok(response.data, echo=echo)
     if response.status == "async":

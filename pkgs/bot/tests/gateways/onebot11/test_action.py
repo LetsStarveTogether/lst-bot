@@ -529,14 +529,15 @@ def test_onebot11_action_response_rejects_invalid_protocol_shape(
         decode_action_response(payload)
 
 
-def test_onebot11_action_response_rejects_non_string_echo() -> None:
-    with pytest.raises(TypeError, match="echo"):
-        decode_action_response({
-            "status": "ok",
-            "retcode": 0,
-            "data": None,
-            "echo": 1,
-        })
+def test_onebot11_action_response_ignores_non_string_echo() -> None:
+    response = decode_action_response({
+        "status": "ok",
+        "retcode": 0,
+        "data": None,
+        "echo": {"vendor": 1},
+    })
+
+    assert response == ActionResponse.ok()
 
 
 async def test_message_return_uses_group_action() -> None:
