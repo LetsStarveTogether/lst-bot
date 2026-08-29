@@ -13,9 +13,10 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime
 from enum import STRICT, IntEnum, IntFlag
-from html import escape
+from html import escape, unescape
 from importlib.metadata import version
 from logging import getLogger
+from re import compile as compile_regex
 from time import time
 from typing import Annotated, Literal, cast, override
 
@@ -87,6 +88,11 @@ _APPLICATION_CLOSE_CODES = range(4000, 5000)
 _NON_RETRYABLE_ACCESS_TOKEN_CODES = {"10004", "100007", "100016"}
 _MESSAGE_SEQUENCE_MODULUS = 1 << 16
 _QUOTED_MESSAGE_TYPE = 103
+_MENTION_PATTERN = compile_regex(
+    r"<@!?(?P<legacy>[0-9]+)>"
+    r'|<qqbot-at-user id="(?P<user>[^"]+)"\s*/>'
+    r"|(?P<all><qqbot-at-everyone\s*/>)"
+)
 
 type NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 type PositiveInt = Annotated[StrictInt, Field(gt=0)]
@@ -1028,11 +1034,7 @@ class QQGateway(Gateway, QQRestClient):
             "message_id": data.id,
             "message": message,
             "alt_message": data.content,
-            **(
-                {"reply_alt_message": reply_text}
-                if reply_text and reply_text.strip()
-                else {}
-            ),
+            **({"reply_alt_message": reply_text} if reply_text is not None else {}),
             "qq_event_id": dispatch.id,
             "qq_message_type": getattr(data, "message_type", None),
             "qq_message_scene": self._event_data_json(
@@ -1219,18 +1221,50 @@ def _qq_reply_segments(
     return [{"type": "reply", "data": reply_data}]
 
 
-def _qq_message(  # ruff: ignore[complex-structure] - protocol conversion is intentionally flat
+def _qq_message(  # ruff: ignore[complex-structure, too-many-branches] - protocol conversion is intentionally flat
     message: QQC2CMessage | QQLegacyChannelMessage | QQMessageElement,
 ) -> Msg:
     segments = _qq_reply_segments(message)
+    content_start = len(segments)
     mentions = getattr(message, "mentions", ())
-    for mention in mentions:
-        user_id = mention.member_openid or mention.user_openid or mention.id
-        if user_id is not None:
-            segments.append({"type": "mention", "data": {"user_id": user_id}})
     content = message.content or ""
-    if content:
-        segments.append({"type": "text", "data": {"text": content}})
+    position = 0
+    has_marker = False
+    for match in _MENTION_PATTERN.finditer(content):
+        if match.start() > position:
+            segments.append({
+                "type": "text",
+                "data": {"text": unescape(content[position : match.start()])},
+            })
+        user_id = match.group("legacy") or match.group("user")
+        segments.append(
+            {
+                "type": "mention",
+                "data": {"user_id": unescape(user_id)},
+            }
+            if user_id is not None
+            else {"type": "mention_all", "data": {}}
+        )
+        has_marker = True
+        position = match.end()
+    if position < len(content):
+        segments.append({
+            "type": "text",
+            "data": {"text": unescape(content[position:])},
+        })
+    if not has_marker:
+        fallback_mentions: list[dict[str, object]] = []
+        for mention in mentions:
+            if (mention.model_extra or {}).get("scope") == "all":
+                fallback_mentions.append({"type": "mention_all", "data": {}})
+            elif (
+                user_id := mention.member_openid or mention.user_openid or mention.id
+            ) is not None:
+                fallback_mentions.append({
+                    "type": "mention",
+                    "data": {"user_id": user_id},
+                })
+        segments[content_start:content_start] = fallback_mentions
     for attachment in message.attachments:
         content_type = attachment.content_type.casefold()
         if content_type.startswith("image/"):
@@ -1262,13 +1296,20 @@ def _qq_message(  # ruff: ignore[complex-structure] - protocol conversion is int
     return Msg.model_validate(segments)
 
 
-def _qq_send_body(message: Msg) -> dict[str, object]:
+def _qq_send_body(  # ruff: ignore[complex-structure] - protocol conversion is intentionally flat
+    message: Msg,
+) -> dict[str, object]:
     content: list[str] = []
     media: str | None = None
     reply: str | None = None
     for segment in message:
         if segment.type == MsgSegmentType.TEXT:
-            content.append(cast(object, segment.data).text)  # ty: ignore[unresolved-attribute]
+            content.append(
+                escape(
+                    cast(object, segment.data).text,  # ty: ignore[unresolved-attribute]
+                    quote=False,
+                )
+            )
         elif segment.type == MsgSegmentType.MENTION:
             content.append(
                 '<qqbot-at-user id="'
@@ -1283,6 +1324,9 @@ def _qq_send_body(message: Msg) -> dict[str, object]:
                 raise ValueError(msg)
             media = cast(object, segment.data).file_id  # ty: ignore[unresolved-attribute]
         elif segment.type == MsgSegmentType.REPLY:
+            if reply is not None:
+                msg = "QQ sends at most one message reference"
+                raise ValueError(msg)
             reply = cast(object, segment.data).message_id  # ty: ignore[unresolved-attribute]
         else:
             msg = f"QQ does not support message segment {segment.type!s}"

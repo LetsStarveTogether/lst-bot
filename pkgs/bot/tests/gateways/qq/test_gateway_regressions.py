@@ -209,13 +209,73 @@ def test_quoted_message_maps_reference_without_copying_quoted_content() -> None:
                 "timestamp": "2026-08-17T00:00:00Z",
                 "message_type": 103,
                 "message_scene": {"ext": ["ref_msg_idx=group-quoted"]},
+                "msg_elements": [{"content": ""}],
             },
         })
     )
     assert isinstance(group_event, GroupMessageEvent)
     assert group_event.message[0].data.model_dump().get("message_id") == "group-quoted"
     assert group_event.model_extra is not None
-    assert "reply_alt_message" not in group_event.model_extra
+    assert group_event.model_extra["reply_alt_message"] == ""
+
+
+def test_message_markers_preserve_order_and_decode_text() -> None:
+    gateway = _gateway()
+    event = gateway._event_from_dispatch(
+        QQDispatch.model_validate({
+            "id": "event",
+            "op": 0,
+            "s": 1,
+            "t": "GROUP_MESSAGE_CREATE",
+            "d": {
+                "id": "message",
+                "group_openid": "group",
+                "author": {"member_openid": "author"},
+                "content": (
+                    "before &lt;safe&gt;"
+                    '<qqbot-at-user id="member&amp;id" />'
+                    "between <@!42><qqbot-at-everyone /> after &amp;"
+                ),
+                "mentions": [
+                    {"member_openid": "member&id"},
+                    {"member_openid": "must-not-be-prepended"},
+                ],
+                "timestamp": "2026-08-17T00:00:00Z",
+            },
+        })
+    )
+
+    assert isinstance(event, GroupMessageEvent)
+    assert event.message.model_dump(mode="json") == [
+        {"type": "text", "data": {"text": "before <safe>"}},
+        {"type": "mention", "data": {"user_id": "member&id"}},
+        {"type": "text", "data": {"text": "between "}},
+        {"type": "mention", "data": {"user_id": "42"}},
+        {"type": "mention_all", "data": {}},
+        {"type": "text", "data": {"text": " after &"}},
+    ]
+
+    fallback = gateway._event_from_dispatch(
+        QQDispatch.model_validate({
+            "id": "fallback-event",
+            "op": 0,
+            "s": 2,
+            "t": "GROUP_MESSAGE_CREATE",
+            "d": {
+                "id": "fallback-message",
+                "group_openid": "group",
+                "author": {"member_openid": "author"},
+                "content": "plain &amp; text",
+                "mentions": [{"member_openid": "structured"}],
+                "timestamp": "2026-08-17T00:00:00Z",
+            },
+        })
+    )
+    assert isinstance(fallback, GroupMessageEvent)
+    assert fallback.message.model_dump(mode="json") == [
+        {"type": "mention", "data": {"user_id": "structured"}},
+        {"type": "text", "data": {"text": "plain & text"}},
+    ]
 
 
 async def test_passive_reply_sequence_wraps_and_preserves_explicit_value(
@@ -260,7 +320,13 @@ async def test_mentions_use_current_wire_format_and_validate_scene(
         Action.SEND_MESSAGE,
         detail_type="group",
         group_id="group",
-        message=[{"type": "mention", "data": {"user_id": 'u"&'}}],
+        message=[
+            {
+                "type": "text",
+                "data": {"text": '<qqbot-at-user id="evil" /> &'},
+            },
+            {"type": "mention", "data": {"user_id": 'u"&'}},
+        ],
     )
     await connection.action(
         Action.SEND_MESSAGE,
@@ -271,7 +337,7 @@ async def test_mentions_use_current_wire_format_and_validate_scene(
     )
 
     assert request.await_args_list[0].kwargs["content"] == (
-        '<qqbot-at-user id="u&quot;&amp;" />'
+        '&lt;qqbot-at-user id="evil" /&gt; &amp;<qqbot-at-user id="u&quot;&amp;" />'
     )
     assert request.await_args_list[1].kwargs["content"] == ("<qqbot-at-everyone />")
 
@@ -290,6 +356,16 @@ async def test_mentions_use_current_wire_format_and_validate_scene(
     for params in invalid:
         with pytest.raises(ValueError, match="only supported"):
             await connection.action(Action.SEND_MESSAGE, **params)
+    with pytest.raises(ValueError, match="at most one message reference"):
+        await connection.action(
+            Action.SEND_MESSAGE,
+            detail_type="private",
+            user_id="user",
+            message=[
+                {"type": "reply", "data": {"message_id": "first"}},
+                {"type": "reply", "data": {"message_id": "second"}},
+            ],
+        )
     assert request.await_count == 2
 
 
