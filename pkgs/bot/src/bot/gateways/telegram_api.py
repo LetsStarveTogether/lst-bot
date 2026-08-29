@@ -31,7 +31,7 @@ from urllib3_future.exceptions import HTTPError
 from urllib3_future.filepost import encode_multipart_formdata
 
 from bot._tasks import await_cleanup
-from bot.json import dumpb, loads
+from bot.json import dumpb
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
@@ -590,7 +590,7 @@ class TelegramUpdate(Model):
         return self.model_dump(mode="json", exclude_none=True)
 
 
-_UPDATES_ADAPTER = TypeAdapter(list[TelegramUpdate])
+_UPDATES_ADAPTER = TypeAdapter(Annotated[list[TelegramUpdate], Field(max_length=100)])
 
 
 class TelegramWebhookInfo(Model):
@@ -610,7 +610,7 @@ class TelegramResponseParameters(Model):
     retry_after: NonNegativeInt | None = None
 
 
-class TelegramEnvelope(BaseModel):
+class TelegramEnvelope(Model):
     model_config = ConfigDict(extra="forbid")
 
     ok: StrictBool
@@ -639,6 +639,8 @@ class TelegramEnvelope(BaseModel):
 
 
 class TelegramResult(RootModel[JsonValue]):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     def __repr_args__(  # ruff: ignore[bad-dunder-method-name] - Pydantic's repr/str hook
         self,
     ) -> list[tuple[str | None, object]]:
@@ -920,8 +922,7 @@ class TelegramRestClient:
             msg = f"Telegram API request failed for {method}"
             raise ConnectionError(msg) from None
         try:
-            payload = loads(data)
-            envelope = TelegramEnvelope.model_validate(payload)
+            envelope = TelegramEnvelope.model_validate_json(data)
         except ValueError:
             msg = f"Telegram API returned an invalid response for {method}"
             if response.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
@@ -992,11 +993,11 @@ def _validate_download_response(
     content_length = response.headers.get("Content-Length")
     if content_length is None:
         return
-    try:
-        declared_size = int(content_length)
-    except ValueError:
-        declared_size = -1
-    if declared_size < 0:
+    declared_size: int | None = None
+    if content_length.isascii() and content_length.isdecimal():
+        with suppress(ValueError):
+            declared_size = int(content_length)
+    if declared_size is None:
         msg = "Telegram file download returned invalid metadata"
         raise ConnectionError(msg) from None
     if declared_size > max_bytes:

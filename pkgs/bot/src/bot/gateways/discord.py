@@ -242,7 +242,7 @@ class DiscordMember(Model):
     nick: StrictStr | None = None
     avatar: StrictStr | None = None
     banner: StrictStr | None = None
-    roles: list[Snowflake]
+    roles: Annotated[list[Snowflake], Field(max_length=250)]
     joined_at: DiscordTimestamp | None = None
     premium_since: DiscordTimestamp | None = None
     deaf: StrictBool = False
@@ -289,14 +289,16 @@ class DiscordMessage(Model):
     mention_everyone: StrictBool
     mentions: list[DiscordUser]
     mention_roles: list[Snowflake]
-    attachments: list[DiscordAttachment]
-    embeds: list[dict[StrictStr, JsonValue]]
+    attachments: Annotated[list[DiscordAttachment], Field(max_length=10)]
+    embeds: Annotated[list[dict[StrictStr, JsonValue]], Field(max_length=10)]
     pinned: StrictBool
     type: NonNegativeInt
     guild_id: Snowflake | None = None
     member: DiscordMember | None = None
     mention_channels: list[dict[StrictStr, JsonValue]] | None = None
-    reactions: list[dict[StrictStr, JsonValue]] | None = None
+    reactions: (
+        Annotated[list[dict[StrictStr, JsonValue]], Field(max_length=20)] | None
+    ) = None
     nonce: StrictStr | StrictInt | None = None
     webhook_id: Snowflake | None = None
     activity: dict[StrictStr, JsonValue] | None = None
@@ -321,7 +323,7 @@ class DiscordPartialMessage(Model):
     edited_timestamp: DiscordTimestamp | None = None
     mentions: list[DiscordUser] | None = None
     mention_roles: list[Snowflake] | None = None
-    attachments: list[DiscordAttachment] | None = None
+    attachments: Annotated[list[DiscordAttachment], Field(max_length=10)] | None = None
 
 
 class DiscordPermissionOverwrite(Model):
@@ -336,7 +338,9 @@ class DiscordChannel(Model):
     type: NonNegativeInt
     guild_id: Snowflake | None = None
     position: StrictInt | None = None
-    permission_overwrites: list[DiscordPermissionOverwrite] | None = None
+    permission_overwrites: (
+        Annotated[list[DiscordPermissionOverwrite], Field(max_length=1000)] | None
+    ) = None
     name: DiscordChannelName | None = None
     topic: StrictStr | None = None
     nsfw: StrictBool | None = None
@@ -371,7 +375,7 @@ class DiscordGuild(Model):
     verification_level: NonNegativeInt
     default_message_notifications: NonNegativeInt
     explicit_content_filter: NonNegativeInt
-    roles: list[DiscordRole]
+    roles: Annotated[list[DiscordRole], Field(max_length=250)]
     emojis: list[dict[StrictStr, JsonValue]]
     features: list[StrictStr]
     mfa_level: NonNegativeInt
@@ -534,6 +538,8 @@ class DiscordNoContent(Model):
 
 
 class DiscordPayload(RootModel[JsonValue]):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     def __repr_args__(  # ruff: ignore[bad-dunder-method-name] - arbitrary API data can contain credentials
         self,
     ) -> list[tuple[str | None, object]]:
@@ -1454,7 +1460,7 @@ class DiscordGuildSummary(Model):
 
 
 DiscordGuildList = RootModel[list[DiscordGuildSummary]]
-DiscordChannelList = RootModel[list[DiscordChannel]]
+DiscordChannelList = RootModel[Annotated[list[DiscordChannel], Field(max_length=500)]]
 DiscordMemberList = RootModel[list[DiscordGuildMember]]
 
 

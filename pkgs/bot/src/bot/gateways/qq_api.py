@@ -752,7 +752,7 @@ class QQRestrictionSchedule(Model):
 
 class QQRecurringRestriction(Model):
     task_id: QQID
-    weekdays: list[Annotated[StrictInt, Field(ge=1, le=7)]]
+    weekdays: list[Annotated[StrictInt, Field(ge=1, le=7)]] = Field(max_length=7)
     start_time: StrictStr
     end_time: StrictStr
     enabled: StrictBool

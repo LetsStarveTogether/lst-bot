@@ -43,6 +43,7 @@ from bot.gateways.qq_api import (
     QQMenuItem,
     QQMenuLinkItem,
     QQNoContent,
+    QQRecurringRestriction,
     QQRoleMemberListParams,
     QQSchedulePatch,
     QQSendC2CMessageRequest,
@@ -1424,6 +1425,18 @@ def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
     groups = QQStrategyGroups(group_ids=["123456789"])
     assert role_page.start_index == "next"
     assert groups.group_ids == ["123456789"]
+    recurring = {
+        "task_id": "task",
+        "weekdays": list(range(1, 8)),
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "enabled": True,
+    }
+    assert QQRecurringRestriction.model_validate(recurring).weekdays == list(
+        range(1, 8)
+    )
+    with pytest.raises(ValidationError):
+        QQRecurringRestriction.model_validate({**recurring, "weekdays": [1] * 8})
     create_strategy = QQ_ROUTES[
         QQAction.CREATE_GROUP_APPROVAL_STRATEGY
     ].request.model_validate({"group_ids": ["123456789"]})

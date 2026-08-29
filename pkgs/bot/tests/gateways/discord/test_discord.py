@@ -44,7 +44,7 @@ from bot.gateways.discord import (
 from bot.json import loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel
 from bot.testing import ScriptedWebSocket
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
@@ -200,6 +200,45 @@ def test_resource_models_enforce_official_constraints() -> None:
             "url": "https://cdn.example/file",
             "proxy_url": "https://proxy.example/file",
         })
+
+    over_limits: tuple[tuple[type[BaseModel], object, tuple[str, ...]], ...] = (
+        (
+            DiscordMessage,
+            message() | {"attachments": [{}] * 11},
+            ("attachments",),
+        ),
+        (DiscordMessage, message() | {"embeds": [{}] * 11}, ("embeds",)),
+        (DiscordMessage, message() | {"reactions": [{}] * 21}, ("reactions",)),
+        (
+            discord_module.DiscordPartialMessage,
+            {"id": "1", "channel_id": "2", "attachments": [{}] * 11},
+            ("attachments",),
+        ),
+        (discord_module.DiscordMember, {"roles": ["1"] * 251}, ("roles",)),
+        (discord_module.DiscordGuild, {"roles": [{}] * 251}, ("roles",)),
+        (
+            DiscordChannel,
+            {"id": "1", "type": 0, "permission_overwrites": [{}] * 1001},
+            ("permission_overwrites",),
+        ),
+        (
+            DiscordChannelList,
+            [{"id": str(index), "type": 0} for index in range(1, 502)],
+            (),
+        ),
+    )
+    for model, payload, location in over_limits:
+        with pytest.raises(ValidationError) as error:
+            model.model_validate(payload)
+        assert any(
+            detail["type"] == "too_long" and detail["loc"] == location
+            for detail in error.value.errors()
+        )
+
+
+def test_discord_payload_rejects_non_finite_numbers() -> None:
+    with pytest.raises(ValidationError):
+        DiscordPayload.model_validate({"nested": [float("inf")]})
 
 
 def test_wire_timestamps_require_rfc3339_strings() -> None:
@@ -1360,19 +1399,46 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
             )
 
 
-async def test_full_discord_pages_must_advance_their_cursors(
+async def test_discord_pagination_accumulates_and_rejects_stalled_cursors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     instance = gateway()
     guild_page = DiscordGuildList.model_validate([
-        {"id": "10", "name": "guild", "icon": None, "features": []}
-        for _ in range(discord_module._GUILD_PAGE_SIZE)
+        {"id": str(index), "name": "guild", "icon": None, "features": []}
+        for index in range(1, discord_module._GUILD_PAGE_SIZE + 1)
+    ])
+    guild_tail = DiscordGuildList.model_validate([
+        {"id": "201", "name": "guild", "icon": None, "features": []}
     ])
     member_page = DiscordMemberList.model_validate([
-        {"user": user(), "roles": []} for _ in range(discord_module._MEMBER_PAGE_SIZE)
+        {"user": user(str(index)), "roles": []}
+        for index in range(1, discord_module._MEMBER_PAGE_SIZE + 1)
     ])
-    request = AsyncMock(side_effect=[guild_page, guild_page, member_page, member_page])
+    member_tail = DiscordMemberList.model_validate([
+        {"user": user("1001"), "roles": []}
+    ])
+    request = AsyncMock(
+        side_effect=[
+            guild_page,
+            guild_tail,
+            member_page,
+            member_tail,
+            guild_page,
+            guild_page,
+            member_page,
+            member_page,
+        ]
+    )
     monkeypatch.setattr(instance, "_request_model", request)
+
+    guilds = await instance._guild_list()
+    members = await instance._guild_member_list("10")
+    assert [guild.id for guild in guilds.root] == [
+        str(index) for index in range(1, 202)
+    ]
+    assert [member.user.id for member in members.root] == [
+        str(index) for index in range(1, 1002)
+    ]
 
     with pytest.raises(RuntimeError, match="guild pagination did not advance"):
         await instance._guild_list()
@@ -1381,9 +1447,13 @@ async def test_full_discord_pages_must_advance_their_cursors(
 
     assert [call.kwargs["query"].get("after") for call in request.await_args_list] == [
         None,
-        "10",
+        "200",
         None,
-        "2",
+        "1000",
+        None,
+        "200",
+        None,
+        "1000",
     ]
 
 
