@@ -56,7 +56,6 @@ from bot.protocol.events import (
     PrivateMessageEvent,
 )
 from bot.protocol.msg import Msg, MsgInput
-from bot.protocol.returns import ReturnAction
 
 from . import qq_api
 from .base import (
@@ -659,36 +658,6 @@ class QQGateway(Gateway, QQRestClient):
             )
         msg = f"QQ Gateway does not support common action {common_action.value}"
         raise LookupError(msg)
-
-    @override
-    async def execute_return_action(
-        self,
-        connection: Connection,
-        event: Event | None,
-        action: ReturnAction,
-    ) -> BaseModel:
-        if action.kind != "request":
-            return await super().execute_return_action(connection, event, action)
-        if not isinstance(event, GroupRequestEvent):
-            msg = "QQ request responses require a group request event"
-            raise TypeError(msg)
-        if action.approve is None:
-            msg = "QQ request response requires approve"
-            raise TypeError(msg)
-        if action.remark:
-            msg = "QQ group request responses do not support remark"
-            raise TypeError(msg)
-        if action.approve and action.reason:
-            msg = "QQ group request approvals do not support reason"
-            raise TypeError(msg)
-        return await connection.action(
-            QQAction.APPROVE_GROUP_JOIN_REQUEST,
-            group_openid=event.group_id,
-            member_openid=event.user_id,
-            join_request_id=event.flag,
-            op="approve" if action.approve else "decline",
-            **({"reject_reason": action.reason} if action.reason else {}),
-        )
 
     async def _run_gateway(self) -> None:
         await self.bot.wait_until_running()

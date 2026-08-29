@@ -576,39 +576,29 @@ class Bot(EventRouter):
     ) -> None:
         values = value if isinstance(value, list | tuple) else (value,)
         for item in values:
-            action = self._return_action_from_value(item)
+            action = ReturnAction.message(item) if isinstance(item, str | Msg) else item
+            if not isinstance(action, ReturnAction | ActionCall):
+                msg = f"Unsupported handler return value: {type(action).__name__}"
+                raise TypeError(msg)
             await self._execute_return_action(context, action)
-
-    def _return_action_from_value(self, value: object) -> ReturnAction:
-        if isinstance(value, ReturnAction):
-            return value
-        if isinstance(value, str | Msg):
-            return ReturnAction.message(value)
-        if isinstance(value, ActionCall):
-            return ReturnAction(kind="call", action_call=value)
-
-        msg = f"Unsupported handler return value: {type(value).__name__}"
-        raise TypeError(msg)
 
     async def _execute_return_action(
         self,
         context: InjectionContext,
-        action: ReturnAction,
+        action: ReturnAction | ActionCall,
     ) -> None:
         event = context.event
         connection = context.connection
         if connection is None:
-            self_ = (
-                action.self_
-                if action.kind == "call" and action.self_ is not None
-                else event.self_
-                if event is not None
-                else None
-            )
+            self_ = event.self_ if event is not None else None
             if context.gateway is None or self_ is None:
                 msg = "Return actions require a connection or self"
                 raise TypeError(msg)
             connection = context.gateway.connection_for(self_)
+
+        if isinstance(action, ActionCall):
+            await connection.request_action(action.action, action.params)
+            return
 
         await connection.gateway.execute_return_action(
             connection,

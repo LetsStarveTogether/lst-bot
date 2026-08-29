@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from bot import (
+    ActionCall,
     Bot,
     Connection,
     Injected,
@@ -72,11 +73,14 @@ async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> Non
         bot.add_gateway(gateway)
 
         @bot.on_msg(block=True)
-        def collect() -> list[Msg | ReturnAction]:
+        def collect() -> list[Msg | ReturnAction | ActionCall]:
             return [
                 Msg.from_input("one"),
                 Msg.from_input("two"),
-                ReturnAction.call("send_like", {"user_id": "42"}),
+                ActionCall.model_validate({
+                    "action": "send_like",
+                    "params": {"user_id": "42"},
+                }),
             ]
 
         async with bot:

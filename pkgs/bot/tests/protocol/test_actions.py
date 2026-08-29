@@ -8,9 +8,7 @@ from bot import (
     ActionParamInput,
     ActionRequest,
     ActionResponse,
-    BotSelf,
     Retcode,
-    ReturnAction,
 )
 from bot.protocol import actions as action_models
 from bot.protocol.actions import LatestEventsParams, UploadFileBaseParams
@@ -618,7 +616,7 @@ class VendorRequest(BaseModel):
     operations: list[VendorOperation]
 
 
-def test_return_action_serializes_python_parameter_values() -> None:
+def test_action_call_serializes_python_parameter_values() -> None:
     params: dict[str, ActionParamInput] = {
         "bytes": b"\xff",
         "bytearray": bytearray(b"\x00"),
@@ -627,14 +625,9 @@ def test_return_action_serializes_python_parameter_values() -> None:
         "text": "/w==",
     }
 
-    returned = ReturnAction.call(
-        "vendor.action",
-        params,
-        self_=BotSelf(platform="qq", user_id="10000"),
-    )
+    call = ActionCall.model_validate({"action": "vendor.action", "params": params})
 
-    assert returned.action_call is not None
-    assert returned.action_call.model_dump(mode="json") == {
+    assert call.model_dump(mode="json") == {
         "action": "vendor.action",
         "params": {
             "bytes": "/w==",

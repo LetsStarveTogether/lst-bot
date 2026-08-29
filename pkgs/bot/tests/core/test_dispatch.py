@@ -16,7 +16,6 @@ from bot import (
     Msg,
     PrivateMessageEvent,
     Retcode,
-    ReturnAction,
     admin_permission,
 )
 from bot.testing import private_message_event as make_event
@@ -165,17 +164,17 @@ async def test_dispatch_executes_batch_returns_in_order() -> None:
     gateway = recording_gateway(bot)
 
     @bot.on_msg(block=True)
-    def handle() -> list[Msg | ReturnAction | ActionCall]:
+    def handle() -> list[Msg | ActionCall]:
         return [
             Msg.from_input("first"),
-            ReturnAction.call(
-                "send_message",
-                {
+            ActionCall.model_validate({
+                "action": "send_message",
+                "params": {
                     "detail_type": "private",
                     "user_id": "42",
                     "message": "from wrapper",
                 },
-            ),
+            }),
             ActionCall.model_validate({
                 "action": "get_user_info",
                 "params": {"user_id": "42"},

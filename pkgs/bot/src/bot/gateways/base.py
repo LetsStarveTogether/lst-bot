@@ -433,18 +433,6 @@ class Gateway:
                 raise TypeError(msg)
             return await connection.execute_message_action(event, action.msg)
 
-        if action.kind == "call":
-            call = action.action_call
-            if call is None:
-                msg = "Call return action requires an action call"
-                raise TypeError(msg)
-            target_connection = connection
-            if action.self_ is not None:
-                target_connection = self.connection_for(action.self_)
-            elif event is not None and event.self_ is not None:
-                target_connection = self.connection_for(event.self_)
-            return await target_connection.request_action(call.action, call.params)
-
         if action.kind == "request":
             msg = "Request response return values are not supported by this gateway"
             raise TypeError(msg)

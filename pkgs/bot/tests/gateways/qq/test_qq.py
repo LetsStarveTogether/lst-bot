@@ -23,7 +23,6 @@ from bot import (
     MsgSegmentType,
     NoticeEvent,
     PrivateMessageEvent,
-    ReturnAction,
 )
 from bot.gateways import qq as qq_gateway_module
 from bot.gateways.base import WebsocketsConnection
@@ -1153,7 +1152,7 @@ async def test_access_token_is_single_flight(
     request.assert_awaited_once()
 
 
-async def test_group_join_request_maps_and_can_be_declined() -> None:
+async def test_group_join_request_maps_and_native_approval_is_routed() -> None:
     pool = support.Pool(
         {"access_token": "token", "expires_in": 7200},
         {},
@@ -1188,18 +1187,13 @@ async def test_group_join_request_maps_and_can_be_declined() -> None:
         event.comment,
     ) == ("group", "member", "request", "add", "let me in")
     connection = gateway.connection_for(event.self_)
-    with pytest.raises(TypeError, match="remark"):
-        await gateway.execute_return_action(
-            connection,
-            event,
-            ReturnAction.request(True, remark="unsupported"),
-        )
-    assert not pool.requests
-
-    response = await gateway.execute_return_action(
-        connection,
-        event,
-        ReturnAction.request(False, reason="declined"),
+    response = await connection.action(
+        QQAction.APPROVE_GROUP_JOIN_REQUEST,
+        group_openid=event.group_id,
+        member_openid=event.user_id,
+        join_request_id=event.flag,
+        op="decline",
+        reject_reason="declined",
     )
 
     assert isinstance(response, QQNoContent)

@@ -44,7 +44,6 @@ from bot.protocol.events import (
     MessageEvent,
     NoticeEvent,
 )
-from bot.protocol.returns import ReturnAction
 from diwire import Injected
 from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
@@ -1430,7 +1429,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         )
 
 
-async def test_join_request_query_uses_query_response_endpoint() -> None:
+async def test_join_request_query_maps_and_native_response_is_routed() -> None:
     pool = Pool({"ok": True, "result": True})
     gateway = make_gateway(pool)
     self_ = BotSelf(platform="telegram", user_id="123")
@@ -1454,10 +1453,11 @@ async def test_join_request_query_uses_query_response_endpoint() -> None:
     )
     assert isinstance(event, GroupRequestEvent)
 
-    await gateway.execute_return_action(
-        connection,
-        event,
-        ReturnAction.request(True),
+    assert event.flag == "query"
+    await connection.action(
+        "answerChatJoinRequestQuery",
+        chat_join_request_query_id=event.flag,
+        result="approve",
     )
     assert pool.requests[-1][2]["json"] == {
         "chat_join_request_query_id": "query",

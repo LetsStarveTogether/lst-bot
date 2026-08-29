@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from bot import (
+    ActionCall,
     ActionResponse,
     Bot,
     Connection,
@@ -13,7 +14,6 @@ from bot import (
     EventPayload,
     Injected,
     PrivateMessageEvent,
-    ReturnAction,
 )
 from bot.gateways import Gateway
 from bot.gateways.onebot12 import HttpWebhook, OneBot12Gateway
@@ -81,10 +81,16 @@ async def test_http_dispatch_returns_quick_actions_with_explicit_null() -> None:
     def reply(
         event: Injected[PrivateMessageEvent],
         connection: Injected[Connection],
-    ) -> list[str | ReturnAction]:
+    ) -> list[str | ActionCall]:
         assert event.message.text == "hello"
         assert connection.self_.user_id == "10000"
-        return ["pong", ReturnAction.call("vendor.test", {"optional": None})]
+        return [
+            "pong",
+            ActionCall.model_validate({
+                "action": "vendor.test",
+                "params": {"optional": None},
+            }),
+        ]
 
     async with timeout(1), bot:
         response = await gateway.handle_http(

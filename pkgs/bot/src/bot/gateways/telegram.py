@@ -51,7 +51,6 @@ from bot.protocol.msg import (
     ReplySegment,
     TextSegment,
 )
-from bot.protocol.returns import ReturnAction
 
 from .base import Connection, Gateway
 from .telegram_api import (
@@ -493,41 +492,6 @@ class TelegramGateway(Gateway, TelegramRestClient):
         msg = f"Telegram does not support common action {common_action.value}"
         raise LookupError(msg)
 
-    @override
-    async def execute_return_action(
-        self,
-        connection: Connection,
-        event: Event | None,
-        action: ReturnAction,
-    ) -> BaseModel:
-        if action.kind != "request":
-            return await super().execute_return_action(connection, event, action)
-        if (
-            not isinstance(event, GroupRequestEvent)
-            or (event.model_extra or {}).get("telegram_event_type")
-            != "chat_join_request"
-        ):
-            msg = "Telegram request responses require a chat join request"
-            raise TypeError(msg)
-        if action.approve is None:
-            msg = "Telegram request response requires approve"
-            raise TypeError(msg)
-        if action.reason or action.remark:
-            msg = "Telegram chat join request responses do not support text"
-            raise TypeError(msg)
-        query_id = (event.model_extra or {}).get("telegram_chat_join_request_query_id")
-        if isinstance(query_id, str):
-            return await connection.action(
-                "answerChatJoinRequestQuery",
-                chat_join_request_query_id=query_id,
-                result="approve" if action.approve else "decline",
-            )
-        return await connection.action(
-            "approveChatJoinRequest" if action.approve else "declineChatJoinRequest",
-            chat_id=event.group_id,
-            user_id=int(event.user_id),
-        )
-
     async def _run_poller(self) -> None:
         await self.bot.wait_until_running()
         retries = 0
@@ -600,7 +564,6 @@ class TelegramGateway(Gateway, TelegramRestClient):
                 "group_id": str(payload.chat.id),
                 "comment": payload.bio or "",
                 "flag": payload.query_id or str(payload.user_chat_id),
-                "telegram_chat_join_request_query_id": payload.query_id,
             })
         return NoticeEvent.model_validate({
             **self._event_fields(update, event_type, _payload_time(payload)),
