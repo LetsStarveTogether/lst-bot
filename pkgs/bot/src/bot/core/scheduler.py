@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import CancelledError, Task, create_task, current_task, gather
 from asyncio import sleep as async_sleep
 from collections.abc import Awaitable, Callable

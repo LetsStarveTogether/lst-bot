@@ -195,7 +195,7 @@ async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:
     result = await read_cached_hitokoto(cache_path)
     assert result.hitokoto in values
     assert await is_cache_valid(cache_path) is True
-    assert list_cache_temps(cache_path) == []
+    assert not any(cache_path.parent.glob(f".{cache_path.name}.*.tmp"))
 
 
 async def test_real_sqlite_cache_rejects_an_empty_database(tmp_path: Path) -> None:
@@ -214,10 +214,6 @@ async def test_cache_validity_handles_missing_and_current_database(
     assert await is_cache_valid(cache_path) is False
     await write_cache(cache_path, bundle())
     assert await is_cache_valid(cache_path) is True
-
-
-def list_cache_temps(cache_path: Path) -> list[Path]:
-    return list(cache_path.parent.glob(f".{cache_path.name}.*.tmp"))
 
 
 @pytest.mark.parametrize(
