@@ -2,7 +2,6 @@ from diwire import Injected, Lifetime, Scope
 
 from .core import (
     Bot,
-    CronJob,
     CronScheduler,
     InjectionContext,
 )
@@ -17,13 +16,8 @@ from .protocol.common import BotSelf, BotStatus, Status, Version
 from .protocol.enums import (
     Action,
     ApiStatus,
-    EventDetailType,
-    EventKind,
-    FileStage,
     MsgSegmentType,
-    MsgTargetTag,
     Retcode,
-    UploadFileTag,
 )
 from .protocol.events import (
     ChannelCreateNoticeEvent,
@@ -55,7 +49,7 @@ from .protocol.events import (
     StatusUpdateMetaEvent,
     UserEvent,
 )
-from .protocol.msg import Msg, MsgInput, MsgSegment, MsgSegmentInput
+from .protocol.msg import Msg, MsgInput, MsgSegmentInput
 from .protocol.returns import ReturnAction
 from .routing import (
     Cmd,
@@ -82,14 +76,10 @@ __all__ = [
     "Cmd",
     "ConnectMetaEvent",
     "Connection",
-    "CronJob",
     "CronScheduler",
     "Event",
-    "EventDetailType",
-    "EventKind",
     "EventPayload",
     "EventRouter",
-    "FileStage",
     "FriendDecreaseNoticeEvent",
     "FriendIncreaseNoticeEvent",
     "FriendRequestEvent",
@@ -109,10 +99,8 @@ __all__ = [
     "MetaEvent",
     "Msg",
     "MsgInput",
-    "MsgSegment",
     "MsgSegmentInput",
     "MsgSegmentType",
-    "MsgTargetTag",
     "NoticeEvent",
     "PrivateMessageDeleteNoticeEvent",
     "PrivateMessageEvent",
@@ -122,7 +110,6 @@ __all__ = [
     "Scope",
     "Status",
     "StatusUpdateMetaEvent",
-    "UploadFileTag",
     "UserEvent",
     "Version",
     "admin_permission",

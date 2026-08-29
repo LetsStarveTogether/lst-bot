@@ -1,10 +1,9 @@
 from .bot import Bot
 from .di import InjectionContext
-from .scheduler import CronJob, CronScheduler
+from .scheduler import CronScheduler
 
 __all__ = [
     "Bot",
-    "CronJob",
     "CronScheduler",
     "InjectionContext",
 ]
