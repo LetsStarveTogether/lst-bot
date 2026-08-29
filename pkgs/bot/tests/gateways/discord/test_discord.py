@@ -641,7 +641,7 @@ async def test_gateway_identify_dispatch_resume_and_raw_fallback() -> None:
     }
 
 
-def test_message_conversion_distinguishes_forward_and_voice() -> None:
+def test_message_conversion_preserves_special_content() -> None:
     incoming = DiscordMessage.model_validate({
         **message(),
         "flags": 1 << 13,
@@ -657,7 +657,14 @@ def test_message_conversion_distinguishes_forward_and_voice() -> None:
                 "proxy_url": "https://proxy.discord.example/voice.ogg",
                 "duration_secs": 1.0,
                 "waveform": "AA==",
-            }
+            },
+            {
+                "id": "5",
+                "filename": "image.png",
+                "size": 5,
+                "url": "https://cdn.discord.example/image.png",
+                "proxy_url": "https://proxy.discord.example/image.png",
+            },
         ],
     })
 
@@ -666,11 +673,22 @@ def test_message_conversion_distinguishes_forward_and_voice() -> None:
         "text",
         "mention",
         "voice",
+        "image",
     ]
-    assert converted[-1].model_dump()["data"]["file_id"] == (
+    assert converted[-2].model_dump()["data"]["file_id"] == (
         "https://cdn.discord.example/voice.ogg"
     )
     assert "forwarded" not in converted.text
+
+    empty = DiscordMessage.model_validate({
+        **message(content=""),
+        "type": 19,
+        "message_reference": {"message_id": "9"},
+        "embeds": [{"type": "rich"}],
+    })
+    preserved = discord_module._discord_message(empty)
+    assert [segment.type for segment in preserved] == ["reply", "discord.message"]
+    assert preserved[1].data.model_extra == {"raw": empty.model_dump(mode="json")}
 
 
 async def test_dispatch_models_commit_only_valid_session_and_rate_state(
@@ -1130,6 +1148,20 @@ def test_gateway_server_close_code_policy() -> None:
 async def test_sequence_commit_and_public_message_actions() -> None:
     pool = Pool(response(200, message(message_id="99", content="reply")), response(204))
     instance = gateway(pool)
+    instance._self = BotSelf(platform="discord", user_id="1")
+    events: list[object] = []
+    instance.enqueue_event = events.append  # ty: ignore[invalid-assignment]
+    await instance._receive_dispatch(
+        DiscordGatewayPayload.model_validate({
+            "op": 0,
+            "s": 8,
+            "t": "MESSAGE_CREATE",
+            "d": {**message(), "author": {**user("1"), "bot": True}},
+        })
+    )
+    assert events == []
+    assert instance._seq == 8
+
     instance._seq = 7
 
     def full(_: object) -> None:
@@ -1140,7 +1172,10 @@ async def test_sequence_commit_and_public_message_actions() -> None:
         "op": 0,
         "s": 8,
         "t": "MESSAGE_CREATE",
-        "d": message(guild_id="30"),
+        "d": {
+            **message(guild_id="30"),
+            "author": {**user("2"), "bot": True},
+        },
     })
     with pytest.raises(ConnectionError, match="queue is full"):
         await instance._receive_dispatch(payload)

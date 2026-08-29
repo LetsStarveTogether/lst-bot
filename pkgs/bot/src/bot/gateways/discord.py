@@ -24,6 +24,7 @@ from http import HTTPStatus
 from importlib.metadata import version
 from logging import getLogger
 from math import isfinite
+from mimetypes import guess_type
 from random import random
 from re import compile as compile_regex
 from sys import platform as operating_system
@@ -2082,6 +2083,13 @@ class DiscordGateway(Gateway, DiscordRestClient):
                     event_type,
                     exc.errors(include_url=False, include_input=False),
                 )
+        if (
+            event_type == "MESSAGE_CREATE"
+            and isinstance(parsed, DiscordMessage)
+            and parsed.author.id == self._self.user_id
+        ):
+            self._seq = sequence
+            return
         if isinstance(parsed, DiscordRateLimited):
             ready_at = received_at + parsed.retry_after
             guild_id = parsed.meta.guild_id
@@ -2434,6 +2442,7 @@ def _discord_message(message: DiscordMessage) -> Msg:  # ruff: ignore[complex-st
             "type": "reply",
             "data": {"message_id": reference.message_id},
         })
+    content_start = len(segments)
 
     position = 0
     mentioned_users = {user.id for user in message.mentions}
@@ -2462,7 +2471,9 @@ def _discord_message(message: DiscordMessage) -> Msg:  # ruff: ignore[complex-st
         })
 
     for attachment in message.attachments:
-        content_type = (attachment.content_type or "").casefold()
+        content_type = (
+            attachment.content_type or guess_type(attachment.filename)[0] or ""
+        ).casefold()
         if content_type.startswith("image/"):
             segment_type = "image"
         elif content_type.startswith("audio/"):
@@ -2476,6 +2487,11 @@ def _discord_message(message: DiscordMessage) -> Msg:  # ruff: ignore[complex-st
         segments.append({
             "type": segment_type,
             "data": {"file_id": attachment.url},
+        })
+    if len(segments) == content_start:
+        segments.append({
+            "type": "discord.message",
+            "data": {"raw": message.model_dump(mode="json")},
         })
     return Msg.model_validate(segments)
 
