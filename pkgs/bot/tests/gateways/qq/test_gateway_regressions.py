@@ -125,8 +125,8 @@ async def test_dispatch_envelope_and_control_frames_remain_strict() -> None:
         qq_gateway_module.QQReadyData.model_validate({
             "version": 1,
             "session_id": "session",
-            "user": {},
-            "shard": [0, 1],
+            "user": {"id": "bot"},
+            "shard": [1, 1],
         })
 
 

@@ -2027,7 +2027,7 @@ QQ_ROUTES: Mapping[QQAction, QQRoute] = {
 
 class QQAccessTokenRequest(QQRequest):
     app_id: QQID = Field(alias="appId")
-    client_secret: QQID = Field(alias="clientSecret")
+    client_secret: QQID = Field(alias="clientSecret", repr=False)
 
 
 class QQAccessToken(Model):

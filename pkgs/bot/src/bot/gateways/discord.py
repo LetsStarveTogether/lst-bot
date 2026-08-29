@@ -1262,15 +1262,8 @@ DEFAULT_DISCORD_INTENTS = (
 )
 
 
-def _strict_opcode(value: object) -> object:
-    if isinstance(value, bool) or not isinstance(value, int):
-        msg = "Discord Gateway opcode must be an integer"
-        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error] - Pydantic converts it to ValidationError.
-    return value
-
-
 class DiscordGatewayPayload(Model):
-    op: Annotated[DiscordOpcode, BeforeValidator(_strict_opcode)]
+    op: StrictIntLiteral[DiscordOpcode]
     d: JsonValue = Field(None, repr=False)
     s: NonNegativeInt | None = None
     t: StrictStr | None = None
@@ -1505,14 +1498,9 @@ class DiscordGateway(Gateway, DiscordRestClient):
             base_url=base_url,
             http_pool=http_pool,
         )
-        if isinstance(intents, bool) or not isinstance(intents, int):
-            msg = "Discord intents must be an integer flag"
-            raise TypeError(msg)
-        try:
-            self.intents = DiscordIntent(intents)
-        except ValueError:
-            msg = "Discord intents contain unknown bits"
-            raise ValueError(msg) from None
+        self.intents = TypeAdapter(StrictIntLiteral[DiscordIntent]).validate_python(
+            intents
+        )
         # One gateway owns one shard; 2,500+ guild bots need a shard coordinator.
         self.shard = TypeAdapter(DiscordShard).validate_python(shard)
         self._websocket_connector = (

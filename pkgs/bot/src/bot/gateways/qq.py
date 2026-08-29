@@ -453,11 +453,11 @@ class QQReadyData(Model):
     version: StrictInt
     session_id: Annotated[StrictStr, Field(min_length=1)]
     user: qq_api.QQIdentifiedUser
-    shard: tuple[NonNegativeInt, NonNegativeInt]
+    shard: Shard
 
 
 class QQIdentifyData(qq_api.QQRequest):
-    token: StrictStr
+    token: StrictStr = Field(repr=False)
     intents: NonNegativeInt
     shard: Shard
 
@@ -468,7 +468,7 @@ class QQIdentify(qq_api.QQRequest):
 
 
 class QQResumeData(qq_api.QQRequest):
-    token: StrictStr
+    token: StrictStr = Field(repr=False)
     session_id: Annotated[StrictStr, Field(min_length=1)]
     seq: NonNegativeInt
 
@@ -541,14 +541,7 @@ class QQGateway(Gateway, QQRestClient):
             base_url=base_url,
             http_pool=http_pool,
         )
-        if isinstance(intents, bool) or not isinstance(intents, int):
-            msg = "QQ intents must be an integer flag"
-            raise TypeError(msg)
-        try:
-            self.intents = QQIntent(intents)
-        except ValueError:
-            msg = "QQ intents contain unknown bits"
-            raise ValueError(msg) from None
+        self.intents = TypeAdapter(StrictIntLiteral[QQIntent]).validate_python(intents)
         self.shard = TypeAdapter(Shard).validate_python(shard)
         self._websocket_connector = (
             connect_websocket if websocket_connector is None else websocket_connector

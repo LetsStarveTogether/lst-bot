@@ -231,7 +231,6 @@ _OFFSET_ADAPTER = TypeAdapter(TelegramUpdateOffset | None, config=_STRICT_CONFIG
 _NON_NEGATIVE_INT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _POSITIVE_INT_ADAPTER = TypeAdapter(PositiveInt, config=_STRICT_CONFIG)
 _METHODS_BY_CASE = {method.casefold(): method for method in TELEGRAM_METHODS}
-_RAW_UPDATES_ADAPTER = TypeAdapter(list[TelegramObject], config=_STRICT_CONFIG)
 
 
 class TelegramUser(Model):
@@ -591,6 +590,9 @@ class TelegramUpdate(Model):
         return self.model_dump(mode="json", exclude_none=True)
 
 
+_UPDATES_ADAPTER = TypeAdapter(list[TelegramUpdate])
+
+
 class TelegramWebhookInfo(Model):
     url: StrictStr
     has_custom_certificate: StrictBool
@@ -840,8 +842,7 @@ class TelegramRestClient:
             params,
             request_timeout=max(self.request_timeout, poll_timeout + 10),
         )
-        raw_updates = _RAW_UPDATES_ADAPTER.validate_python(result)
-        return [TelegramUpdate.model_validate(update) for update in raw_updates]
+        return _UPDATES_ADAPTER.validate_python(result)
 
     async def get_file(self, file_id: str) -> TelegramFile:
         return TelegramFile.model_validate(

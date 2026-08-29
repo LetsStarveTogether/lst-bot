@@ -31,6 +31,7 @@ from bot.gateways.qq import QQDispatch, QQGateway
 from bot.gateways.qq_api import (
     QQ_ROUTES,
     QQAccessTokenError,
+    QQAccessTokenRequest,
     QQAction,
     QQAPIError,
     QQAsyncResult,
@@ -1376,6 +1377,22 @@ async def test_websocket_rejects_a_missed_heartbeat_ack() -> None:
 
 
 def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
+    credential = "client-secret"
+    for model in (
+        QQAccessTokenRequest(appId="app", clientSecret=credential),
+        qq_gateway_module.QQIdentifyData(
+            token=credential,
+            intents=0,
+            shard=(0, 1),
+        ),
+        qq_gateway_module.QQResumeData(
+            token=credential,
+            session_id="session",
+            seq=0,
+        ),
+    ):
+        assert credential not in repr(model)
+
     with pytest.raises(ValidationError):
         qq_gateway_module.QQJoinVerification.model_validate({
             "method": "admin_review_qa",
