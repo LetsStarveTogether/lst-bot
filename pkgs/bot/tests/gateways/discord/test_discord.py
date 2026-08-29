@@ -117,7 +117,7 @@ def test_strict_boundaries_and_secret_repr() -> None:
         "session_id": "session",
         "resume_gateway_url": "wss://resume.discord.example",
         "shard": [0, 1],
-        "application": {"id": "3", "flags": 0},
+        "application": {"id": "3", "flags": 0, "flags_new": "0"},
     }
     assert DiscordReady.model_validate(ready).guilds[0].id == "2"
     with pytest.raises(ValidationError):
@@ -129,6 +129,11 @@ def test_strict_boundaries_and_secret_repr() -> None:
         DiscordReady.model_validate({**ready, "guilds": [{"id": "2"}]})
     with pytest.raises(ValidationError):
         DiscordReady.model_validate({**ready, "shard": [1, 1]})
+    with pytest.raises(ValidationError):
+        DiscordReady.model_validate({
+            **ready,
+            "application": {"id": "3", "flags": 0, "flags_new": {}},
+        })
     with pytest.raises(ValidationError):
         DiscordGuildMemberEvent.model_validate({"guild_id": "1", "roles": []})
 

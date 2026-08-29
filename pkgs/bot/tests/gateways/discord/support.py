@@ -68,7 +68,7 @@ def ready_payload(session_id: str = "session") -> dict[str, JsonValue]:
         "guilds": [],
         "session_id": session_id,
         "resume_gateway_url": "wss://resume.discord.example",
-        "application": {"id": "4", "flags": 0},
+        "application": {"id": "4", "flags": 0, "flags_new": "0"},
     }
 
 

@@ -452,6 +452,7 @@ class DiscordInteraction(Model):
 class DiscordApplication(Model):
     id: Snowflake
     flags: NonNegativeInt
+    flags_new: Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
 
 
 class DiscordUnavailableGuild(Model):
