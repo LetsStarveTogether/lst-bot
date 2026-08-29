@@ -1560,6 +1560,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         self._clear_session()
         self._gateway_send_times.clear()
         self._presence_send_times.clear()
+        self._full_member_ready_at.clear()
         try:
             await self._close_interaction_callbacks()
         finally:
@@ -1720,7 +1721,11 @@ class DiscordGateway(Gateway, DiscordRestClient):
             guilds.extend(page.root)
             if len(page.root) < _GUILD_PAGE_SIZE:
                 return DiscordGuildList(guilds)
-            after = page.root[-1].id
+            next_after = page.root[-1].id
+            if after is not None and int(next_after) <= int(after):
+                msg = "Discord guild pagination did not advance"
+                raise RuntimeError(msg)
+            after = next_after
 
     async def _guild_member_list(self, guild_id: str) -> DiscordMemberList:
         members: list[DiscordGuildMember] = []
@@ -1738,7 +1743,11 @@ class DiscordGateway(Gateway, DiscordRestClient):
             members.extend(page.root)
             if len(page.root) < _MEMBER_PAGE_SIZE:
                 return DiscordMemberList(members)
-            after = page.root[-1].user.id
+            next_after = page.root[-1].user.id
+            if after is not None and int(next_after) <= int(after):
+                msg = "Discord guild member pagination did not advance"
+                raise RuntimeError(msg)
+            after = next_after
 
     async def _request_model[T: BaseModel](
         self,
@@ -2007,6 +2016,11 @@ class DiscordGateway(Gateway, DiscordRestClient):
                     and now - self._gateway_send_times[0] >= _GATEWAY_WINDOW_SECONDS
                 ):
                     self._gateway_send_times.popleft()
+                self._full_member_ready_at = {
+                    guild_id: ready_at
+                    for guild_id, ready_at in self._full_member_ready_at.items()
+                    if ready_at > now
+                }
                 limit = (
                     _MAX_GATEWAY_EVENTS
                     if system

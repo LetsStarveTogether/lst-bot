@@ -974,6 +974,23 @@ async def test_gateway_native_limits_and_intent_boundaries(
     ]
 
 
+async def test_full_member_rate_limit_cache_expires_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock()
+    monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
+    instance = gateway()
+    websocket = ScriptedWebSocket()
+    instance._websocket = websocket
+    instance._full_member_ready_at = {"expired": 0.0, "active": 30.0}
+
+    await instance._send_gateway(websocket, {"op": 4, "d": {}})
+
+    assert instance._full_member_ready_at == {"active": 30.0}
+    await instance.close()
+    assert not instance._full_member_ready_at
+
+
 async def test_reconnect_heartbeat_and_shutdown_close_codes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1299,6 +1316,33 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
                 action,
                 **cast(dict[str, ActionParamInput], data),
             )
+
+
+async def test_full_discord_pages_must_advance_their_cursors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instance = gateway()
+    guild_page = DiscordGuildList.model_validate([
+        {"id": "10", "name": "guild", "icon": None, "features": []}
+        for _ in range(discord_module._GUILD_PAGE_SIZE)
+    ])
+    member_page = DiscordMemberList.model_validate([
+        {"user": user(), "roles": []} for _ in range(discord_module._MEMBER_PAGE_SIZE)
+    ])
+    request = AsyncMock(side_effect=[guild_page, guild_page, member_page, member_page])
+    monkeypatch.setattr(instance, "_request_model", request)
+
+    with pytest.raises(RuntimeError, match="guild pagination did not advance"):
+        await instance._guild_list()
+    with pytest.raises(RuntimeError, match="member pagination did not advance"):
+        await instance._guild_member_list("10")
+
+    assert [call.kwargs["query"].get("after") for call in request.await_args_list] == [
+        None,
+        "10",
+        None,
+        "2",
+    ]
 
 
 def test_message_model_is_strict_but_accepts_new_fields() -> None:
