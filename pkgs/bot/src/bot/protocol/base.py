@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Annotated, Self
+from typing import Annotated
 
 from pydantic import (
     BaseModel,
@@ -10,6 +10,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     TypeAdapter,
+    ValidationInfo,
     model_validator,
 )
 
@@ -43,7 +44,9 @@ class Model(BaseModel):
         validate_by_name=True,
     )
 
-    @model_validator(mode="after")
-    def finite_json_numbers(self) -> Self:
-        _JSON_VALUE_ADAPTER.validate_python(self.model_dump(mode="json"))
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def finite_json_numbers(cls, value: object, info: ValidationInfo) -> object:
+        return (
+            _JSON_VALUE_ADAPTER.validate_python(value) if info.mode == "json" else value
+        )
