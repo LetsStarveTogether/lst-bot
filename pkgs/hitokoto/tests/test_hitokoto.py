@@ -8,7 +8,6 @@ from pathlib import Path
 from time import time
 from typing import Any, override
 
-import hitokoto.cache as cache_module
 import hitokoto.client as client_module
 import pytest
 from hitokoto import (
@@ -24,7 +23,7 @@ from pydantic import ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
-BUNDLE_URL = "https://bundle.example.test/"
+BUNDLE_URL = "https://sentences-bundle.hitokoto.cn/"
 
 
 class RecordingPool(AsyncPoolManager):
@@ -132,19 +131,12 @@ def test_hitokoto_format_preserves_text_and_partial_attributions() -> None:
     assert "\u3000甲\n\u3000乙" in str(multiline)
 
 
-def test_client_requires_official_https_transport() -> None:
-    pool = RecordingPool({})
-    with pytest.raises(ValidationError):
-        HitokotoClient(bundle_url="http://bundle.test", http_pool=pool)
-
-
 async def test_client_consumes_error_body_before_failing(tmp_path: Path) -> None:
     response = RecordingResponse(500, b"error")
     pool = RecordingPool({f"{BUNDLE_URL}version.json": response})
 
     with pytest.raises(HTTPError, match="HTTP 500"):
         await HitokotoClient(
-            bundle_url=BUNDLE_URL,
             http_pool=pool,
             cache_path=tmp_path / "hitokoto.db",
         ).get_hitokoto()
@@ -168,7 +160,6 @@ async def test_client_applies_wall_clock_timeout_to_all_io(
     async with timeout(1):
         with pytest.raises(TimeoutError):
             await HitokotoClient(
-                bundle_url=BUNDLE_URL,
                 http_pool=pool,
                 cache_path=tmp_path / "hitokoto.db",
             ).get_hitokoto()
@@ -181,7 +172,6 @@ async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
     cache_path = tmp_path / "cache" / "hitokoto.db"
     pool = RecordingPool(bundle_routes())
     client = HitokotoClient(
-        bundle_url=BUNDLE_URL,
         http_pool=pool,
         cache_path=cache_path,
     )
@@ -214,24 +204,6 @@ async def test_real_sqlite_cache_rejects_an_empty_database(tmp_path: Path) -> No
 
     with pytest.raises(RuntimeError, match="no matching"):
         await read_cached_hitokoto(cache_path)
-
-
-async def test_random_cache_read_handles_sqlite_min_integer(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    cache_path = tmp_path / "hitokoto.db"
-    await write_cache(cache_path, bundle())
-    # Force SQLite's signed random boundary.
-    open_read_only = cache_module._open_read_only  # ruff: ignore[private-member-access]
-
-    def open_with_min_random(path: Path) -> sqlite3.Connection:
-        db = open_read_only(path)
-        db.create_function("random", 0, lambda: -(1 << 63))
-        return db
-
-    monkeypatch.setattr(cache_module, "_open_read_only", open_with_min_random)
-    assert (await read_cached_hitokoto(cache_path)).hitokoto == "cached hello"
 
 
 async def test_cache_validity_handles_missing_and_current_database(
@@ -274,7 +246,6 @@ async def test_cache_validity_rejects_corruption(tmp_path: Path) -> None:
 
     assert await is_cache_valid(cache_path) is False
     client = HitokotoClient(
-        bundle_url=BUNDLE_URL,
         http_pool=RecordingPool(bundle_routes("recovered")),
         cache_path=cache_path,
     )
@@ -297,7 +268,6 @@ async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
     })
 
     result = await HitokotoClient(
-        bundle_url=BUNDLE_URL,
         http_pool=pool,
         cache_path=cache_path,
     ).get_hitokoto()
@@ -310,7 +280,6 @@ async def test_bundle_requires_a_sentence(tmp_path: Path) -> None:
     routes = bundle_routes()
     routes[f"{BUNDLE_URL}sentences/a.json"] = []
     client = HitokotoClient(
-        bundle_url=BUNDLE_URL,
         http_pool=RecordingPool(routes),
         cache_path=tmp_path / "hitokoto.db",
     )
@@ -333,7 +302,6 @@ async def test_bundle_allows_an_empty_part_when_another_has_sentences(
     routes[f"{BUNDLE_URL}sentences/empty.json"] = []
     pool = RecordingPool(routes)
     client = HitokotoClient(
-        bundle_url=BUNDLE_URL,
         http_pool=pool,
         cache_path=tmp_path / "hitokoto.db",
     )

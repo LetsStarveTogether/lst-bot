@@ -3,9 +3,8 @@ from http import HTTPMethod, HTTPStatus
 from logging import getLogger
 from pathlib import Path
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
 
-from pydantic import AnyUrl, BaseModel, Field, TypeAdapter, UrlConstraints
+from pydantic import BaseModel, Field, TypeAdapter
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
@@ -13,12 +12,10 @@ from .cache import is_cache_valid, read_cached_hitokoto, write_cache
 from .models import Hitokoto
 
 HTTP_TIMEOUT_SECONDS = 30.0
+_BUNDLE_URL = "https://sentences-bundle.hitokoto.cn/"
 _HITOKOTO_SENTENCES = TypeAdapter(list[Hitokoto])
 _HITOKOTO_BUNDLE = TypeAdapter(
     Annotated[list[Hitokoto], Field(min_length=1)],
-)
-_HTTPS_URL = TypeAdapter(
-    Annotated[AnyUrl, UrlConstraints(allowed_schemes=["https"], host_required=True)]
 )
 logger = getLogger(__name__)
 
@@ -36,16 +33,9 @@ class HitokotoClient:
     def __init__(
         self,
         *,
-        bundle_url: str = "https://sentences-bundle.hitokoto.cn/",
         http_pool: AsyncPoolManager,
         cache_path: str | Path = Path(".cache/hitokoto.db"),
     ) -> None:
-        parsed_url = urlsplit(str(_HTTPS_URL.validate_python(bundle_url)))
-        self.bundle_url = parsed_url._replace(
-            path=f"{parsed_url.path.rstrip('/')}/",
-            query="",
-            fragment="",
-        ).geturl()
         self.http_pool = http_pool
         self.cache_path = Path(cache_path)
         self._cache_lock = Lock()
@@ -74,13 +64,13 @@ class HitokotoClient:
                 return
             logger.info("refresh Hitokoto cache: %s", self.cache_path)
             version = _BundleVersion.model_validate_json(
-                await self._get(f"{self.bundle_url}version.json"),
+                await self._get(f"{_BUNDLE_URL}version.json"),
             )
             async with TaskGroup() as group:
                 tasks = [
                     group.create_task(
                         self._get(
-                            f"{self.bundle_url}{item.path.removeprefix('./').lstrip('/')}",
+                            f"{_BUNDLE_URL}{item.path.removeprefix('./').lstrip('/')}",
                         ),
                     )
                     for item in version.sentences
