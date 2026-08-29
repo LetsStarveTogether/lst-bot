@@ -721,8 +721,12 @@ class TelegramRestClient:
             self._closed = True
             self._closed_event.set()
             if self._owns_http_pool:
-                await self.http_pool.clear()
-                self._pool_closed = True
+
+                async def finish_close() -> None:
+                    await self.http_pool.clear()
+                    self._pool_closed = True
+
+                await await_cleanup(create_task(finish_close()))
 
     async def call(
         self,

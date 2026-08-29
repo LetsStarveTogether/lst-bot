@@ -1,5 +1,13 @@
 # ruff: file-ignore[private-member-access]
-from asyncio import CancelledError, Event, QueueFull, TaskGroup, create_task, timeout
+from asyncio import (
+    CancelledError,
+    Event,
+    QueueFull,
+    TaskGroup,
+    create_task,
+    sleep,
+    timeout,
+)
 from collections.abc import AsyncIterator, Mapping
 from hashlib import sha256
 from typing import cast
@@ -805,9 +813,12 @@ async def test_cancellation_is_not_wrapped() -> None:
             await task
 
 
-async def test_owned_pool_cleanup_can_be_retried(
+async def test_owned_pool_cleanup_can_be_retried_after_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    clearing = Event()
+    release = Event()
+
     class FailingClearPool(Pool):
         def __init__(self) -> None:
             super().__init__()
@@ -818,6 +829,8 @@ async def test_owned_pool_cleanup_can_be_retried(
             if self.clear_calls == 1:
                 msg = "clear failed"
                 raise RuntimeError(msg)
+            clearing.set()
+            await release.wait()
 
     pool = FailingClearPool()
     monkeypatch.setattr(telegram_api_module, "AsyncPoolManager", lambda: pool)
@@ -825,6 +838,14 @@ async def test_owned_pool_cleanup_can_be_retried(
 
     with pytest.raises(RuntimeError, match="clear failed"):
         await rest.close()
+    closing = create_task(rest.close())
+    await clearing.wait()
+    closing.cancel()
+    await sleep(0)
+    assert not closing.done()
+    release.set()
+    with pytest.raises(CancelledError):
+        await closing
     await rest.close()
 
     assert pool.clear_calls == 2

@@ -18,6 +18,7 @@ from bot import ActionResponse, Bot, BotSelf, Gateway
 from bot.gateways import base as base_module
 from bot.gateways.base import (
     HttpAction,
+    WebSocketAction,
     WebSocketActionManager,
     WebSocketClosedError,
     WebsocketsConnection,
@@ -329,7 +330,7 @@ def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
 @pytest.mark.parametrize(
     ("action_type", "args"),
     [
-        pytest.param(WebSocketActionManager, (), id="websocket"),
+        pytest.param(WebSocketAction, (), id="websocket"),
         pytest.param(HttpAction, ("https://onebot.example",), id="http"),
     ],
 )
@@ -345,7 +346,7 @@ def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
     ],
 )
 def test_action_rejects_invalid_timeout(
-    action_type: type[HttpAction | WebSocketActionManager],
+    action_type: type[HttpAction | WebSocketAction],
     args: tuple[str, ...],
     timeout: object,
 ) -> None:

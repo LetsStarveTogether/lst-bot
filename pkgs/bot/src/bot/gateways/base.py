@@ -180,6 +180,13 @@ class HttpAction:
 class WebSocketAction:
     timeout: float = 30.0
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "timeout",
+            _POSITIVE_SECONDS_ADAPTER.validate_python(self.timeout),
+        )
+
 
 class _NativeWebSocketConnection(Protocol):
     async def recv(self) -> str | bytes: ...
@@ -460,7 +467,7 @@ class WebSocketActionSession:
 
 class WebSocketActionManager:
     def __init__(self, timeout: float) -> None:
-        self.timeout = _POSITIVE_SECONDS_ADAPTER.validate_python(timeout)
+        self.timeout = timeout
         self._sessions: list[WebSocketActionSession] = []
         self._pending: dict[
             str,

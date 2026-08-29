@@ -1,4 +1,11 @@
-from asyncio import CancelledError, Event, TaskGroup, get_running_loop, timeout
+from asyncio import (
+    CancelledError,
+    Event,
+    TaskGroup,
+    get_running_loop,
+    sleep,
+    timeout,
+)
 from collections.abc import Awaitable
 from http import HTTPMethod
 from typing import cast
@@ -606,7 +613,7 @@ async def test_start_recovers_from_failed_pool_cleanup(
     assert await rest.access_token() == "token"
 
 
-async def test_start_waits_for_close_before_replacing_owned_pool(
+async def test_start_waits_for_cancelled_close_before_replacing_owned_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clearing = Event()
@@ -629,9 +636,13 @@ async def test_start_waits_for_close_before_replacing_owned_pool(
     async with timeout(1), TaskGroup() as tasks:
         closing = tasks.create_task(rest.close())
         await clearing.wait()
+        closing.cancel()
+        await sleep(0)
+        assert not closing.done()
         starting = tasks.create_task(rest.start())
         release.set()
-        await closing
+        with pytest.raises(CancelledError):
+            await closing
         await starting
     assert await rest.access_token() == "restarted"
 

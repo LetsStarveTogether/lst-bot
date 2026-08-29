@@ -1,6 +1,7 @@
 from asyncio import (
     Event,
     Lock,
+    create_task,
     get_running_loop,
     timeout,
 )
@@ -39,7 +40,7 @@ from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictIntLiteral
 
-from .base import header_value, run_while_open, validate_https_base_url
+from .base import await_cleanup, header_value, run_while_open, validate_https_base_url
 
 QQ_API_BASE_URL = "https://api.bot.qq.com"
 _HTTP_TIMEOUT = 30.0
@@ -2281,9 +2282,13 @@ class QQRestClient:
                 return
             self._closed_event.set()
             self.invalidate_token()
-            if self._owns_http_pool:
-                await self.http_pool.clear()
-            self._closed = True
+
+            async def finish_close() -> None:
+                if self._owns_http_pool:
+                    await self.http_pool.clear()
+                self._closed = True
+
+            await await_cleanup(create_task(finish_close()))
 
     async def start(self) -> None:
         async with self._rest_lifecycle_lock:
