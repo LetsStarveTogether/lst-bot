@@ -201,7 +201,7 @@ def _qq_self(user_id: str) -> BotSelf:
 
 class OneBot11ActionRequest(Model):
     action: StrictStr
-    params: SerializeAsAny[BaseModel] = Field(default_factory=Model)
+    params: SerializeAsAny[Model] = Field(default_factory=Model)
     echo: JsonValue = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -469,7 +469,7 @@ class ForwardWebSocket:
                 f"{expected or '/'} endpoint"
             )
             raise ValueError(msg)
-        if self.role in _ACTION_ROLES and self.self_ is None:
+        if self.role == "api" and self.self_ is None:
             msg = f"OneBot 11 {self.role} WebSocket requires a bot identity"
             raise ValueError(msg)
         if self.self_ is not None and (
@@ -780,7 +780,7 @@ class OneBot11Gateway(Gateway):
         self,
         action: str,
         params: ActionParamModel,
-    ) -> tuple[str, BaseModel]:
+    ) -> tuple[str, Model]:
         if action == Action.SEND_MESSAGE:
             if isinstance(params, SendPrivateMsgParams):
                 return "send_private_msg", OneBot11SendPrivateMsgParams(

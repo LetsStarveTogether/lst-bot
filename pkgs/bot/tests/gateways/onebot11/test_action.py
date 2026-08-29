@@ -20,6 +20,7 @@ from bot import (
 from bot.gateways import onebot11 as onebot11_module
 from bot.gateways.onebot11 import (
     HttpAction,
+    OneBot11ActionRequest,
     OneBot11Gateway,
     OneBot11MessageSegment,
     ReverseWebSocket,
@@ -34,6 +35,18 @@ from websockets.asyncio.server import Server
 from tests.gateways.support import ActionServer
 
 from .support import action_response_payload
+
+
+def test_action_request_validates_mapping_params() -> None:
+    request = OneBot11ActionRequest.model_validate({
+        "action": "vendor_action",
+        "params": {"answer": 42},
+    })
+
+    assert request.model_dump(mode="json") == {
+        "action": "vendor_action",
+        "params": {"answer": 42},
+    }
 
 
 async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None:

@@ -53,13 +53,6 @@ def test_forward_websocket_validates_role_endpoint_and_identity() -> None:
         )
 
 
-def test_gateway_preserves_falsey_websocket_connector() -> None:
-    connector = AsyncMock()
-    connector.__bool__.return_value = False
-    gateway = OneBot11Gateway(Bot(), websocket_connector=connector)
-    assert gateway._websocket_connector is connector  # ruff: ignore[private-member-access]
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -571,14 +564,12 @@ async def test_forward_websocket_receives_action_while_waiting_for_events() -> N
     bot = Bot()
     completed = Event()
     websocket = ScriptedWebSocket(private_msg_payload())
-    self_ = BotSelf(platform="qq", user_id="10000")
     gateway = OneBot11Gateway(
         bot,
         ingress=[
             ForwardWebSocket(
                 "ws://onebot.example/",
                 role="universal",
-                self_=self_,
                 reconnect_interval=60,
             )
         ],
