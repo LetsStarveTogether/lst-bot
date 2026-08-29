@@ -1471,6 +1471,7 @@ async def test_poller_respects_flood_wait_and_stops_on_auth_error(
 
 async def test_poller_does_not_retry_invalid_update_models(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     gateway = make_gateway()
 
@@ -1486,6 +1487,7 @@ async def test_poller_does_not_retry_invalid_update_models(
     async with timeout(1):
         with pytest.raises(ValidationError):
             await gateway._run_poller()
+    assert sum("polling stopped unexpectedly" in item for item in caplog.messages) == 1
 
 
 def test_offset_advances_only_after_enqueue(

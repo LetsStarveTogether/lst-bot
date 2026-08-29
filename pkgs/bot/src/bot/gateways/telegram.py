@@ -531,7 +531,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
     async def _run_poller(self) -> None:
         await self.bot.wait_until_running()
         retries = 0
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause] - one poller boundary logs once
             while not self._closing:
                 try:
                     updates = await self.get_updates(
@@ -566,6 +566,9 @@ class TelegramGateway(Gateway, TelegramRestClient):
                 else:
                     retries = 0
                     self._online = True
+        except Exception:
+            logger.exception("Telegram polling stopped unexpectedly")
+            raise
         finally:
             self._online = False
 

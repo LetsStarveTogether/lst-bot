@@ -11,7 +11,7 @@ from asyncio import (
 )
 from asyncio import sleep as async_sleep
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -154,6 +154,26 @@ async def test_scheduler_close_cancels_all_jobs_before_awaiting_cleanup() -> Non
         release_first.set()
         await closing
         await bot.close()
+
+
+async def test_runner_failure_is_logged_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    msg = "clock failed"
+
+    def failing_clock(_: tzinfo) -> datetime:
+        raise RuntimeError(msg)
+
+    bot = Bot()
+    bot.scheduler.clock = failing_clock
+    bot.scheduler.on_cron("* * * * *")(lambda: None)
+    (job,) = bot.scheduler.jobs
+    job.start()
+    await async_sleep(0)
+
+    with pytest.raises(RuntimeError, match=msg):
+        await job.close()
+    assert sum("Scheduled job stopped" in item for item in caplog.messages) == 1
 
 
 async def test_cancelled_job_close_finishes_handler_cleanup() -> None:

@@ -113,15 +113,19 @@ class CronJob:
         )
 
     async def _run(self) -> None:
-        while True:
-            now = self.clock(self.timezone)
-            next_at = cast(
-                datetime,
-                croniter(self.expr, now).get_next(datetime),
-            )
-            logger.debug("scheduled job next trigger: %s @ %s", self, next_at)
-            await self.sleep(max(0, next_at.timestamp() - now.timestamp()))
-            self._trigger()
+        try:  # ruff: ignore[too-many-statements-in-try-clause] - one runner boundary logs once
+            while True:
+                now = self.clock(self.timezone)
+                next_at = cast(
+                    datetime,
+                    croniter(self.expr, now).get_next(datetime),
+                )
+                logger.debug("scheduled job next trigger: %s @ %s", self, next_at)
+                await self.sleep(max(0, next_at.timestamp() - now.timestamp()))
+                self._trigger()
+        except Exception:
+            logger.exception("Scheduled job stopped: %s", self)
+            raise
 
     def _trigger(self) -> None:
         logger.debug("scheduled job trigger: %s", self)
