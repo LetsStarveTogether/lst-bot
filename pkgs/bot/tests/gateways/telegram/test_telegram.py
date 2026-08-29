@@ -312,11 +312,59 @@ def test_unmapped_message_content_is_preserved() -> None:
     raw = original.model_dump(exclude_none=True)
     raw.pop("text")
     raw["poll"] = {"id": "poll"}
+    raw["reply_to_message"] = {
+        "message_id": 1,
+        "date": 1,
+        "chat": raw["chat"],
+        "text": "previous",
+    }
     message = TelegramUpdate.model_validate({"update_id": 2, "message": raw}).message
     assert message is not None
     converted = telegram_module._telegram_message(message)
-    assert converted[0].type == "telegram.message"
-    assert converted[0].data.model_extra == {"raw": message.model_dump(mode="json")}
+    assert [segment.type for segment in converted] == ["reply", "telegram.message"]
+    assert converted[1].data.model_extra == {"raw": message.model_dump(mode="json")}
+
+
+def test_sender_chat_and_business_echo_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = make_gateway()
+    gateway._self = BotSelf(platform="telegram", user_id="123")
+    updates = [
+        TelegramUpdate.model_validate({
+            "update_id": update_id,
+            "business_message": {
+                "message_id": update_id,
+                "date": 1,
+                "from": {"id": 42, "is_bot": False, "first_name": "User"},
+                "sender_chat": {
+                    "id": -77,
+                    "type": "channel",
+                    "title": "Sender chat",
+                },
+                "sender_business_bot": {
+                    "id": bot_id,
+                    "is_bot": True,
+                    "first_name": "Business bot",
+                },
+                "chat": {
+                    "id": SUPERGROUP_ID,
+                    "type": "supergroup",
+                    "title": "Group",
+                },
+                "text": "message",
+            },
+        })
+        for update_id, bot_id in ((1, 123), (2, 999))
+    ]
+    events: list[MessageEvent] = []
+    monkeypatch.setattr(gateway, "enqueue_event", events.append)
+
+    gateway._accept_updates(updates)
+
+    assert len(events) == 1
+    assert events[0].user_id == "-77"
+    assert gateway._offset == 3
 
 
 def test_location_and_venue_conversion() -> None:

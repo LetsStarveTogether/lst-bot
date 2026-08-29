@@ -574,8 +574,15 @@ class TelegramGateway(Gateway, TelegramRestClient):
 
     def _accept_updates(self, updates: list[TelegramUpdate]) -> None:
         for update in updates:
-            event = self._event_from_update(update)
-            self.enqueue_event(event)
+            payload = update.payload
+            if not (
+                payload is not None
+                and isinstance(payload[1], TelegramMessage)
+                and payload[1].sender_business_bot is not None
+                and self._self is not None
+                and str(payload[1].sender_business_bot.id) == self._self.user_id
+            ):
+                self.enqueue_event(self._event_from_update(update))
             self._offset = update.update_id + 1
 
     def _event_from_update(self, update: TelegramUpdate) -> Event:
@@ -607,7 +614,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         event_type: str,
         message: TelegramMessage,
     ) -> MessageEvent:
-        sender = message.from_ or message.sender_chat or message.chat
+        sender = message.sender_chat or message.from_ or message.chat
         reply = message.reply_to_message
         fields = {
             **self._event_fields(update, event_type, float(message.date)),
@@ -757,6 +764,7 @@ def _telegram_message(message: TelegramMessage) -> Msg:
             "type": MsgSegmentType.REPLY,
             "data": {"message_id": str(message.reply_to_message.message_id)},
         })
+    content_start = len(segments)
     text = message.text or message.caption
     if text:
         segments.append({"type": MsgSegmentType.TEXT, "data": {"text": text}})
@@ -794,7 +802,7 @@ def _telegram_message(message: TelegramMessage) -> Msg:
                 "content": venue.address if venue is not None else "",
             },
         })
-    if not segments:
+    if len(segments) == content_start:
         segments.append({
             "type": "telegram.message",
             "data": {"raw": message.model_dump(mode="json")},
