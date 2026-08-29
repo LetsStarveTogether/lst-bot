@@ -36,6 +36,7 @@ from pydantic import (
 )
 from urllib3_future import AsyncPoolManager
 
+from bot._tasks import await_cleanup
 from bot.core import Bot
 from bot.protocol.actions import ActionParamInput, ActionParamModel
 from bot.protocol.base import Model, StrictIntLiteral
@@ -63,7 +64,6 @@ from .base import (
     WebSocketClosedError,
     WebSocketConnection,
     WebSocketConnector,
-    await_cleanup,
     connect_websocket,
 )
 from .qq_api import (

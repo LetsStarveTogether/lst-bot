@@ -31,11 +31,12 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 from urllib3_future.filepost import encode_multipart_formdata
 
+from bot._tasks import await_cleanup
 from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
-from .base import await_cleanup, run_while_open, validate_https_base_url
+from .base import run_while_open, validate_https_base_url
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024

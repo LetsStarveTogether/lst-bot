@@ -29,6 +29,7 @@ from pydantic import (
 )
 from urllib3_future import AsyncPoolManager
 
+from bot._tasks import await_cleanup
 from bot.core import Bot
 from bot.protocol.actions import ActionParamInput, ActionParamModel
 from bot.protocol.common import BotSelf, BotStatus, Status, Version
@@ -52,7 +53,7 @@ from bot.protocol.msg import (
 )
 from bot.protocol.returns import ReturnAction
 
-from .base import Connection, Gateway, await_cleanup
+from .base import Connection, Gateway
 from .telegram_api import (
     TELEGRAM_API_BASE_URL,
     TELEGRAM_METHODS,

@@ -55,6 +55,7 @@ from urllib3.filepost import encode_multipart_formdata
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
+from bot._tasks import await_cleanup
 from bot.core import Bot
 from bot.json import dumpb, loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel, WireBytes
@@ -77,7 +78,6 @@ from .base import (
     WebSocketClosedError,
     WebSocketConnection,
     WebSocketConnector,
-    await_cleanup,
     connect_websocket,
     header_value,
     validate_https_base_url,

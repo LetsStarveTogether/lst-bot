@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from croniter import croniter
 from diwire import Scope
 
+from bot._tasks import await_cleanup
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
 
@@ -89,21 +90,27 @@ class CronJob:
             msg = "Scheduled jobs cannot close themselves"
             raise RuntimeError(msg)
         self._closing = True
-        try:
+
+        async def finish_close() -> None:
             for task in tasks:
                 task.cancel()
-            results = await gather(*tasks, return_exceptions=True)
-        finally:
-            self._runner = None
-            self._running = None
-            self._closing = False
-        errors = [
-            result
-            for result in results
-            if isinstance(result, BaseException)
-            and not isinstance(result, CancelledError)
-        ]
-        _raise_errors("Scheduled job shutdown failed", errors)
+            try:
+                results = await gather(*tasks, return_exceptions=True)
+            finally:
+                self._runner = None
+                self._running = None
+                self._closing = False
+            errors = [
+                result
+                for result in results
+                if isinstance(result, BaseException)
+                and not isinstance(result, CancelledError)
+            ]
+            _raise_errors("Scheduled job shutdown failed", errors)
+
+        await await_cleanup(
+            create_task(finish_close(), name=f"scheduled-job-close:{self.name}")
+        )
 
     async def _run(self) -> None:
         while True:

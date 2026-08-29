@@ -30,6 +30,7 @@ from diwire import (
     Scope,
 )
 
+from bot._tasks import await_cleanup
 from bot.gateways import Connection, Gateway
 from bot.protocol.actions import ActionCall
 from bot.protocol.events import Event
@@ -399,26 +400,30 @@ class Bot(EventRouter):
         workers = self._event_workers
         for worker in workers:
             worker.cancel()
-        results = await gather(*workers, return_exceptions=True)
-        self._event_workers = ()
 
-        queue, self._event_queue = self._event_queue, None
-        if queue is not None:
-            while True:
-                try:
-                    item = queue.get_nowait()
-                except QueueEmpty:
-                    break
-                if item.result is not None and not item.result.done():
-                    item.result.cancel()
+        async def finish_stop() -> None:
+            results = await gather(*workers, return_exceptions=True)
+            self._event_workers = ()
 
-        errors = [
-            result
-            for result in results
-            if isinstance(result, BaseException)
-            and not isinstance(result, CancelledError)
-        ]
-        _raise_errors("Bot dispatcher shutdown failed", errors)
+            queue, self._event_queue = self._event_queue, None
+            if queue is not None:
+                while True:
+                    try:
+                        item = queue.get_nowait()
+                    except QueueEmpty:
+                        break
+                    if item.result is not None and not item.result.done():
+                        item.result.cancel()
+
+            errors = [
+                result
+                for result in results
+                if isinstance(result, BaseException)
+                and not isinstance(result, CancelledError)
+            ]
+            _raise_errors("Bot dispatcher shutdown failed", errors)
+
+        await await_cleanup(create_task(finish_stop(), name="bot-dispatch-close"))
 
     async def _dispatch_worker(self, queue: Queue[_QueuedEvent]) -> None:
         worker = cast(Task[None], current_task())

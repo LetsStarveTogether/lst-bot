@@ -15,6 +15,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 from bot import ActionResponse, Bot, BotSelf, Gateway
+from bot._tasks import (  # ruff: ignore[import-private-name] - cleanup regression
+    await_cleanup,
+)
 from bot.gateways import base as base_module
 from bot.gateways.base import (
     HttpAction,
@@ -23,7 +26,6 @@ from bot.gateways.base import (
     WebSocketClosedError,
     WebsocketsConnection,
     access_token_value,
-    await_cleanup,
     bearer_or_query_token,
     connect_websocket,
     header_value,

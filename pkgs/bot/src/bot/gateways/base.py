@@ -36,6 +36,7 @@ from urllib3_future import AsyncPoolManager
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
+from bot._tasks import await_cleanup
 from bot.json import dumpb
 from bot.protocol.actions import (
     ActionCall,
@@ -130,28 +131,6 @@ type WebSocketConnector = Callable[
     [str, dict[str, str] | None],
     Awaitable[WebSocketConnection],
 ]
-
-
-async def await_cleanup[T](task: Future[T]) -> None:
-    cancelled: CancelledError | None = None
-    while not task.done():
-        try:
-            await wait((task,))
-        except CancelledError as exc:
-            cancelled = exc
-    try:
-        await task
-    except CancelledError as cleanup_error:
-        if cancelled is None:
-            raise
-        raise cancelled from cleanup_error
-    except BaseException as cleanup_error:
-        if cancelled is None:
-            raise
-        msg = "Cleanup failed after cancellation"
-        raise BaseExceptionGroup(msg, [cancelled, cleanup_error]) from None
-    if cancelled is not None:
-        raise cancelled
 
 
 @dataclass(slots=True)

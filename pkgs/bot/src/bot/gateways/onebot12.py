@@ -37,6 +37,7 @@ from websockets.http11 import Request as WebSocketRequest
 from websockets.http11 import Response as WebSocketResponse
 from websockets.uri import parse_uri
 
+from bot._tasks import await_cleanup
 from bot.core import Bot
 from bot.protocol.actions import ActionParamModel, ActionRequest, ActionResponse
 from bot.protocol.common import BotSelf
@@ -64,7 +65,6 @@ from .base import (
     WebSocketConnector,
     WebsocketsConnection,
     access_token_value,
-    await_cleanup,
     bearer_or_query_token,
     connect_websocket,
     empty_response,

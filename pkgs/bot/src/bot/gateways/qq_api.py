@@ -36,11 +36,12 @@ from pydantic import (
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.filepost import encode_multipart_formdata
 
+from bot._tasks import await_cleanup
 from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictIntLiteral
 
-from .base import await_cleanup, header_value, run_while_open, validate_https_base_url
+from .base import header_value, run_while_open, validate_https_base_url
 
 QQ_API_BASE_URL = "https://api.bot.qq.com"
 _HTTP_TIMEOUT = 30.0

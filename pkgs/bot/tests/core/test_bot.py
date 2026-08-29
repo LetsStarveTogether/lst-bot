@@ -506,11 +506,11 @@ async def test_cancelled_start_rolls_back_and_can_restart() -> None:
         assert calls == expected
 
 
-async def test_cancelled_close_retries_interrupted_dispatcher_cleanup() -> None:
+async def test_cancelled_close_finishes_dispatcher_cleanup() -> None:
     handler_started = Event()
     cleanup_started = Event()
-    cleanup_cancelled = Event()
     cleanup_release = Event()
+    cleanup_finished = Event()
     calls: list[str] = []
 
     class ClosingGateway(Gateway):
@@ -529,11 +529,8 @@ async def test_cancelled_close_retries_interrupted_dispatcher_cleanup() -> None:
             await Event().wait()
         finally:
             cleanup_started.set()
-            try:
-                await cleanup_release.wait()
-            except CancelledError:
-                cleanup_cancelled.set()
-                await cleanup_release.wait()
+            await cleanup_release.wait()
+            cleanup_finished.set()
 
     try:
         async with timeout(1):
@@ -547,12 +544,15 @@ async def test_cancelled_close_retries_interrupted_dispatcher_cleanup() -> None:
             close_task = create_task(bot.close())
             await cleanup_started.wait()
             close_task.cancel()
-            await cleanup_cancelled.wait()
+            await sleep(0)
+            close_task.cancel()
+            await sleep(0)
             assert not close_task.done()
             cleanup_release.set()
             with pytest.raises(CancelledError):
                 await close_task
 
+            assert cleanup_finished.is_set()
             assert calls == ["gateway"]
 
             await bot.close()

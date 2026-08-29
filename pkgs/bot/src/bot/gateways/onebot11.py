@@ -46,6 +46,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Request as WebSocketRequest
 from websockets.http11 import Response as WebSocketResponse
 
+from bot._tasks import await_cleanup
 from bot.core import Bot
 from bot.json import loads
 from bot.protocol.actions import (
@@ -95,7 +96,6 @@ from .base import (
     WebSocketConnector,
     WebsocketsConnection,
     access_token_value,
-    await_cleanup,
     bearer_or_query_token,
     connect_websocket,
     empty_response,

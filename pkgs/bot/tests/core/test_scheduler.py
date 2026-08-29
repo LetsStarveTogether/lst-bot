@@ -1,4 +1,5 @@
 from asyncio import (
+    CancelledError,
     Event,
     Queue,
     Task,
@@ -8,6 +9,7 @@ from asyncio import (
     timeout,
     wait_for,
 )
+from asyncio import sleep as async_sleep
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -151,6 +153,42 @@ async def test_scheduler_close_cancels_all_jobs_before_awaiting_cleanup() -> Non
         assert not closing.done()
         release_first.set()
         await closing
+        await bot.close()
+
+
+async def test_cancelled_job_close_finishes_handler_cleanup() -> None:
+    bot = Bot()
+    sleep = use_scripted_time(bot)
+    started = Event()
+    cleaning = Event()
+    release = Event()
+    cleaned = Event()
+
+    @bot.scheduler.on_cron("* * * * *")
+    async def job() -> None:
+        started.set()
+        try:
+            await Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            cleaned.set()
+
+    async with timeout(1):
+        await bot.start()
+        await sleep.advance()
+        await started.wait()
+        closing = create_task(bot.scheduler.jobs[0].close())
+        await cleaning.wait()
+        closing.cancel()
+        await async_sleep(0)
+        closing.cancel()
+        await async_sleep(0)
+        assert not closing.done()
+        release.set()
+        with pytest.raises(CancelledError):
+            await closing
+        assert cleaned.is_set()
         await bot.close()
 
 
