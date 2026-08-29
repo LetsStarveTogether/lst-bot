@@ -13,8 +13,7 @@ from klei import (
     RoomData,
     VersionType,
 )
-from klei.enums import Region
-from klei.models import KleiDataResponse
+from klei.models import KleiDataResponse, Region
 from pydantic import JsonValue, SecretStr, ValidationError
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError

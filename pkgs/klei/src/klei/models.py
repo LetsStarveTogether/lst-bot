@@ -1,6 +1,7 @@
 import re
 from collections.abc import Mapping
 from datetime import date
+from enum import StrEnum
 from ipaddress import IPv4Address
 from typing import Annotated, Self
 
@@ -15,12 +16,19 @@ from pydantic import (
 )
 from selectolax.parser import HTMLParser, Node
 
-from .enums import Region, VersionType
-
 _VERSION_DATE_PATTERN = re.compile(r"\d{1,2}/\d{1,2}/\d{2}")
 _VERSION_NUMBER_PATTERN = re.compile(r"\b\d+\b")
+type Region = Annotated[
+    str,
+    Field(strict=True, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)+$"),
+]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 Port = Annotated[int, Field(strict=True, ge=1, le=65535)]
+
+
+class VersionType(StrEnum):
+    RELEASE = "Release"
+    TEST = "Test"
 
 
 class Version(BaseModel):

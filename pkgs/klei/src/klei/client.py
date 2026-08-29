@@ -13,10 +13,10 @@ from pydantic import (
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
-from .enums import Region
 from .models import (
     KleiDataResponse,
     LobbyData,
+    Region,
     RoomData,
     Version,
     _parse_versions,
