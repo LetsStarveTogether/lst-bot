@@ -60,6 +60,7 @@ from .telegram_api import (
     PositiveInt,
     TelegramAPIError,
     TelegramChatJoinRequest,
+    TelegramEphemeralMessageParameters,
     TelegramLocation,
     TelegramMessage,
     TelegramMessageEntity,
@@ -120,8 +121,7 @@ class _TelegramMessageOptions(BaseModel):
     business_connection_id: StrictStr | None = None
     message_thread_id: PositiveInt | None = None
     direct_messages_topic_id: TelegramTopicID | None = None
-    receiver_user_id: TelegramUserID | None = None
-    callback_query_id: StrictStr | None = None
+    ephemeral_message_parameters: TelegramEphemeralMessageParameters | None = None
     disable_notification: StrictBool | None = None
     protect_content: StrictBool | None = None
     allow_paid_broadcast: StrictBool | None = None
@@ -182,7 +182,9 @@ class TelegramConnection(Connection):
         if isinstance(ephemeral_message_id, int) and not isinstance(
             ephemeral_message_id, bool
         ):
-            params["receiver_user_id"] = _user_id(event.user_id)
+            params["ephemeral_message_parameters"] = {
+                "receiver_user_id": _user_id(event.user_id)
+            }
             params["reply_parameters"] = {"ephemeral_message_id": ephemeral_message_id}
         elif ephemeral_message_id is not None:
             msg = "Telegram ephemeral replies require a valid ephemeral_message_id"

@@ -207,6 +207,15 @@ def test_current_telegram_model_boundaries() -> None:
     with pytest.raises(ValidationError):
         TelegramUser.model_validate(user | {"is_premium": 1})
 
+    with pytest.raises(ValidationError) as error:
+        telegram_api_module.TelegramChatMemberAdministrator.model_validate({
+            "status": "administrator",
+            "user": user,
+        })
+    assert ("can_send_welcome_messages",) in {
+        tuple(item["loc"]) for item in error.value.errors()
+    }
+
     file = {"file_id": "file", "file_unique_id": "unique"}
     assert TelegramFile.model_validate(file | {"file_size": maximum_id}).file_size == (
         maximum_id
@@ -405,6 +414,9 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
             Msg.from_input("formatted"),
             {"parse_mode": "HTML", "entities": []},
         )
+    for obsolete in ({"receiver_user_id": 42}, {"callback_query_id": "callback"}):
+        with pytest.raises(ValidationError):
+            telegram_module._message_calls("42", Msg.from_input("reply"), obsolete)
 
     pool = Pool({"ok": True, "result": {"message_id": 1}})
     gateway = make_gateway(pool)
@@ -449,6 +461,7 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
                 message_update(7).raw,
                 {"update_id": 8},
                 {"update_id": 9, "future_update": {"value": 1}},
+                {"update_id": 10, "stopped_message_generation": {}},
             ],
         },
         {"ok": True, "result": []},
@@ -460,12 +473,14 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
     assert isinstance(updates[0], TelegramUpdate)
     assert updates[1].payload is None
     assert updates[2].payload == ("future_update", {"value": 1})
+    assert updates[3].payload == ("stopped_message_generation", {})
     params = cast(dict[str, object], pool.requests[0][2]["json"])
     assert (params["offset"], params["timeout"], params["limit"]) == (7, 30, 100)
     assert {
         "chat_member",
         "message_reaction",
         "message_reaction_count",
+        "stopped_message_generation",
     } <= set(cast(list[str], params["allowed_updates"]))
     assert pool.requests[0][2]["retries"] is False
     assert cast(float, pool.requests[0][2]["timeout"]) > 30
@@ -1099,7 +1114,7 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
             {"id": 43, "is_bot": False, "first_name": "Former member"},
         ),
         ("new_chat_title", "Renamed"),
-        ("community_chat_removed", {}),
+        ("community_chat_joined", {}),
     ],
 )
 def test_service_messages_are_not_empty_messages(
@@ -1239,7 +1254,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
     for request in pool.requests[-2:]:
         params = cast(dict[str, object], request[2]["json"])
         assert params["chat_id"] == SUPERGROUP_ID
-        assert params["receiver_user_id"] == 42
+        assert params["ephemeral_message_parameters"] == {"receiver_user_id": 42}
         assert params["reply_parameters"] == {"ephemeral_message_id": 70}
 
     guest_event = gateway._event_from_update(

@@ -99,7 +99,7 @@ TELEGRAM_UPDATE_TYPES = tuple(
     message_reaction message_reaction_count inline_query chosen_inline_result
     callback_query shipping_query pre_checkout_query purchased_paid_media poll
     poll_answer my_chat_member chat_member chat_join_request chat_boost
-    removed_chat_boost managed_bot subscription
+    removed_chat_boost managed_bot subscription stopped_message_generation
     """.split()  # ruff: ignore[split-static-string] - compact official manifest
 )
 
@@ -112,7 +112,8 @@ TELEGRAM_SERVICE_MESSAGE_TYPES = tuple(
     refunded_payment users_shared chat_shared gift unique_gift gift_upgrade_sent
     connected_website write_access_allowed proximity_alert_triggered boost_added
     chat_background_set checklist_tasks_done checklist_tasks_added
-    community_chat_added community_chat_removed direct_message_price_changed
+    community_chat_added community_chat_joined community_chat_removed
+    direct_message_price_changed
     forum_topic_created forum_topic_edited forum_topic_closed forum_topic_reopened
     general_forum_topic_hidden general_forum_topic_unhidden giveaway_created
     giveaway_completed managed_bot_created paid_message_price_changed
@@ -186,6 +187,17 @@ class TelegramUpload(BaseModel):
         StrictStr,
         Field(pattern=r"^[^\s/;]+/[^\s;]+$"),
     ] = "application/octet-stream"
+
+
+class TelegramEphemeralMessageParameters(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        hide_input_in_errors=True,
+    )
+
+    receiver_user_id: TelegramUserID
+    callback_query_id: StrictStr | None = None
+    replace_callback_query_message: StrictBool | None = None
 
 
 class TelegramDownloadedFile(Model):
@@ -448,6 +460,7 @@ class TelegramChatMemberAdministrator(Model):
     can_manage_topics: StrictBool | None = None
     can_manage_direct_messages: StrictBool | None = None
     can_manage_tags: StrictBool | None = None
+    can_send_welcome_messages: StrictBool
     custom_title: StrictStr | None = None
 
 
@@ -553,6 +566,7 @@ class TelegramUpdate(Model):
     removed_chat_boost: TelegramObject | None = None
     managed_bot: TelegramObject | None = None
     subscription: TelegramObject | None = None
+    stopped_message_generation: TelegramObject | None = None
 
     @model_validator(mode="after")
     def at_most_one_payload(self) -> Self:
