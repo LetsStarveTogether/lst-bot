@@ -2,7 +2,7 @@ from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
-from bot import Bot, Cmd, GroupMessageEvent
+from bot import Bot, BotSelf, Cmd, GroupMessageEvent
 from bot.testing import private_message_event, recording_gateway
 from klei import KleiClient, RoomData
 from lst import LstClient
@@ -175,11 +175,20 @@ async def test_room_admin_commands_require_configured_admin(message: str) -> Non
         "group_id": "group",
         "sender": {"user_id": "group-admin", "role": "admin"},
     }
+    other_platform = private_message_event(
+        message,
+        user_id="configured-admin",
+        event_id="other-platform",
+    ).model_copy(update={"self_": BotSelf(platform="other", user_id="bot")})
 
     async with bot:
         await bot.dispatch(
             gateway.connection,
             GroupMessageEvent.model_validate(group_admin),
+        )
+        await bot.dispatch(
+            gateway.connection_for(other_platform.self_),
+            other_platform,
         )
         assert client.method_calls == []
         assert gateway.actions == []
