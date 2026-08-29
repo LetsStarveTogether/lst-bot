@@ -311,12 +311,6 @@ def test_action_response_serializes_required_null_data_and_omits_empty_echo() ->
     }
     with pytest.raises(ValidationError):
         ActionResponse.ok(echo=False)  # ty: ignore[invalid-argument-type]
-    with pytest.raises(ValidationError):
-        ActionResponse.failed(
-            Retcode.BAD_REQUEST,
-            "failed",
-            echo=False,  # ty: ignore[invalid-argument-type]
-        )
 
 
 @pytest.mark.parametrize(

@@ -22,13 +22,6 @@ from logging import getLogger
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Self, cast
 
-from diwire import (
-    Container,
-    DependencyRegistrationPolicy,
-    MissingPolicy,
-    ResolverProtocol,
-    Scope,
-)
 from pydantic import ConfigDict, StrictStr, TypeAdapter
 
 from bot._tasks import await_cleanup
@@ -39,11 +32,7 @@ from bot.protocol.msg import Msg
 from bot.protocol.returns import ReturnAction
 from bot.routing.router import EventRouter, _EventRoute
 
-from .di import (
-    InjectionContext,
-    call_with_injection,
-    register_context_providers,
-)
+from .di import InjectionContext
 from .scheduler import (
     CronScheduler,
     _raise_errors,
@@ -95,6 +84,7 @@ class Bot(EventRouter):
         admin_ids: Mapping[str, Iterable[str]] | None = None,
         cmd_prefixes: tuple[str, ...] = ("/",),
         dispatch_timeout: timedelta | None = timedelta(seconds=900),
+        dependencies: Mapping[type[object], object] | None = None,
         max_dispatches: int = 8,
         scheduler_timezone: tzinfo | None = None,
     ) -> None:
@@ -112,13 +102,10 @@ class Bot(EventRouter):
         )
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
-        self.max_dispatches = max_dispatches
-        self.container = Container(
-            missing_policy=MissingPolicy.ERROR,
-            dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
-            use_resolver_context=False,
+        self.dependencies: Mapping[type[object], object] = MappingProxyType(
+            {} if dependencies is None else dict(dependencies),
         )
-        self.container.add_instance(self, provides=Bot)
+        self.max_dispatches = max_dispatches
         self._gateways: list[Gateway] = []
         self._scheduler = CronScheduler(self, default_timezone=scheduler_timezone)
         self._lifecycle_lock = Lock()
@@ -168,16 +155,7 @@ class Bot(EventRouter):
     def scheduler(self) -> CronScheduler:
         return self._scheduler
 
-    def resolve_gateway(self, gateway_type: type[Gateway] | None = None) -> Gateway:
-        if gateway_type is None:
-            if len(self._gateways) == 1:
-                return self._gateways[0]
-            if not self._gateways:
-                msg = "No gateways are registered"
-                raise LookupError(msg)
-            msg = "Gateway type is required when multiple gateways are registered"
-            raise LookupError(msg)
-
+    def resolve_gateway(self, gateway_type: type[Gateway]) -> Gateway:
         gateways = [
             gateway for gateway in self._gateways if isinstance(gateway, gateway_type)
         ]
@@ -223,7 +201,6 @@ class Bot(EventRouter):
             if not self._pending_cleanup:
                 self._pending_cleanup = self._cleanup_callbacks(
                     self._gateways,
-                    close_container=True,
                 )
             failed, errors = await self._run_cleanup(self._pending_cleanup)
             self._pending_cleanup = failed
@@ -246,19 +223,16 @@ class Bot(EventRouter):
                 self._lifecycle_owner = None
 
     async def _start_once(self) -> None:
-        register_context_providers(self.container)
         gateways: list[Gateway] = []
         try:
             self._start_dispatcher()
             for gateway in self._gateways:
                 gateways.append(gateway)
                 await gateway.start()
-            self.container.compile()
             self._scheduler.start()
         except BaseException as startup_error:
             callbacks = self._cleanup_callbacks(
                 gateways,
-                close_container=False,
             )
             failed, cleanup_errors = await self._run_cleanup(callbacks)
             self._pending_cleanup = failed
@@ -279,22 +253,13 @@ class Bot(EventRouter):
     def _cleanup_callbacks(
         self,
         gateways: Iterable[Gateway],
-        *,
-        close_container: bool,
     ) -> list[_CleanupCallback]:
         callbacks: list[_CleanupCallback] = [
             self._scheduler.close,
             self._stop_dispatcher,
         ]
         callbacks.extend(gateway.close for gateway in reversed(tuple(gateways)))
-        if close_container:
-            callbacks.append(self._close_container)
         return callbacks
-
-    async def _close_container(self) -> None:
-        await self.container.aclose()
-        # Re-registration discards DIWire's closed resolver, not its providers.
-        self.container.add_instance(self, provides=Bot)
 
     @staticmethod
     async def _run_cleanup(
@@ -472,42 +437,40 @@ class Bot(EventRouter):
             gateway or "-",
         )
 
-        async with self.container.enter_scope(Scope.REQUEST) as resolver:
-            for route in tuple(self.routes):
-                if route.event_type is not None and route.event_type != event.type:
-                    continue
-                context = InjectionContext(
-                    bot=self,
-                    gateway=gateway,
-                    connection=connection,
-                    event=event,
-                )
-                if deadline is not None and get_running_loop().time() >= deadline:
+        for route in tuple(self.routes):
+            if route.event_type is not None and route.event_type != event.type:
+                continue
+            context = InjectionContext(
+                bot=self,
+                gateway=gateway,
+                connection=connection,
+                event=event,
+            )
+            if deadline is not None and get_running_loop().time() >= deadline:
+                self._log_dispatch_timeout(context, route)
+                break
+
+            timeout_scope = timeout_at(deadline)
+            try:
+                async with timeout_scope:
+                    if not await route.matches(context):
+                        continue
+                    await self._run_route(context, route)
+            except Exception as exc:
+                if isinstance(exc, TimeoutError) and timeout_scope.expired():
                     self._log_dispatch_timeout(context, route)
                     break
-
-                timeout_scope = timeout_at(deadline)
-                try:
-                    async with timeout_scope:
-                        if not await route.matches(context, resolver):
-                            continue
-                        await self._run_route(context, route, resolver)
-                except Exception as exc:
-                    if isinstance(exc, TimeoutError) and timeout_scope.expired():
-                        self._log_dispatch_timeout(context, route)
-                        break
-                    self._log_dispatch_exception(context, route, exc)
-                else:
-                    if route.block:
-                        break
+                self._log_dispatch_exception(context, route, exc)
+            else:
+                if route.block:
+                    break
 
     async def _run_route(
         self,
         context: InjectionContext,
         route: _EventRoute,
-        resolver: ResolverProtocol,
     ) -> None:
-        value = await call_with_injection(route.handler, context, resolver)
+        value = await route.handler(context)
         if value is not None:
             await self._execute_return_value(context, value)
 

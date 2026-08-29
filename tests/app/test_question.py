@@ -83,7 +83,12 @@ async def test_question_handler_builds_agent_prompt_from_reply() -> None:
 
     for response in (
         ActionResponse.ok({"raw_message": "legacy"}),
-        ActionResponse.failed(Retcode.INTERNAL_HANDLER_ERROR, "internal details"),
+        ActionResponse(
+            status=ApiStatus.FAILED,
+            retcode=Retcode.INTERNAL_HANDLER_ERROR,
+            data=None,
+            message="internal details",
+        ),
         ActionResponse(
             status=ApiStatus.ASYNC,
             retcode=1,

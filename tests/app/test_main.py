@@ -131,9 +131,9 @@ def test_build_bot_registers_runtime_settings() -> None:
     assert bot.dispatch_timeout == timeout
     assert bot.scheduler.jobs[0].timezone == timezone
     assert bot.admin_ids == {"qq": frozenset({"owner"})}
-    assert bot.container.resolve(Settings) is settings
-    assert isinstance(bot.container.resolve(LstClient), LstClient)
-    assert bot.container.resolve(Agent) is question_agent
+    assert bot.dependencies[Settings] is settings
+    assert isinstance(bot.dependencies[LstClient], LstClient)
+    assert bot.dependencies[Agent] is question_agent
     assert {route.name for route in bot.routes} == {
         "一言",
         "问",
@@ -144,8 +144,10 @@ def test_build_bot_registers_runtime_settings() -> None:
         "房间重置",
         "最新版本",
     }
-    hitokoto = bot.container.resolve(HitokotoClient)
-    klei = bot.container.resolve(KleiClient)
+    hitokoto = bot.dependencies[HitokotoClient]
+    klei = bot.dependencies[KleiClient]
+    assert isinstance(hitokoto, HitokotoClient)
+    assert isinstance(klei, KleiClient)
     telegram = bot.resolve_gateway(TelegramGateway)
     discord = bot.resolve_gateway(DiscordGateway)
     assert isinstance(telegram, TelegramGateway)

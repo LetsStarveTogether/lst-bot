@@ -33,6 +33,16 @@ def build_bot(
         admin_ids=settings.bot_admin,
         cmd_prefixes=settings.bot_cmd_prefixes,
         dispatch_timeout=settings.bot_timeout,
+        dependencies={
+            Settings: settings,
+            LstClient: LstClient(),
+            HitokotoClient: HitokotoClient(http_pool=http_pool),
+            KleiClient: KleiClient(
+                access_token=settings.klei_access_token,
+                http_pool=http_pool,
+            ),
+            Agent: question_agent,
+        },
         scheduler_timezone=settings.bot_timezone,
     )
     if settings.onebot_ws_url:
@@ -79,18 +89,6 @@ def build_bot(
                 ),
             )
         )
-
-    for instance in (
-        settings,
-        LstClient(),
-        HitokotoClient(http_pool=http_pool),
-        KleiClient(
-            access_token=settings.klei_access_token,
-            http_pool=http_pool,
-        ),
-        question_agent,
-    ):
-        bot.container.add_instance(instance)
 
     for router in (general_router, question_router, rooms_router):
         bot.add_router(router)

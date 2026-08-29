@@ -1,13 +1,12 @@
 from asyncio import CancelledError, TaskGroup, timeout
 from asyncio import Event as AsyncEvent
-from collections.abc import Generator
-from dataclasses import dataclass
 from datetime import timedelta
 
 import pytest
 from bot import (
     ActionCall,
     ActionResponse,
+    ApiStatus,
     Bot,
     Cmd,
     EventRouter,
@@ -20,12 +19,6 @@ from bot import (
 )
 from bot.testing import private_message_event as make_event
 from bot.testing import recording_gateway
-from diwire import Lifetime, Scope
-
-
-@dataclass(frozen=True)
-class RequestService:
-    value: int
 
 
 def group_message_event(
@@ -65,9 +58,11 @@ async def test_connection_send_msg_builds_standard_action() -> None:
 async def test_connection_action_failed_response_raises() -> None:
     bot = Bot()
     gateway = recording_gateway(bot)
-    gateway.responses["send_message"] = ActionResponse.failed(
-        Retcode.BAD_REQUEST,
-        "bad target",
+    gateway.responses["send_message"] = ActionResponse(
+        status=ApiStatus.FAILED,
+        retcode=Retcode.BAD_REQUEST,
+        data=None,
+        message="bad target",
     )
 
     with pytest.raises(
@@ -340,84 +335,6 @@ async def test_dispatch_cmd_blocking(
         await bot.dispatch(gateway.connection, make_event("/ping"))
 
     assert seen == expected
-
-
-async def test_dispatch_uses_request_scoped_container_dependencies() -> None:
-    bot = Bot()
-    gateway = recording_gateway(bot)
-    created: list[RequestService] = []
-    seen: list[int] = []
-
-    def build_service() -> RequestService:
-        service = RequestService(len(created) + 1)
-        created.append(service)
-        return service
-
-    bot.container.add_factory(
-        build_service,
-        provides=RequestService,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.SCOPED,
-    )
-
-    @bot.on_msg(block=True)
-    def handle(service: Injected[RequestService]) -> None:
-        seen.append(service.value)
-
-    contract_count = len(
-        bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
-    )
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            make_event("first", event_id="evt-first"),
-        )
-        await bot.dispatch(
-            gateway.connection,
-            make_event("second", event_id="evt-second"),
-        )
-
-    assert seen == [1, 2]
-    assert (
-        len(
-            bot.container._injected_scope_contracts,  # ruff: ignore[private-member-access] - diwire wrapper regression
-        )
-        == contract_count
-    )
-
-
-async def test_restart_recreates_app_scoped_dependencies() -> None:
-    bot = Bot()
-    gateway = recording_gateway(bot)
-    created: list[RequestService] = []
-    closed: list[RequestService] = []
-    seen: list[int] = []
-
-    def build_service() -> Generator[RequestService]:
-        service = RequestService(len(created) + 1)
-        created.append(service)
-        try:
-            yield service
-        finally:
-            closed.append(service)
-
-    bot.container.add_generator(
-        build_service,
-        provides=RequestService,
-        scope=Scope.APP,
-        lifetime=Lifetime.SCOPED,
-    )
-
-    @bot.on_msg(block=True)
-    def handle(service: Injected[RequestService]) -> None:
-        seen.append(service.value)
-
-    for index in (1, 2):
-        async with bot:
-            await bot.dispatch(gateway.connection, make_event(str(index)))
-        assert len(closed) == index
-
-    assert seen == [1, 2]
 
 
 async def test_dispatch_timeout_cancels_route_and_future_dispatch_recovers(

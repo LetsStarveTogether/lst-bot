@@ -52,7 +52,7 @@ def test_add_gateway_is_identity_idempotent_and_rejects_a_foreign_owner() -> Non
     bot.add_gateway(gateway)
     bot.add_gateway(gateway)
 
-    assert bot.resolve_gateway() is gateway
+    assert bot.resolve_gateway(RecordingGateway) is gateway
     with pytest.raises(ValueError, match="another bot"):
         bot.add_gateway(RecordingGateway(Bot()))
 

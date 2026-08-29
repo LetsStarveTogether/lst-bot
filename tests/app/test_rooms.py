@@ -159,9 +159,11 @@ def test_rollback_room_rejects_negative_snapshot_counts() -> None:
     ],
 )
 async def test_room_admin_commands_require_configured_admin(message: str) -> None:
-    bot = Bot(admin_ids={"test": {"configured-admin"}})
     client = Mock(spec_set=LstClient)
-    bot.container.add_instance(client, provides=LstClient)
+    bot = Bot(
+        admin_ids={"test": {"configured-admin"}},
+        dependencies={LstClient: client},
+    )
     bot.add_router(router)
     gateway = recording_gateway(bot)
 

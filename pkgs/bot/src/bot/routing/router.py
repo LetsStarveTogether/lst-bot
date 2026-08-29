@@ -2,9 +2,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from operator import attrgetter
 
-from diwire import Injected, ResolverProtocol
-
-from bot.core.di import InjectionContext, call_with_injection, inject
+from bot.core.di import Injected, InjectedCall, InjectionContext, inject
 from bot.protocol.enums import EventKind
 from bot.protocol.events import GroupMessageEvent, MessageEvent, UserEvent
 
@@ -16,19 +14,15 @@ _ROUTE_PRIORITY_KEY = attrgetter("priority")
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _EventRoute:
     event_type: EventKind | None = None
-    predicates: tuple[Callable, ...]
+    predicates: tuple[InjectedCall, ...]
     priority: int
     block: bool
-    handler: Callable
+    handler: InjectedCall
     name: str
 
-    async def matches(
-        self,
-        context: InjectionContext,
-        resolver: ResolverProtocol,
-    ) -> bool:
+    async def matches(self, context: InjectionContext) -> bool:
         for predicate in self.predicates:
-            if not await call_with_injection(predicate, context, resolver):
+            if not await predicate(context):
                 return False
         return True
 
@@ -47,7 +41,7 @@ class EventRouter:
         *predicates: Callable,
         priority: int = 1,
         block: bool = False,
-        name: str | None = None,
+        _name: str | None = None,
     ) -> Callable:
         def decorator(handler: Callable) -> Callable:
             self.routes.append(
@@ -57,7 +51,7 @@ class EventRouter:
                     priority=priority,
                     block=block,
                     handler=inject(handler),
-                    name=name or getattr(handler, "__name__", "handler"),
+                    name=_name or getattr(handler, "__name__", type(handler).__name__),
                 ),
             )
             self.routes.sort(key=_ROUTE_PRIORITY_KEY)
@@ -70,14 +64,12 @@ class EventRouter:
         *predicates: Callable,
         priority: int = 1,
         block: bool = False,
-        name: str | None = None,
     ) -> Callable:
         return self.on_event(
             EventKind.MESSAGE,
             *predicates,
             priority=priority,
             block=block,
-            name=name,
         )
 
     def on_cmd(
@@ -87,7 +79,6 @@ class EventRouter:
         aliases: Iterable[str] = (),
         priority: int = 1,
         block: bool = True,
-        name: str | None = None,
     ) -> Callable:
         cmds = (cmd, *aliases)
 
@@ -107,12 +98,13 @@ class EventRouter:
                         return True
             return False
 
-        return self.on_msg(
+        return self.on_event(
+            EventKind.MESSAGE,
             cmd_predicate,
             *predicates,
             priority=priority,
             block=block,
-            name=name or cmd,
+            _name=cmd,
         )
 
     def add_router(self, router: EventRouter) -> None:

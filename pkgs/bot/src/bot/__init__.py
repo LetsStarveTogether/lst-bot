@@ -1,10 +1,9 @@
-from diwire import Injected, Lifetime, Scope
-
 from .core import (
     Bot,
     CronScheduler,
     InjectionContext,
 )
+from .core.di import Injected
 from .gateways import Connection, Gateway
 from .protocol.actions import (
     ActionCall,
@@ -94,7 +93,6 @@ __all__ = [
     "HeartbeatMetaEvent",
     "Injected",
     "InjectionContext",
-    "Lifetime",
     "MessageEvent",
     "MetaEvent",
     "Msg",
@@ -107,7 +105,6 @@ __all__ = [
     "RequestEvent",
     "Retcode",
     "ReturnAction",
-    "Scope",
     "Status",
     "StatusUpdateMetaEvent",
     "UserEvent",

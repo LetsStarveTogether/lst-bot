@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextvars import ContextVar
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
-from typing import TYPE_CHECKING
-
-from diwire import (
-    Container,
-    DependencyRegistrationPolicy,
-    Lifetime,
-    ResolverProtocol,
-    Scope,
-    resolver_context,
-)
+from typing import TYPE_CHECKING, get_args, get_origin, get_type_hints
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.events import Event
@@ -23,10 +13,8 @@ if TYPE_CHECKING:
 
     from .bot import Bot
 
-inject = resolver_context.inject(
-    dependency_registration_policy=DependencyRegistrationPolicy.IGNORE,
-    auto_open_scope=False,
-)
+type Injected[T] = T
+type InjectedCall = Callable[[InjectionContext], Awaitable[object]]
 
 
 @dataclass(slots=True)
@@ -37,98 +25,44 @@ class InjectionContext:
     event: Event | None = None
     cmd: Cmd | None = None
 
-
-_CURRENT_CONTEXT: ContextVar[InjectionContext | None] = ContextVar(
-    "bot_di_context",
-    default=None,
-)
-
-
-def current_injection_context() -> InjectionContext:
-    context = _CURRENT_CONTEXT.get()
-    if context is None:
-        msg = "No injection context is active"
-        raise TypeError(msg)
-    return context
-
-
-async def call_with_injection(
-    func: Callable,
-    context: InjectionContext,
-    resolver: ResolverProtocol,
-) -> object:
-    with _CURRENT_CONTEXT.set(context):
-        value = func(diwire_resolver=resolver)
-        if isawaitable(value):
-            return await value
-        return value
+    def resolve(self, dependency: type[object]) -> object:
+        for value in (
+            self,
+            self.bot,
+            self.gateway,
+            self.connection,
+            self.event,
+            self.cmd,
+        ):
+            if value is not None and isinstance(value, dependency):
+                return value
+        try:
+            return self.bot.dependencies[dependency]
+        except KeyError:
+            msg = f"No {dependency.__name__} is available for injection"
+            raise TypeError(msg) from None
 
 
-def register_context_providers(
-    container: Container,
-) -> None:
-    def bind_event_provider(event_type: type[Event]) -> Callable[[], Event]:
-        def provide_event() -> Event:
-            event = current_injection_context().event
-            if not isinstance(event, event_type):
-                msg = f"Current event is not {event_type.__name__}"
-                raise TypeError(msg)
-            return event
-
-        return provide_event
-
-    from bot.routing.cmd import Cmd
-
-    container.add_factory(
-        current_injection_context,
-        provides=InjectionContext,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.TRANSIENT,
+def inject(func: Callable) -> InjectedCall:
+    hints = (
+        get_type_hints(func, include_extras=True)
+        if getattr(func, "__annotations__", None)
+        else {}
     )
-    container.add_factory(
-        _cmd_from_context,
-        provides=Cmd,
-        scope=Scope.REQUEST,
-        lifetime=Lifetime.TRANSIENT,
-    )
-    container.add_factory(
-        _connection_from_context,
-        provides=Connection,
-        scope=Scope.REQUEST,
-    )
-    for event_type in _event_types(Event):
-        container.add_factory(
-            bind_event_provider(event_type),
-            provides=event_type,
-            scope=Scope.REQUEST,
-        )
-
-
-def _cmd_from_context() -> Cmd:
-    from bot.routing.cmd import Cmd
-
-    cmd = current_injection_context().cmd
-    if not isinstance(cmd, Cmd):
-        msg = "Injection context has no command"
-        raise TypeError(msg)
-    return cmd
-
-
-def _connection_from_context() -> Connection:
-    connection = current_injection_context().connection
-    if not isinstance(connection, Connection):
-        msg = "Injection context has no connection"
-        raise TypeError(msg)
-    return connection
-
-
-def _event_types(root: type[Event]) -> Iterator[type[Event]]:
-    seen: set[type[Event]] = set()
-    stack = [root]
-    while stack:
-        event_type = stack.pop()
-        if event_type in seen:
+    dependencies: list[tuple[str, type[object]]] = []
+    for name, annotation in hints.items():
+        if name == "return" or get_origin(annotation) is not Injected:
             continue
-        seen.add(event_type)
-        yield event_type
-        stack.extend(event_type.__subclasses__())
+        dependency = get_args(annotation)[0]
+        if not isinstance(dependency, type):
+            msg = f"Injected parameter {name!r} must name a runtime type"
+            raise TypeError(msg)
+        dependencies.append((name, dependency))
+
+    async def call(context: InjectionContext) -> object:
+        value = func(**{
+            name: context.resolve(dependency) for name, dependency in dependencies
+        })
+        return await value if isawaitable(value) else value
+
+    return call

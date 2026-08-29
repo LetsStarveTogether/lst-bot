@@ -136,24 +136,6 @@ class ActionResponse(Model):
             else echo,
         )
 
-    @classmethod
-    def failed(
-        cls,
-        retcode: int,
-        message: str,
-        *,
-        echo: str | None = None,
-    ) -> Self:
-        return cls(
-            status=ApiStatus.FAILED,
-            retcode=retcode,
-            data=None,
-            message=message,
-            echo=MISSING
-            if echo is None or (isinstance(echo, str) and not echo)
-            else echo,
-        )
-
 
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
     try:

@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 from bot import (
     Bot,
     Cmd,
@@ -7,8 +5,6 @@ from bot import (
     GroupMessageEvent,
     Injected,
     InjectionContext,
-    Scope,
-    UserEvent,
     admin_permission,
 )
 from bot.testing import private_message_event, recording_gateway
@@ -64,15 +60,6 @@ def test_admin_permission_rejects_untrusted_sender_roles() -> None:
     )
 
 
-@dataclass(frozen=True)
-class Tenant:
-    user_id: str
-
-
-def get_tenant(event: UserEvent) -> Tenant:
-    return Tenant(event.user_id)
-
-
 async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
     bot = Bot(cmd_prefixes=("/", "!"))
     router = EventRouter()
@@ -102,28 +89,3 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
 
     assert checked == ["!p:now"]
     assert seen == ["!p:now"]
-
-
-async def test_container_factory_dependency() -> None:
-    bot = Bot()
-    bot.container.add_factory(
-        get_tenant,
-        scope=Scope.REQUEST,
-    )
-    router = EventRouter()
-    seen: list[str] = []
-
-    @router.on_msg(block=True)
-    def collect(tenant: Injected[Tenant]) -> None:
-        seen.append(tenant.user_id)
-
-    bot.add_router(router)
-    gateway = recording_gateway(bot)
-
-    async with bot:
-        await bot.dispatch(
-            gateway.connection,
-            private_message_event("hello", user_id="7"),
-        )
-
-    assert seen == ["7"]

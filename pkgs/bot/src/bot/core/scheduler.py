@@ -9,13 +9,12 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
-from diwire import Scope
 
 from bot._tasks import await_cleanup
 from bot.gateways import Connection, Gateway
 from bot.protocol.common import BotSelf
 
-from .di import InjectionContext, call_with_injection, inject
+from .di import InjectedCall, InjectionContext, inject
 
 if TYPE_CHECKING:
     from .bot import Bot
@@ -55,7 +54,7 @@ def _raise_errors(message: str, errors: list[BaseException]) -> None:
 class CronJob:
     bot: Bot
     expr: str
-    handler: Callable
+    handler: InjectedCall
     name: str
     timezone: tzinfo
     self_: BotSelf | None
@@ -65,9 +64,6 @@ class CronJob:
     _runner: Task[None] | None = None
     _running: Task[None] | None = None
     _closing: bool = False
-
-    def __post_init__(self) -> None:
-        self.handler = inject(self.handler)
 
     def __str__(self) -> str:
         return f"{self.name}[{self.expr}]"
@@ -170,16 +166,13 @@ class CronJob:
         gateway: Gateway | None,
         connection: Connection | None,
     ) -> None:
-        async with self.bot.container.enter_scope(Scope.REQUEST) as resolver:
-            value = await call_with_injection(
-                self.handler,
-                InjectionContext(
-                    bot=self.bot,
-                    gateway=gateway,
-                    connection=connection,
-                ),
-                resolver,
+        value = await self.handler(
+            InjectionContext(
+                bot=self.bot,
+                gateway=gateway,
+                connection=connection,
             )
+        )
         if value is not None:
             msg = "Scheduled task handlers must not return values"
             raise TypeError(msg)
@@ -189,7 +182,7 @@ class CronJob:
         if self_ is None:
             return None, None
 
-        gateway = self.bot.resolve_gateway(self.gateway_type)
+        gateway = self.bot.resolve_gateway(cast(type[Gateway], self.gateway_type))
         return gateway, gateway.connection_for(self_)
 
 
@@ -220,13 +213,12 @@ class CronScheduler:
         self,
         expr: str,
         *,
-        name: str | None = None,
         timezone: str | None = None,
         self_: BotSelf | None = None,
         gateway: type[Gateway] | None = None,
     ) -> Callable:
-        if gateway is not None and self_ is None:
-            msg = "Scheduled gateway targets require self"
+        if (self_ is None) != (gateway is None):
+            msg = "Scheduled self and gateway must be provided together"
             raise ValueError(msg)
 
         def decorator(handler: Callable) -> Callable:
@@ -237,8 +229,8 @@ class CronScheduler:
             job = CronJob(
                 bot=self.bot,
                 expr=expr,
-                handler=handler,
-                name=name or getattr(handler, "__name__", "cron_job"),
+                handler=inject(handler),
+                name=getattr(handler, "__name__", type(handler).__name__),
                 timezone=(
                     ZoneInfo(timezone)
                     if timezone is not None
