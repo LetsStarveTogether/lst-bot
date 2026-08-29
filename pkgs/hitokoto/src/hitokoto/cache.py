@@ -21,19 +21,16 @@ def _write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
         prefix=f".{cache_path.name}.",
         suffix=".tmp",
         dir=cache_path.parent,
-        delete=False,
+        delete_on_close=False,
     ) as temp:
-        temp_path = Path(temp.name)
-    try:
-        with closing(sqlite3.connect(temp_path)) as db, db:
+        temp.close()
+        with closing(sqlite3.connect(temp.name)) as db, db:
             db.execute("CREATE TABLE sentence (payload TEXT NOT NULL)")
             db.executemany(
                 "INSERT INTO sentence (payload) VALUES (?)",
                 ((item.model_dump_json(by_alias=True),) for item in sentences),
             )
-        temp_path.replace(cache_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
+        Path(temp.name).replace(cache_path)
 
 
 async def write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
