@@ -124,10 +124,11 @@ def test_reply_helper_omits_absent_user_id_on_wire() -> None:
 
 
 def test_message_accepts_text_segment_model_and_preserves_whitespace() -> None:
-    message = Msg.from_input(
-        msg_models.TextSegment(data=msg_models.TextSegmentData(text="  hello  "))
-    )
+    segment = msg_models.TextSegment(data=msg_models.TextSegmentData(text="  hello  "))
+    message = Msg.from_input(segment)
 
+    assert message[0] is segment
+    assert Msg.from_input(message) is message
     assert str(message) == "  hello  "
     assert message.text == "hello"
 
