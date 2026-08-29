@@ -23,12 +23,12 @@ logger = getLogger(__name__)
 
 
 class _BundleSentenceMeta(BaseModel):
-    path: Annotated[str, Field(min_length=1)]
+    path: Annotated[str, Field(pattern=r"^\./sentences/[a-l]\.json$")]
 
 
 class _BundleVersion(BaseModel):
     protocol_version: Literal["1.0.0"]
-    sentences: Annotated[list[_BundleSentenceMeta], Field(min_length=1)]
+    sentences: Annotated[list[_BundleSentenceMeta], Field(min_length=1, max_length=12)]
 
 
 class HitokotoClient:

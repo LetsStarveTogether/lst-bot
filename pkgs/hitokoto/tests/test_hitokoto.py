@@ -342,6 +342,24 @@ async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
     assert pool.calls == [{"method": "GET", "url": f"{BUNDLE_URL}version.json"}]
 
 
+async def test_failed_refresh_can_retry(tmp_path: Path) -> None:
+    version_url = f"{BUNDLE_URL}version.json"
+    routes: dict[str, object] = {version_url: RecordingResponse(503, b"error")}
+    pool = RecordingPool(routes)
+    client = HitokotoClient(http_pool=pool, cache_path=tmp_path / "hitokoto.db")
+
+    with pytest.raises(HTTPError):
+        await client.get_hitokoto()
+    routes.update(bundle_routes("retried"))
+
+    assert (await client.get_hitokoto()).hitokoto == "retried"
+    assert [call["url"] for call in pool.calls] == [
+        version_url,
+        version_url,
+        f"{BUNDLE_URL}sentences/a.json",
+    ]
+
+
 async def test_bundle_requires_a_sentence(tmp_path: Path) -> None:
     routes = bundle_routes()
     routes[f"{BUNDLE_URL}sentences/a.json"] = []
@@ -354,42 +372,58 @@ async def test_bundle_requires_a_sentence(tmp_path: Path) -> None:
         await client.get_hitokoto()
 
 
+@pytest.mark.parametrize(
+    "sentences",
+    [
+        [{"path": "./sentences/a.json"}] * 13,
+        [{"path": "./sentences/../version.json"}],
+    ],
+    ids=["too-many-parts", "invalid-path"],
+)
+async def test_bundle_manifest_rejects_unofficial_parts_before_fetching(
+    sentences: list[dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    version_url = f"{BUNDLE_URL}version.json"
+    pool = RecordingPool({
+        version_url: {
+            "protocol_version": "1.0.0",
+            "sentences": sentences,
+        }
+    })
+
+    with pytest.raises(ValidationError):
+        await HitokotoClient(
+            http_pool=pool,
+            cache_path=tmp_path / "hitokoto.db",
+        ).get_hitokoto()
+
+    assert pool.calls == [{"method": "GET", "url": version_url}]
+
+
 async def test_bundle_allows_an_empty_part_when_another_has_sentences(
     tmp_path: Path,
 ) -> None:
     routes = bundle_routes()
     sentence_url = f"{BUNDLE_URL}sentences/a.json"
-    sentence = get_running_loop().create_future()
-    original_sentence = routes[sentence_url]
-    routes[sentence_url] = sentence
     routes[f"{BUNDLE_URL}version.json"] = {
         "protocol_version": "1.0.0",
         "sentences": [
             {"path": "./sentences/a.json"},
-            {"path": "./sentences/empty.json"},
+            {"path": "./sentences/b.json"},
         ],
     }
-    routes[f"{BUNDLE_URL}sentences/empty.json"] = []
+    routes[f"{BUNDLE_URL}sentences/b.json"] = []
     pool = RecordingPool(routes)
     client = HitokotoClient(
         http_pool=pool,
         cache_path=tmp_path / "hitokoto.db",
     )
-    request = create_task(client.get_hitokoto())
-    await pool.request_started.wait()
-    pool.request_started.clear()
-    await pool.request_started.wait()
-
-    assert [call["url"] for call in pool.calls] == [
-        f"{BUNDLE_URL}version.json",
-        sentence_url,
-    ]
-    sentence.set_result(original_sentence)
-    result = await request
+    result = await client.get_hitokoto()
 
     assert result.hitokoto == "cached hello"
     assert [call["url"] for call in pool.calls] == [
         f"{BUNDLE_URL}version.json",
         sentence_url,
-        f"{BUNDLE_URL}sentences/empty.json",
+        f"{BUNDLE_URL}sentences/b.json",
     ]
