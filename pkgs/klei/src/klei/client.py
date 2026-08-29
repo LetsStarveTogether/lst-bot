@@ -1,4 +1,4 @@
-from asyncio import TaskGroup, timeout
+from asyncio import Semaphore, TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
 from itertools import batched
@@ -48,6 +48,7 @@ class KleiClient:
     ) -> None:
         self.access_token = access_token
         self.http_pool = http_pool
+        self._room_slots = Semaphore(_ROOM_CONCURRENCY)
 
     async def get_latest_versions(self) -> list[Version]:
         body = await self._request(HTTPMethod.GET, _VERSION_URL)
@@ -97,9 +98,10 @@ class KleiClient:
             "__token": self.access_token.get_secret_value(),
             "query": {"__rowId": row_id},
         }
-        data = _RoomDataResponse.model_validate_json(
-            await self._request(HTTPMethod.POST, url, json=payload),
-        )
+        async with self._room_slots:
+            data = _RoomDataResponse.model_validate_json(
+                await self._request(HTTPMethod.POST, url, json=payload),
+            )
         return data.rows[0] if data.rows else None
 
     async def _request(

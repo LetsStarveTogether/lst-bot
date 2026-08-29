@@ -205,36 +205,42 @@ async def test_client_parses_official_lobbies_and_room() -> None:
     assert pool.calls[-1]["redirect"] is False
 
 
-async def test_room_lookup_batches_created_tasks(
+async def test_room_lookup_bounds_shared_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     batch_size = 2
     monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", batch_size)
     value = client(RecordingPool({}))
     release = Event()
-    batch_started = Event()
-    active = 0
-    max_active = 0
+    requests_started = Event()
+    active_requests = 0
+    max_active_requests = 0
 
-    async def get_room(_row_id: str, _region: str) -> None:
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        if active == batch_size:
-            batch_started.set()
-        await release.wait()
-        active -= 1
+    async def request(*_args: object, **_kwargs: object) -> bytes:
+        nonlocal active_requests, max_active_requests
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
+        if active_requests == batch_size:
+            requests_started.set()
+        try:
+            await release.wait()
+        finally:
+            active_requests -= 1
+        return rows_payload([])
 
-    monkeypatch.setattr(value, "_get_single_room", get_room)
-    rooms = ((str(index), "us-east-1") for index in range(batch_size + 1))
-    lookup = create_task(value.get_room_data(rooms))
+    monkeypatch.setattr(value, "_request", request)
+    room_groups = (
+        ((f"{group}-{index}", "us-east-1") for index in range(batch_size + 1))
+        for group in range(2)
+    )
+    lookups = tuple(create_task(value.get_room_data(rooms)) for rooms in room_groups)
     try:
-        await batch_started.wait()
+        await requests_started.wait()
         await sleep(0)
-        assert max_active == batch_size
+        assert max_active_requests == batch_size
     finally:
         release.set()
-    assert await lookup == []
+    assert [await lookup for lookup in lookups] == [[], []]
 
 
 @pytest.mark.parametrize(
