@@ -2,7 +2,7 @@ from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
-from bot import Bot, Cmd
+from bot import Bot, Cmd, GroupMessageEvent
 from bot.testing import private_message_event, recording_gateway
 from klei import KleiClient, RoomData
 from lst import LstClient
@@ -158,18 +158,40 @@ def test_rollback_room_rejects_negative_snapshot_counts() -> None:
         "/房间重置 1",
     ],
 )
-async def test_room_admin_commands_reject_non_admin(message: str) -> None:
-    bot = Bot()
+async def test_room_admin_commands_require_configured_admin(message: str) -> None:
+    bot = Bot(admin_ids={"test": {"configured-admin"}})
     client = Mock(spec_set=LstClient)
     bot.container.add_instance(client, provides=LstClient)
     bot.add_router(router)
     gateway = recording_gateway(bot)
 
+    group_admin = private_message_event(
+        message,
+        user_id="group-admin",
+        event_id="group-admin",
+    ).model_dump(mode="json")
+    group_admin |= {
+        "detail_type": "group",
+        "group_id": "group",
+        "sender": {"user_id": "group-admin", "role": "admin"},
+    }
+
     async with bot:
         await bot.dispatch(
             gateway.connection,
-            private_message_event(message, user_id="member"),
+            GroupMessageEvent.model_validate(group_admin),
+        )
+        assert client.method_calls == []
+        assert gateway.actions == []
+
+        await bot.dispatch(
+            gateway.connection,
+            private_message_event(
+                message,
+                user_id="configured-admin",
+                event_id="configured-admin",
+            ),
         )
 
-    assert client.method_calls == []
-    assert gateway.actions == []
+    assert len(client.method_calls) == 1
+    assert len(gateway.actions) == 1

@@ -2,7 +2,7 @@ import re
 from logging import getLogger
 from operator import attrgetter
 
-from bot import Cmd, EventRouter, Injected, admin_permission
+from bot import Bot, Cmd, EventRouter, Injected, UserEvent
 from klei import KleiClient, RoomData
 from lst import LstClient
 
@@ -12,6 +12,13 @@ DAY_PATTERN = re.compile(r"day=(\d+)")
 
 logger = getLogger(__name__)
 router = EventRouter()
+
+
+def _configured_admin(
+    event: Injected[UserEvent],
+    bot: Injected[Bot],
+) -> bool:
+    return event.user_id in bot.admin_ids.get(event.self_.platform, ())
 
 
 def format_lobby_data(data: RoomData) -> str:
@@ -73,7 +80,7 @@ async def rooms(
     return "\n".join(format_lobby_data(room) for room in room_data_list)
 
 
-@router.on_cmd("房间存档", admin_permission)
+@router.on_cmd("房间存档", _configured_admin)
 def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
@@ -84,7 +91,7 @@ def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已存档 {room_ids}"
 
 
-@router.on_cmd("房间回档", admin_permission)
+@router.on_cmd("房间回档", _configured_admin)
 def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     usage = f"用法：{cmd.raw} 1,2,4 2"
     try:
@@ -100,7 +107,7 @@ def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已回档 {snapshots} 个存档点 {room_ids}"
 
 
-@router.on_cmd("房间重启", admin_permission)
+@router.on_cmd("房间重启", _configured_admin)
 def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
@@ -118,7 +125,7 @@ def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     return f"已重启 {room_ids}"
 
 
-@router.on_cmd("房间重置", admin_permission)
+@router.on_cmd("房间重置", _configured_admin)
 def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
     try:
         room_ids = parse_room_ids(cmd.arg)
