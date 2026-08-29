@@ -74,7 +74,6 @@ def build_question_agent(
                     trust_env=False,
                     follow_redirects=False,
                 ),
-                init_timeout=REQUEST_TIMEOUT,
                 read_timeout=REQUEST_TIMEOUT,
             ).filtered(lambda _, tool_def: tool_def.name == "read_knowledge")
         ],
