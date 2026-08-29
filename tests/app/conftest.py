@@ -5,7 +5,7 @@ import pytest
 from lst_bot.settings import Settings
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # ruff: ignore[pytest-fixture-autouse]
 def isolate_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in tuple(environ):
         if name.casefold() in Settings.model_fields:

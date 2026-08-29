@@ -5,10 +5,10 @@ description = "Hitokoto client for lst-bot."
 license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
-    "pydantic>=2.13.4",
-    "urllib3-future>=2.21.902",
+    "pydantic>=2.13.5",
+    "urllib3-future>=2.24.905",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.5,<0.13"]
+requires = ["uv_build>=0.12.7,<0.13"]
 build-backend = "uv_build"
