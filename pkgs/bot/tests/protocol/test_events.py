@@ -244,11 +244,7 @@ EVENT_CASES: tuple[tuple[dict[str, object], type[Event]], ...] = (
 )
 
 REQUIRED_EVENT_CASES = tuple(
-    (
-        next(payload for payload, _ in EVENT_CASES if field in payload),
-        field,
-    )
-    for field in sorted({field for payload, _ in EVENT_CASES for field in payload})
+    (payload, field) for payload, _ in EVENT_CASES for field in payload
 )
 
 
@@ -270,7 +266,10 @@ def test_each_standard_event_variant_serializes_its_wire_shape(
 @pytest.mark.parametrize(
     ("payload", "field"),
     REQUIRED_EVENT_CASES,
-    ids=[field for _, field in REQUIRED_EVENT_CASES],
+    ids=[
+        f"{payload['type']}-{payload['detail_type']}-{field}"
+        for payload, field in REQUIRED_EVENT_CASES
+    ],
 )
 def test_standard_events_require_each_wire_field(
     payload: dict[str, object],
