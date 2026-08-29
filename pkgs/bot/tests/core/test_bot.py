@@ -1,10 +1,12 @@
 from asyncio import CancelledError, Event, Task, create_task, gather, sleep, timeout
+from types import MappingProxyType
 from typing import override
 
 import pytest
 from bot import Bot, Gateway
 from bot.core import bot as bot_module
 from bot.testing import RecordingGateway, private_message_event
+from pydantic import ValidationError
 
 
 class CountingGateway(Gateway):
@@ -21,19 +23,26 @@ class CountingGateway(Gateway):
 
 
 def test_bot_copies_admin_identity_mapping_as_immutable_sets() -> None:
-    admin_ids = {"test": {"u1"}}
-    bot = Bot(admin_ids=admin_ids)
+    admin_ids = {
+        "generator": iter(("u1",)),
+        "list": ["u1"],
+        "set": {"u1"},
+    }
+    expected = dict.fromkeys(admin_ids, frozenset({"u1"}))
+    bot = Bot(admin_ids=MappingProxyType(admin_ids))
 
-    admin_ids["test"].add("u2")
-    admin_ids["other"] = {"u3"}
+    admin_ids.clear()
 
-    assert bot.admin_ids == {"test": frozenset({"u1"})}
-    with pytest.raises(TypeError, match="mapping or None"):
-        Bot(admin_ids=False)  # ty: ignore[invalid-argument-type]
-    with pytest.raises(TypeError, match="user ID iterables"):
-        Bot(admin_ids={"test": "root"})
-    with pytest.raises(TypeError, match="must be strings"):
-        Bot(admin_ids={"test": {42}})  # ty: ignore[invalid-argument-type]
+    assert bot.admin_ids == expected
+    for invalid in (
+        False,
+        {"test": "secret-admin-id"},
+        {"test": {42}},
+        {42: {"u1"}},
+    ):
+        with pytest.raises(ValidationError) as error:
+            Bot(admin_ids=invalid)  # ty: ignore[invalid-argument-type]
+        assert "secret-admin-id" not in str(error.value)
 
 
 def test_add_gateway_is_identity_idempotent_and_rejects_a_foreign_owner() -> None:

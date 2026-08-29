@@ -18,7 +18,6 @@ from contextlib import asynccontextmanager
 from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import timedelta, tzinfo
-from functools import partial
 from logging import getLogger
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Self, cast
@@ -30,6 +29,7 @@ from diwire import (
     ResolverProtocol,
     Scope,
 )
+from pydantic import ConfigDict, StrictStr, TypeAdapter
 
 from bot._tasks import await_cleanup
 from bot.gateways import Connection, Gateway
@@ -56,6 +56,10 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 _EVENT_QUEUE_CAPACITY = 64
+_ADMIN_IDS_ADAPTER = TypeAdapter(
+    dict[StrictStr, frozenset[StrictStr]],
+    config=ConfigDict(hide_input_in_errors=True),
+)
 type _TaskOwners = tuple[tuple[Bot, Task[None]], ...]
 type _LifecycleOwners = tuple[tuple[Bot, object], ...]
 
@@ -84,10 +88,6 @@ class _QueuedEvent:
     deadline: float | None = None
 
 
-class _DispatchTimeoutError(Exception):
-    pass
-
-
 class Bot(EventRouter):
     def __init__(
         self,
@@ -105,20 +105,11 @@ class Bot(EventRouter):
         if max_dispatches <= 0:
             msg = "max_dispatches must be greater than zero"
             raise ValueError(msg)
-        if admin_ids is not None and not isinstance(admin_ids, Mapping):
-            msg = "admin_ids must be a mapping or None"
-            raise TypeError(msg)
-        admins: dict[str, frozenset[str]] = {}
-        for platform, user_ids in ({} if admin_ids is None else admin_ids).items():
-            if not isinstance(platform, str) or isinstance(user_ids, str):
-                msg = "admin_ids must map platform names to user ID iterables"
-                raise TypeError(msg)
-            users = frozenset(user_ids)
-            if not all(isinstance(user_id, str) for user_id in users):
-                msg = "admin IDs must be strings"
-                raise TypeError(msg)
-            admins[platform] = users
-        self.admin_ids: Mapping[str, frozenset[str]] = MappingProxyType(admins)
+        self.admin_ids: Mapping[str, frozenset[str]] = MappingProxyType(
+            _ADMIN_IDS_ADAPTER.validate_python(
+                {} if admin_ids is None else admin_ids,
+            ),
+        )
         self.cmd_prefixes = cmd_prefixes
         self.dispatch_timeout = dispatch_timeout
         self.max_dispatches = max_dispatches
@@ -491,41 +482,24 @@ class Bot(EventRouter):
                     connection=connection,
                     event=event,
                 )
-                try:
-                    if not await self._before_deadline(
-                        deadline,
-                        partial(route.matches, context, resolver),
-                    ):
-                        continue
-                    await self._before_deadline(
-                        deadline,
-                        partial(self._run_route, context, route, resolver),
-                    )
-                except _DispatchTimeoutError:
+                if deadline is not None and get_running_loop().time() >= deadline:
                     self._log_dispatch_timeout(context, route)
                     break
+
+                timeout_scope = timeout_at(deadline)
+                try:
+                    async with timeout_scope:
+                        if not await route.matches(context, resolver):
+                            continue
+                        await self._run_route(context, route, resolver)
                 except Exception as exc:
+                    if isinstance(exc, TimeoutError) and timeout_scope.expired():
+                        self._log_dispatch_timeout(context, route)
+                        break
                     self._log_dispatch_exception(context, route, exc)
                 else:
                     if route.block:
                         break
-
-    async def _before_deadline[T](
-        self,
-        deadline: float | None,
-        operation: Callable[[], Awaitable[T]],
-    ) -> T:
-        if deadline is not None and get_running_loop().time() >= deadline:
-            raise _DispatchTimeoutError
-
-        timeout_scope = timeout_at(deadline)
-        try:
-            async with timeout_scope:
-                return await operation()
-        except TimeoutError:
-            if timeout_scope.expired():
-                raise _DispatchTimeoutError from None
-            raise
 
     async def _run_route(
         self,
