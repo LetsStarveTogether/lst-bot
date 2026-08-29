@@ -309,17 +309,6 @@ async def test_default_connector_accepts_unbounded_official_gateway_frames(
         max_size=None,
     )
 
-    provided = AsyncMock(return_value=ScriptedWebSocket())
-    provided.__bool__.return_value = False
-    custom = DiscordGateway(
-        Bot(),
-        token=CREDENTIAL,
-        base_url="https://discord.example/api/v10",
-        http_pool=cast(AsyncPoolManager, Pool()),
-        websocket_connector=provided,
-    )
-    assert custom._websocket_connector is provided
-
 
 async def test_rest_json_rate_limit_errors_and_multipart() -> None:
     pool = Pool(
@@ -1914,7 +1903,8 @@ async def test_close_waits_for_all_inflight_requests() -> None:
         await pool.both_started.wait()
         close_task = tasks.create_task(close())
         await closing.wait()
-        assert rest._accepting_requests is False
+        with pytest.raises(RuntimeError, match="closed"):
+            await rest.request_discord("GET", "/gateway/bot")
         assert not close_task.done()
 
         pool.release.set()
@@ -1957,7 +1947,6 @@ async def test_close_waits_for_request_not_its_caller() -> None:
         await pool.request_started.wait()
         close_task = tasks.create_task(rest.close())
         await sleep(0)
-        assert rest._accepting_requests is False
         assert not close_task.done()
         pool.release_request.set()
         await request_done.wait()

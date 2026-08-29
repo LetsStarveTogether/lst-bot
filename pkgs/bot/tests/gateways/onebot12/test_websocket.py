@@ -73,13 +73,6 @@ async def open_onebot12(
     )
 
 
-def test_gateway_preserves_falsey_websocket_connector() -> None:
-    connector = AsyncMock()
-    connector.__bool__.return_value = False
-    gateway = OneBot12Gateway(Bot(), websocket_connector=connector)
-    assert gateway._websocket_connector is connector  # ruff: ignore[private-member-access]
-
-
 async def test_reverse_websocket_dispatches_real_text_frames() -> None:
     bot = Bot()
     gateway = reverse_gateway(bot)

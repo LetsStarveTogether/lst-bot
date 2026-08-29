@@ -11,7 +11,7 @@ from klei import (
 )
 from support import lobby_data, room_data
 
-from lst_bot.general import hitokoto, report, versions
+from lst_bot.general import report, versions
 from lst_bot.settings import Settings
 
 
@@ -21,14 +21,6 @@ def version(number: int, version_type: VersionType) -> Version:
         type=version_type,
         date=date(2026, 8, number),
     )
-
-
-async def test_hitokoto_uses_client() -> None:
-    client = Mock(spec_set=HitokotoClient)
-    client.get_hitokoto.return_value = "今日一言"
-
-    assert await hitokoto(client) == "今日一言"
-    client.get_hitokoto.assert_awaited_once_with()
 
 
 async def test_versions_selects_latest_available_channels() -> None:

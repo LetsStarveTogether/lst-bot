@@ -246,7 +246,6 @@ async def test_passive_reply_sequence_wraps_and_preserves_explicit_value(
 
     sequences = [call.kwargs["msg_seq"] for call in request.await_args_list]
     assert sequences == [65_535, 0, 42]
-    assert all(0 <= sequence <= 65_535 for sequence in sequences)
 
 
 async def test_mentions_use_current_wire_format_and_validate_scene(

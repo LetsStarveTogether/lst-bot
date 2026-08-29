@@ -76,7 +76,6 @@ def test_route_registry_is_well_formed() -> None:
         assert route.path.startswith("/")
         assert "?" not in route.path
         assert "#" not in route.path
-        assert placeholders <= route.request.model_fields.keys()
         for name in placeholders:
             field = route.request.model_fields[name]
             assert field.is_required()

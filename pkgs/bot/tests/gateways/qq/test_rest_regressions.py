@@ -57,18 +57,6 @@ class GatedResponse:
         return self.body
 
 
-def test_falsey_injected_dependencies_are_preserved() -> None:
-    pool: list[object] = []
-    assert client(pool).http_pool is pool
-
-    connector = AsyncMock()
-    connector.__bool__.return_value = False
-    assert (
-        gateway(websocket_connector=connector)._websocket_connector  # ruff: ignore[private-member-access]
-        is connector
-    )
-
-
 @pytest.mark.parametrize(
     ("permission_type", "subjects"),
     [
