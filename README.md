@@ -88,14 +88,60 @@ A single `DiscordGateway` owns one shard; bots at Discord's mandatory large-scal
 
 ## Deployment
 
-The supplied systemd units use `/srv/lst-bot`; the optional OneBot 11 deployment also uses `/srv/napcat`.
+The supplied files define a rootful system deployment at `/srv/lst-bot`, with optional NapCat data at `/srv/napcat`.
+The bot runs as the locked `lst-bot` user, which owns only `/srv/lst-bot/.cache` and may start, stop, or restart existing `dst@*.service` units through the supplied polkit rule.
 
-`systemd/napcat.container` runs NapCat with Podman when OneBot 11 is enabled.
+Place the repository at `/srv/lst-bot`, configure `.env`, and run these commands from the repository root:
+
+```sh
+sudo chmod 0600 /srv/lst-bot/.env
+sudo chown -R root:root /srv/lst-bot
+sudo uv sync --locked --no-dev
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.sysusers /etc/sysusers.d/lst-bot.conf
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.tmpfiles /etc/tmpfiles.d/lst-bot.conf
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.service /etc/systemd/system/lst-bot.service
+sudo systemd-sysusers /etc/sysusers.d/lst-bot.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/lst-bot.conf
+sudo chown root:lst-bot /srv/lst-bot/.env
+sudo chmod 0640 /srv/lst-bot/.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now lst-bot.service
+```
+
+Room management requires polkit and administrator-provided `dst@<room>.service` units.
+The rule does not permit creating, enabling, or modifying units.
+
+```sh
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.rules /etc/polkit-1/rules.d/00-lst-bot.rules
+```
+
+When OneBot 11 is enabled, install the rootful Quadlet and secure any existing NapCat data before starting it:
+
+```sh
+sudo install -d -m 0700 /srv/napcat /srv/napcat/config /srv/napcat/ntqq
+sudo chmod -R go-rwx /srv/napcat
+sudo install -d -m 0755 /etc/containers/systemd
+sudo ln -sfn /srv/lst-bot/systemd/napcat.container /etc/containers/systemd/napcat.container
+sudo systemctl daemon-reload
+sudo systemctl start napcat.service
+```
+
+Do not run `systemctl enable napcat.service`; Quadlet applies its `[Install]` section while generating the transient service.
 Configure NapCat's OneBot 11 WebSocket server to listen on `0.0.0.0:3001`, set `ONEBOT_WS_URL=ws://127.0.0.1:3001`, and keep its token equal to `ONEBOT_ACCESS_TOKEN`.
 
-1. Place the repository at `/srv/lst-bot` and run `just sync`.
-2. Configure `.env`.
-3. Enable the bot service and, when using OneBot 11, the NapCat container.
-4. For room management, provide `dst@<room>.service` units and grant the bot permission to control them.
+For an existing deployment, stop the bot, update the root-owned checkout, and then repeat the applicable setup blocks above.
 
-Update the systemd units if the deployment paths differ.
+```sh
+sudo systemctl stop lst-bot.service
+sudo git -C /srv/lst-bot pull --ff-only
+```
+
+The final `enable --now` starts the bot again; restart NapCat after a Quadlet change.
+NapCat updates are deliberately manual:
+
+```sh
+sudo podman pull docker.io/mlikiowa/napcat-docker:latest
+sudo systemctl restart napcat.service
+```
+
+Update the paths in every supplied file and command if the deployment roots differ.

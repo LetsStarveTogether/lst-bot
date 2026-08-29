@@ -88,14 +88,60 @@ Discord 除通用机器人动作外，还开放 `discord.request` 和 `discord.g
 
 ## 部署
 
-仓库提供的 systemd 单元使用 `/srv/lst-bot`；可选的 OneBot 11 部署还使用 `/srv/napcat`。
+仓库提供的文件定义了位于 `/srv/lst-bot` 的 rootful system 部署，可选的 NapCat 数据位于 `/srv/napcat`。
+机器人以锁定的 `lst-bot` 用户运行；该用户仅拥有 `/srv/lst-bot/.cache`，并通过仓库提供的 polkit 规则启动、停止或重启已有的 `dst@*.service` 单元。
 
-启用 OneBot 11 时，`systemd/napcat.container` 使用 Podman 运行 NapCat。
+将仓库放在 `/srv/lst-bot`，配置 `.env`，然后在仓库根目录运行：
+
+```sh
+sudo chmod 0600 /srv/lst-bot/.env
+sudo chown -R root:root /srv/lst-bot
+sudo uv sync --locked --no-dev
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.sysusers /etc/sysusers.d/lst-bot.conf
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.tmpfiles /etc/tmpfiles.d/lst-bot.conf
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.service /etc/systemd/system/lst-bot.service
+sudo systemd-sysusers /etc/sysusers.d/lst-bot.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/lst-bot.conf
+sudo chown root:lst-bot /srv/lst-bot/.env
+sudo chmod 0640 /srv/lst-bot/.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now lst-bot.service
+```
+
+房间管理需要安装 polkit，并由管理员提供 `dst@<room>.service` 单元。
+该规则不允许创建、启用或修改单元。
+
+```sh
+sudo ln -sfn /srv/lst-bot/systemd/lst-bot.rules /etc/polkit-1/rules.d/00-lst-bot.rules
+```
+
+启用 OneBot 11 时，安装 rootful Quadlet，并在启动前收紧已有 NapCat 数据的权限：
+
+```sh
+sudo install -d -m 0700 /srv/napcat /srv/napcat/config /srv/napcat/ntqq
+sudo chmod -R go-rwx /srv/napcat
+sudo install -d -m 0755 /etc/containers/systemd
+sudo ln -sfn /srv/lst-bot/systemd/napcat.container /etc/containers/systemd/napcat.container
+sudo systemctl daemon-reload
+sudo systemctl start napcat.service
+```
+
+不要执行 `systemctl enable napcat.service`；Quadlet 会在生成瞬态服务时应用其 `[Install]` 配置。
 请让 NapCat 的 OneBot 11 WebSocket 服务监听 `0.0.0.0:3001`，设置 `ONEBOT_WS_URL=ws://127.0.0.1:3001`，并确保其 token 与 `ONEBOT_ACCESS_TOKEN` 一致。
 
-1. 项目位于 `/srv/lst-bot`，并已运行 `just sync`。
-2. 配置 `.env`。
-3. 启用机器人服务；使用 OneBot 11 时再启用 NapCat 容器。
-4. 需要房间管理时，提供 `dst@<room>.service` 单元并授予机器人控制权限。
+更新现有部署时，请先停止机器人、更新由 root 所有的工作树，然后重复执行上方适用的安装命令。
 
-如果部署路径不同，请同步修改 systemd 单元。
+```sh
+sudo systemctl stop lst-bot.service
+sudo git -C /srv/lst-bot pull --ff-only
+```
+
+最后的 `enable --now` 会重新启动机器人；Quadlet 发生变化后还需重启 NapCat。
+NapCat 仅进行人工更新：
+
+```sh
+sudo podman pull docker.io/mlikiowa/napcat-docker:latest
+sudo systemctl restart napcat.service
+```
+
+如果部署根目录不同，请同步修改仓库提供的所有文件与命令中的路径。

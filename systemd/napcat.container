@@ -2,17 +2,17 @@
 Description=Podman container for napcat
 
 [Container]
-AutoUpdate=registry
 ContainerName=napcat
 Image=docker.io/mlikiowa/napcat-docker
 PublishPort=127.0.0.1:6099:6099
 PublishPort=127.0.0.1:3001:3001
-Volume=/srv/napcat/config:/app/napcat/config
-Volume=/srv/napcat/ntqq:/app/.config/QQ
+Volume=/srv/napcat/config:/app/napcat/config:Z
+Volume=/srv/napcat/ntqq:/app/.config/QQ:Z
 
 [Service]
 Restart=always
-ExecStartPre=mkdir -p /srv/napcat/config /srv/napcat/ntqq
+UMask=0077
+ExecStartPre=install -d -m 0700 /srv/napcat /srv/napcat/config /srv/napcat/ntqq
 
 [Install]
 WantedBy=default.target

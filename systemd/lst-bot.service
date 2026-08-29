@@ -4,6 +4,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=lst-bot
+Group=lst-bot
+UMask=0077
 WorkingDirectory=/srv/lst-bot
 ExecStart=/srv/lst-bot/.venv/bin/lst-bot
 KillSignal=SIGINT
