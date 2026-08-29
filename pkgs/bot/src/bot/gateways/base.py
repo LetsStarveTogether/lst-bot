@@ -159,7 +159,7 @@ type WebSocketConnector = Callable[
 class HttpAction:
     base_url: str
     timeout: float = 30.0
-    http_pool: AsyncPoolManager | None = field(default=None, repr=False)
+    http_pool: AsyncPoolManager = field(kw_only=True, repr=False)
 
     def __post_init__(self) -> None:
         msg = "HTTP action base URL must be an absolute HTTP(S) URL"

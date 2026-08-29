@@ -198,8 +198,8 @@ class TelegramGateway(Gateway, TelegramRestClient):
         bot: Bot,
         *,
         token: SecretStr | str,
+        http_pool: AsyncPoolManager,
         base_url: str = TELEGRAM_API_BASE_URL,
-        http_pool: AsyncPoolManager | None = None,
         poll_timeout: int = 30,
     ) -> None:
         Gateway.__init__(self, bot)
@@ -390,7 +390,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         action: str,
         params: ActionParamModel,
     ) -> BaseModel:
-        if self._closing or self._closed:
+        if self._closing or self._closed_event.is_set():
             msg = "Telegram gateway is closed"
             raise RuntimeError(msg)
         if (

@@ -3,7 +3,6 @@ from asyncio import (
     Event,
     TaskGroup,
     get_running_loop,
-    sleep,
     timeout,
 )
 from http import HTTPMethod
@@ -23,7 +22,6 @@ from bot.gateways.qq_api import (
     QQKeyboardButton,
     QQKeyboardPermission,
     QQNoContent,
-    QQRestClient,
     QQRoleMemberList,
     QQSendC2CMessageRequest,
     QQSendGroupMessageRequest,
@@ -31,7 +29,7 @@ from bot.gateways.qq_api import (
 )
 from bot.json import dumpb
 from pydantic import JsonValue, ValidationError
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future import AsyncHTTPResponse
 
 from tests.gateways.support import response
 
@@ -580,65 +578,7 @@ async def test_close_rejects_an_inflight_action_result_across_restart(
     result = await rest.request_qq(QQAction.LIST_BOT_GUILDS)
     assert result.model_dump() == []
     assert calls == 4
-
-
-async def test_start_recovers_from_failed_pool_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pool = Pool()
-    replacement = Pool(response(200, {"access_token": "token", "expires_in": 7200}))
-    clear = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None])
-    monkeypatch.setattr(pool, "clear", clear, raising=False)
-    pools = [pool, replacement]
-
-    def pool_factory() -> AsyncPoolManager:
-        return cast(AsyncPoolManager, pools.pop(0))
-
-    monkeypatch.setattr(qq_api, "AsyncPoolManager", pool_factory)
-    rest = QQRestClient("app", "secret", base_url="https://qq.example")
-
-    with pytest.raises(RuntimeError, match="cleanup failed"):
-        await rest.close()
-    with pytest.raises(RuntimeError, match="closed"):
-        await rest.access_token()
-
-    await rest.start()
-    assert clear.await_count == 2
-    assert await rest.access_token() == "token"
-
-
-async def test_start_waits_for_cancelled_close_before_replacing_owned_pool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clearing = Event()
-    release = Event()
-
-    class BlockingClearPool(Pool):
-        async def clear(self) -> None:
-            clearing.set()
-            await release.wait()
-
-    first = BlockingClearPool()
-    second = Pool(response(200, {"access_token": "restarted", "expires_in": 7200}))
-    pools = [first, second]
-
-    def pool_factory() -> AsyncPoolManager:
-        return cast(AsyncPoolManager, pools.pop(0))
-
-    monkeypatch.setattr(qq_api, "AsyncPoolManager", pool_factory)
-    rest = QQRestClient("app", "secret", base_url="https://qq.example")
-    async with timeout(1), TaskGroup() as tasks:
-        closing = tasks.create_task(rest.close())
-        await clearing.wait()
-        closing.cancel()
-        await sleep(0)
-        assert not closing.done()
-        starting = tasks.create_task(rest.start())
-        release.set()
-        with pytest.raises(CancelledError):
-            await closing
-        await starting
-    assert await rest.access_token() == "restarted"
+    assert not pool.cleared
 
 
 async def test_nonempty_invalid_json_is_never_an_empty_success() -> None:

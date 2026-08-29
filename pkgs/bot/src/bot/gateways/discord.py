@@ -690,8 +690,8 @@ class DiscordRestClient:
         self,
         token: SecretStr | str,
         *,
+        http_pool: AsyncPoolManager,
         base_url: str = DISCORD_API_BASE_URL,
-        http_pool: AsyncPoolManager | None = None,
     ) -> None:
         token_value = (
             token.get_secret_value() if isinstance(token, SecretStr) else token
@@ -705,8 +705,7 @@ class DiscordRestClient:
             raise ValueError(msg)
         self.token = SecretStr(token_value)
         self.base_url = validate_https_base_url(base_url, "Discord")
-        self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
-        self._owns_http_pool = http_pool is None
+        self.http_pool = http_pool
         self._rest_lifecycle_lock = Lock()
         self._route_buckets: dict[tuple[str, str], str] = {}
         self._rate_buckets: defaultdict[tuple[str, str, str], _DiscordRateBucket] = (
@@ -893,8 +892,6 @@ class DiscordRestClient:
     async def _finish_close(self, pending: tuple[AsyncEvent, ...]) -> None:
         try:
             await gather(*(completed.wait() for completed in pending))
-            if self._owns_http_pool:
-                await self.http_pool.clear()
             self._closed = True
         finally:
             self._route_buckets.clear()
@@ -912,8 +909,6 @@ class DiscordRestClient:
                 if self._accepting_requests:
                     return
                 await self._finish_close(tuple(self._inflight_requests))
-            if self._owns_http_pool:
-                self.http_pool = AsyncPoolManager()
             self._closed = False
             self._accepting_requests = True
             self._rate_limit_interrupt.clear()
@@ -1489,10 +1484,10 @@ class DiscordGateway(Gateway, DiscordRestClient):
         bot: Bot,
         *,
         token: SecretStr | str,
+        http_pool: AsyncPoolManager,
         intents: int = DEFAULT_DISCORD_INTENTS,
         shard: tuple[int, int] = (0, 1),
         base_url: str = DISCORD_API_BASE_URL,
-        http_pool: AsyncPoolManager | None = None,
         websocket_connector: WebSocketConnector | None = None,
     ) -> None:
         Gateway.__init__(self, bot)

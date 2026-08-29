@@ -1,7 +1,6 @@
 from asyncio import (
     Event,
     Lock,
-    create_task,
     get_running_loop,
     timeout,
 )
@@ -36,7 +35,6 @@ from pydantic import (
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.filepost import encode_multipart_formdata
 
-from bot._tasks import await_cleanup
 from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
 from bot.protocol.base import Model, StrictIntLiteral
@@ -2081,8 +2079,8 @@ class QQRestClient:
         app_id: str,
         client_secret: SecretStr | str,
         *,
+        http_pool: AsyncPoolManager,
         base_url: str = QQ_API_BASE_URL,
-        http_pool: AsyncPoolManager | None = None,
     ) -> None:
         credential = QQAccessTokenRequest.model_validate({
             "appId": app_id,
@@ -2095,13 +2093,10 @@ class QQRestClient:
         self.app_id = credential.app_id
         self.client_secret = SecretStr(credential.client_secret)
         self.base_url = validate_https_base_url(base_url, "QQ")
-        self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
-        self._owns_http_pool = http_pool is None
+        self.http_pool = http_pool
         self._token: SecretStr | None = None
         self._token_expires_at = 0.0
         self._token_lock = Lock()
-        self._rest_lifecycle_lock = Lock()
-        self._closed = False
         self._closed_event = Event()
 
     async def access_token(self) -> str:
@@ -2283,37 +2278,16 @@ class QQRestClient:
             )
 
     async def close(self) -> None:
-        async with self._rest_lifecycle_lock:
-            if self._closed:
-                return
-            self._closed_event.set()
-            self.invalidate_token()
-
-            async def finish_close() -> None:
-                if self._owns_http_pool:
-                    await self.http_pool.clear()
-                self._closed = True
-
-            await await_cleanup(create_task(finish_close()))
+        self._closed_event.set()
+        self.invalidate_token()
 
     async def start(self) -> None:
-        async with self._rest_lifecycle_lock:
-            if not self._closed and not self._closed_event.is_set():
-                return
-            if self._owns_http_pool:
-                if not self._closed:
-                    await self.http_pool.clear()
-                self.http_pool = AsyncPoolManager()
+        if self._closed_event.is_set():
             self._token_lock = Lock()
             self._closed_event = Event()
-            self._closed = False
 
     def _ensure_open(self, closed_event: Event) -> None:
-        if (
-            self._closed
-            or closed_event is not self._closed_event
-            or closed_event.is_set()
-        ):
+        if closed_event is not self._closed_event or closed_event.is_set():
             msg = "QQ REST client is closed"
             raise RuntimeError(msg)
 

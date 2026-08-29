@@ -41,7 +41,6 @@ from pydantic import (
 from pydantic.dataclasses import dataclass as validated_dataclass
 from pydantic.experimental.missing_sentinel import MISSING
 from robyn import Request, Response, Robyn
-from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Request as WebSocketRequest
 from websockets.http11 import Response as WebSocketResponse
@@ -525,14 +524,6 @@ class OneBot11Gateway(Gateway):
             raise ValueError(msg)
         self.action_backend = action
         self.access_token = access_token_value(access_token)
-        self.http_pool = (
-            (action.http_pool if action.http_pool is not None else AsyncPoolManager())
-            if isinstance(action, HttpAction)
-            else None
-        )
-        self._owns_http_pool = (
-            isinstance(action, HttpAction) and action.http_pool is None
-        )
         self._ws_actions = (
             WebSocketActionManager(action.timeout)
             if isinstance(action, WebSocketAction)
@@ -572,8 +563,6 @@ class OneBot11Gateway(Gateway):
                 return
             if self._closing:
                 await self._finish_close()
-            if self._owns_http_pool and self.http_pool is None:
-                self.http_pool = AsyncPoolManager()
             self._closed_event = AsyncEvent()
             self._closing = False
             try:
@@ -614,17 +603,9 @@ class OneBot11Gateway(Gateway):
         self._closing = True
         self._closed_event.set()
         try:
-            try:
-                await self._close_transports()
-            finally:
-                await self._close_http_pool()
+            await self._close_transports()
         finally:
             self._started = False
-
-    async def _close_http_pool(self) -> None:
-        if self.http_pool is not None and self._owns_http_pool:
-            await self.http_pool.clear()
-            self.http_pool = None
 
     async def _close_transports(self) -> None:
         self._closing = True
@@ -816,10 +797,6 @@ class OneBot11Gateway(Gateway):
         action: str,
         params: BaseModel,
     ) -> ActionResponse:
-        if self.http_pool is None:
-            msg = "OneBot 11 HTTP action backend is closed"
-            raise RuntimeError(msg)
-
         parsed_url = urlsplit(backend.base_url)
         action_url = urlunsplit((
             parsed_url.scheme,
@@ -829,7 +806,7 @@ class OneBot11Gateway(Gateway):
             "",
         ))
         async with timeout(backend.timeout):
-            response = await self.http_pool.request(
+            response = await backend.http_pool.request(
                 HTTPMethod.POST,
                 action_url,
                 headers=self.authorization_headers,

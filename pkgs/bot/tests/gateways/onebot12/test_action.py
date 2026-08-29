@@ -33,7 +33,7 @@ async def test_http_action_preserves_wire_envelope_defaults_and_null() -> None:
         bot = Bot()
         gateway = OneBot12Gateway(
             bot,
-            action=HttpAction(url),
+            action=HttpAction(url, http_pool=server.http_pool),
             access_token=AUTH,
         )
         bot.add_gateway(gateway)
@@ -106,7 +106,10 @@ async def test_http_action_rejects_transport_contract_violations(
         bot = Bot()
         gateway = OneBot12Gateway(
             bot,
-            action=HttpAction(f"{server.base_url}/action?source=test"),
+            action=HttpAction(
+                f"{server.base_url}/action?source=test",
+                http_pool=server.http_pool,
+            ),
         )
         bot.add_gateway(gateway)
 
@@ -132,62 +135,36 @@ async def test_http_action_rejects_invalid_response(
     async with ActionServer(payload) as server:
         gateway = OneBot12Gateway(
             Bot(),
-            action=HttpAction(f"{server.base_url}/action"),
+            action=HttpAction(
+                f"{server.base_url}/action",
+                http_pool=server.http_pool,
+            ),
         )
         async with gateway:
             with pytest.raises(ValidationError):
                 await gateway.connection_for(SELF).action("get_version")
 
 
-async def test_gateway_does_not_close_borrowed_http_pool() -> None:
-    async with (
-        ActionServer(ACTION_RESPONSE) as server,
-        AsyncPoolManager() as pool,
-    ):
-        url = f"{server.base_url}/action?source=test"
-        bot = Bot()
-        gateway = OneBot12Gateway(
-            bot,
-            action=HttpAction(url, http_pool=pool),
-        )
-        bot.add_gateway(gateway)
-        async with bot:
-            await gateway.connection_for(SELF).action("get_version")
-
-        response = await pool.request("POST", url, json={"still": "open"})
-        assert response.status == HTTPStatus.OK
-        await response.data
-
-    assert len(server.requests) == 2
-
-
-async def test_start_and_cleanup_failures_close_owned_http_pool() -> None:
-    gateway = OneBot12Gateway(
-        Bot(),
-        ingress=[ReverseWebSocket(port=0)],
-        action=HttpAction("http://onebot.example"),
-    )
-    pool = AsyncMock(spec=AsyncPoolManager)
-    gateway.http_pool = cast(AsyncPoolManager, pool)
-    cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
+async def test_startup_and_cleanup_failures_are_grouped() -> None:
+    gateway = OneBot12Gateway(Bot(), ingress=[ReverseWebSocket(port=0)])
+    startup_error = RuntimeError("start failed")
+    cleanup_error = RuntimeError("cleanup failed")
     with (
         patch.object(
             gateway,
             "_start_reverse_websocket",
-            AsyncMock(side_effect=RuntimeError("start failed")),
+            AsyncMock(side_effect=startup_error),
         ),
-        patch.object(gateway, "_close_transports", cleanup),
-        pytest.raises(BaseExceptionGroup, match="startup and cleanup") as error,
+        patch.object(
+            gateway,
+            "_close_transports",
+            AsyncMock(side_effect=cleanup_error),
+        ),
+        pytest.raises(BaseExceptionGroup) as error,
     ):
         await gateway.start()
 
-    assert [str(exc) for exc in error.value.exceptions] == [
-        "start failed",
-        "cleanup failed",
-    ]
-    cleanup.assert_awaited_once()
-    pool.clear.assert_awaited_once()
-    assert gateway.http_pool is None
+    assert error.value.exceptions == (startup_error, cleanup_error)
     assert gateway._started is False  # ruff: ignore[private-member-access]
 
 
@@ -238,7 +215,10 @@ async def test_closed_gateway_rejects_actions() -> None:
     bot = Bot()
     gateway = OneBot12Gateway(
         bot,
-        action=HttpAction("http://127.0.0.1:1/action"),
+        action=HttpAction(
+            "http://127.0.0.1:1/action",
+            http_pool=cast(AsyncPoolManager, AsyncMock(spec=AsyncPoolManager)),
+        ),
     )
     bot.add_gateway(gateway)
     connection = gateway.connection_for(SELF)

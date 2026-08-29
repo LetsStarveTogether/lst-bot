@@ -8,7 +8,7 @@ from typing import Self, cast
 
 from bot.json import dumpb, loads
 from pydantic import JsonValue
-from urllib3_future import AsyncHTTPResponse
+from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
 _DEFAULT_ACTION_RESPONSE: JsonValue = {
     "status": "ok",
@@ -99,6 +99,7 @@ class ActionServer:
         self.status = status
         self.content_type = content_type
         self.requests: list[RecordedRequest] = []
+        self.http_pool = AsyncPoolManager()
         self._server: ThreadingHTTPServer
         self._thread: Thread
 
@@ -153,3 +154,4 @@ class ActionServer:
         await to_thread(self._server.shutdown)
         self._server.server_close()
         self._thread.join()
+        await self.http_pool.clear()

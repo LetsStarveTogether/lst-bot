@@ -68,7 +68,7 @@ async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> Non
         bot = Bot()
         gateway = OneBot11Gateway(
             bot,
-            action=HttpAction(server.base_url),
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
         )
         bot.add_gateway(gateway)
 
@@ -133,7 +133,10 @@ async def test_group_http_quick_reply_does_not_need_action_backend() -> None:
 async def test_http_handler_can_disable_quick_response() -> None:
     async with ActionServer() as server:
         bot = Bot()
-        gateway = OneBot11Gateway(bot, action=HttpAction(server.base_url))
+        gateway = OneBot11Gateway(
+            bot,
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
         bot.add_gateway(gateway)
 
         @bot.on_msg(block=True)
@@ -159,7 +162,10 @@ async def test_http_quick_operation_context_expires_with_response() -> None:
 
     async with timeout(1), ActionServer() as server, TaskGroup() as tasks:
         bot = Bot()
-        gateway = OneBot11Gateway(bot, action=HttpAction(server.base_url))
+        gateway = OneBot11Gateway(
+            bot,
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
         bot.add_gateway(gateway)
 
         @bot.on_msg(block=True)

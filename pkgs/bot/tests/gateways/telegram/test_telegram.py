@@ -5,7 +5,6 @@ from asyncio import (
     QueueFull,
     TaskGroup,
     create_task,
-    sleep,
     timeout,
 )
 from collections.abc import Mapping
@@ -256,7 +255,12 @@ def test_current_telegram_model_boundaries() -> None:
     with pytest.raises(ValidationError):
         telegram_module._message_id(maximum_int32 + 1)
     with pytest.raises(ValidationError):
-        TelegramGateway(Bot(), token=CREDENTIAL, poll_timeout=maximum_int32 + 1)
+        TelegramGateway(
+            Bot(),
+            token=CREDENTIAL,
+            http_pool=cast(AsyncPoolManager, Pool()),
+            poll_timeout=maximum_int32 + 1,
+        )
 
     webhook = {
         "url": "",
@@ -497,7 +501,7 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
 )
 def test_token_is_validated_without_leaking(token: str) -> None:
     with pytest.raises(ValueError, match="invalid Telegram bot token") as error:
-        TelegramRestClient(token)
+        TelegramRestClient(token, http_pool=cast(AsyncPoolManager, Pool()))
     if token:
         assert token not in str(error.value)
 
@@ -560,7 +564,11 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
     with pytest.raises(ValidationError):
         await rest.get_updates(offset=True, poll_timeout=30)
     with pytest.raises(ValidationError):
-        TelegramRestClient(CREDENTIAL, request_timeout=float("nan"))
+        TelegramRestClient(
+            CREDENTIAL,
+            http_pool=cast(AsyncPoolManager, Pool()),
+            request_timeout=float("nan"),
+        )
 
     invalid = client(
         Pool({
@@ -881,44 +889,6 @@ async def test_cancellation_is_not_wrapped() -> None:
             await task
 
 
-async def test_owned_pool_cleanup_can_be_retried_after_cancellation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    clearing = Event()
-    release = Event()
-
-    class FailingClearPool(Pool):
-        def __init__(self) -> None:
-            super().__init__()
-            self.clear_calls = 0
-
-        async def clear(self) -> None:
-            self.clear_calls += 1
-            if self.clear_calls == 1:
-                msg = "clear failed"
-                raise RuntimeError(msg)
-            clearing.set()
-            await release.wait()
-
-    pool = FailingClearPool()
-    monkeypatch.setattr(telegram_api_module, "AsyncPoolManager", lambda: pool)
-    rest = TelegramRestClient(CREDENTIAL)
-
-    with pytest.raises(RuntimeError, match="clear failed"):
-        await rest.close()
-    closing = create_task(rest.close())
-    await clearing.wait()
-    closing.cancel()
-    await sleep(0)
-    assert not closing.done()
-    release.set()
-    with pytest.raises(CancelledError):
-        await closing
-    await rest.close()
-
-    assert pool.clear_calls == 2
-
-
 async def test_invalid_server_error_is_retryable_transport_failure() -> None:
     invalid = response(502, body=b"bad gateway")
     pool = Pool()
@@ -1063,24 +1033,16 @@ async def test_cancelling_only_start_waiter_rolls_back(
         with pytest.raises(CancelledError):
             await startup
 
-    assert gateway._closed
+    assert gateway._closed_event.is_set()
     assert gateway._startup_task is None
 
 
-async def test_failed_start_preserves_cleanup_error_and_can_retry(
+async def test_failed_start_can_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = Pool()
     identify_error = RuntimeError("identify failed")
-    clear_error = RuntimeError("clear failed")
-    clear = AsyncMock(side_effect=[clear_error, None, None])
-    monkeypatch.setattr(pool, "clear", clear)
-    monkeypatch.setattr(telegram_api_module, "AsyncPoolManager", lambda: pool)
-    gateway = TelegramGateway(
-        Bot(),
-        token=CREDENTIAL,
-        base_url="https://telegram.example",
-    )
+    gateway = make_gateway(pool)
     identify = AsyncMock(
         side_effect=[
             identify_error,
@@ -1090,19 +1052,14 @@ async def test_failed_start_preserves_cleanup_error_and_can_retry(
     monkeypatch.setattr(gateway, "_identify", identify)
     async with timeout(1):
         try:
-            with pytest.raises(
-                BaseExceptionGroup,
-                match="startup and cleanup",
-            ) as error:
+            with pytest.raises(RuntimeError, match="identify failed"):
                 await gateway.start()
-
-            assert error.value.exceptions == (identify_error, clear_error)
             await gateway.start()
             assert identify.await_count == 2
-            assert clear.await_count == 2
         finally:
             async with timeout(1):
                 await gateway.close()
+    assert not pool.cleared
 
 
 async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
@@ -1484,7 +1441,7 @@ async def test_webhook_conflict_fails_before_polling() -> None:
     with pytest.raises(RuntimeError, match="webhook") as error:
         await gateway.start()
     assert "secret.example" not in str(error.value)
-    assert gateway._closed
+    assert gateway._closed_event.is_set()
 
 
 async def test_poller_respects_flood_wait_and_stops_on_auth_error(

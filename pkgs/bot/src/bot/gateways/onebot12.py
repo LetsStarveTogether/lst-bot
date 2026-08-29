@@ -29,7 +29,6 @@ from pydantic import (
 )
 from pydantic.dataclasses import dataclass as validated_dataclass
 from robyn import Request, Response, Robyn
-from urllib3_future import AsyncPoolManager
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import InvalidURI
 from websockets.headers import parse_subprotocol
@@ -186,10 +185,6 @@ class OneBot12Gateway(Gateway):
             raise ValueError(msg)
         self.action_backend = action
         self.access_token = access_token_value(access_token)
-        self._owns_http_pool = (
-            isinstance(action, HttpAction) and action.http_pool is None
-        )
-        self.http_pool = action.http_pool if isinstance(action, HttpAction) else None
         self._ws_actions = (
             WebSocketActionManager(action.timeout)
             if isinstance(action, WebSocketAction)
@@ -253,17 +248,9 @@ class OneBot12Gateway(Gateway):
         self._closing = True
         self._closed_event.set()
         try:
-            try:
-                await self._close_transports()
-            finally:
-                await self._close_http_pool()
+            await self._close_transports()
         finally:
             self._started = False
-
-    async def _close_http_pool(self) -> None:
-        if self._owns_http_pool and self.http_pool is not None:
-            await self.http_pool.clear()
-            self.http_pool = None
 
     async def _close_transports(self) -> None:
         self._closing = True
@@ -383,15 +370,9 @@ class OneBot12Gateway(Gateway):
         closed_event: AsyncEvent,
     ) -> ActionResponse:
         self._ensure_open(closed_event)
-        if self.http_pool is None:
-            if not self._owns_http_pool:
-                msg = "OneBot 12 HTTP action pool is unavailable"
-                raise RuntimeError(msg)
-            self.http_pool = AsyncPoolManager()
-
         request = ActionRequest(action=action, params=params, self=self_)
         async with timeout(backend.timeout):
-            response = await self.http_pool.request(
+            response = await backend.http_pool.request(
                 HTTPMethod.POST,
                 backend.base_url,
                 headers=self._authorization_headers,

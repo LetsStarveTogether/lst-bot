@@ -1,6 +1,5 @@
 from asyncio import (
     Event,
-    Lock,
     create_task,
     timeout,
 )
@@ -668,8 +667,8 @@ class TelegramRestClient:
         self,
         token: SecretStr | str,
         *,
+        http_pool: AsyncPoolManager,
         base_url: str = TELEGRAM_API_BASE_URL,
-        http_pool: AsyncPoolManager | None = None,
         request_timeout: float = 30.0,
         max_rate_limit_retries: int = 2,
         max_retry_after: int = 30,
@@ -694,41 +693,18 @@ class TelegramRestClient:
         max_retry_after = _NON_NEGATIVE_INT_ADAPTER.validate_python(max_retry_after)
         self.token = SecretStr(value)
         self.base_url = validate_https_base_url(base_url, "Telegram")
-        self.http_pool = http_pool if http_pool is not None else AsyncPoolManager()
-        self._owns_http_pool = http_pool is None
-        self._pool_closed = False
+        self.http_pool = http_pool
         self.request_timeout = float(request_timeout)
         self.max_rate_limit_retries = max_rate_limit_retries
         self.max_retry_after = max_retry_after
-        self._lifecycle_lock = Lock()
-        self._closed = False
         self._closed_event = Event()
 
     async def start(self) -> None:
-        async with self._lifecycle_lock:
-            if not self._closed:
-                return
-            if self._owns_http_pool:
-                if not self._pool_closed:
-                    await self.http_pool.clear()
-                self.http_pool = AsyncPoolManager()
-                self._pool_closed = False
+        if self._closed_event.is_set():
             self._closed_event = Event()
-            self._closed = False
 
     async def close(self) -> None:
-        async with self._lifecycle_lock:
-            if self._closed and (not self._owns_http_pool or self._pool_closed):
-                return
-            self._closed = True
-            self._closed_event.set()
-            if self._owns_http_pool:
-
-                async def finish_close() -> None:
-                    await self.http_pool.clear()
-                    self._pool_closed = True
-
-                await await_cleanup(create_task(finish_close()))
+        self._closed_event.set()
 
     async def call(
         self,
@@ -890,11 +866,7 @@ class TelegramRestClient:
         )
 
     def _ensure_open(self, closed_event: Event) -> None:
-        if (
-            self._closed
-            or closed_event is not self._closed_event
-            or closed_event.is_set()
-        ):
+        if closed_event is not self._closed_event or closed_event.is_set():
             msg = "Telegram REST client is closed"
             raise RuntimeError(msg)
 

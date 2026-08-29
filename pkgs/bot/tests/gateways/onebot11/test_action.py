@@ -29,7 +29,6 @@ from bot.gateways.onebot11 import (
 from bot.protocol.actions import ActionParamModel
 from pydantic import JsonValue, RootModel, ValidationError
 from urllib3_future import AsyncPoolManager
-from websockets.asyncio.server import Server
 
 from tests.gateways.support import ActionServer, HangingBodyResponse, response
 
@@ -53,7 +52,10 @@ async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None
     async with ActionServer(action_response_payload({"message_id": 99})) as server:
         gateway = OneBot11Gateway(
             Bot(),
-            action=HttpAction(f"{server.base_url}/base?trace=1"),
+            action=HttpAction(
+                f"{server.base_url}/base?trace=1",
+                http_pool=server.http_pool,
+            ),
             access_token=credential,
         )
         connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
@@ -99,7 +101,10 @@ async def test_raw_actions_preserve_name_null_and_message_array() -> None:
         {"type": "reply", "data": {"id": "3"}},
     ]
     async with ActionServer(action_response_payload({})) as server:
-        gateway = OneBot11Gateway(Bot(), action=HttpAction(server.base_url))
+        gateway = OneBot11Gateway(
+            Bot(),
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
         connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
         async with gateway:
             await connection.action("vendor/action", optional=None)
@@ -161,68 +166,37 @@ async def test_http_action_checks_status_before_decoding_body(
     status: HTTPStatus,
 ) -> None:
     async with ActionServer("not-json", status=status) as server:
-        gateway = OneBot11Gateway(Bot(), action=HttpAction(server.base_url))
+        gateway = OneBot11Gateway(
+            Bot(),
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
         connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
         async with gateway:
             with pytest.raises(RuntimeError, match=f"HTTP {status}"):
                 await connection.action("get_status")
 
 
-async def test_start_and_cleanup_failures_close_owned_http_pool() -> None:
-    gateway = OneBot11Gateway(
-        Bot(),
-        ingress=[ReverseWebSocket(port=0)],
-        action=HttpAction("http://onebot.example"),
-    )
-    pool = gateway.http_pool
-    assert pool is not None
-    clear = AsyncMock()
-    cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
+async def test_startup_and_cleanup_failures_are_grouped() -> None:
+    gateway = OneBot11Gateway(Bot(), ingress=[ReverseWebSocket(port=0)])
+    startup_error = RuntimeError("start failed")
+    cleanup_error = RuntimeError("cleanup failed")
     with (
-        patch.object(pool, "clear", clear),
         patch.object(
             gateway,
             "_start_reverse_websocket",
-            AsyncMock(side_effect=RuntimeError("start failed")),
+            AsyncMock(side_effect=startup_error),
         ),
-        patch.object(gateway, "_close_transports", cleanup),
-        pytest.raises(BaseExceptionGroup, match="startup and cleanup") as error,
+        patch.object(
+            gateway,
+            "_close_transports",
+            AsyncMock(side_effect=cleanup_error),
+        ),
+        pytest.raises(BaseExceptionGroup) as error,
     ):
         await gateway.start()
 
-    assert [str(exc) for exc in error.value.exceptions] == [
-        "start failed",
-        "cleanup failed",
-    ]
-    clear.assert_awaited_once()
-    assert gateway.http_pool is None
+    assert error.value.exceptions == (startup_error, cleanup_error)
     assert gateway._started is False  # ruff: ignore[private-member-access]
-
-
-async def test_restart_finishes_cleanup_before_opening_transports() -> None:
-    gateway = OneBot11Gateway(
-        Bot(),
-        ingress=[ReverseWebSocket(port=0)],
-        action=HttpAction("http://onebot.example"),
-    )
-    start_reverse_websocket = gateway._start_reverse_websocket  # ruff: ignore[private-member-access]
-    cleanup = AsyncMock(side_effect=[RuntimeError("cleanup failed"), None])
-
-    async def observe_restart(ingress: ReverseWebSocket) -> Server:
-        assert cleanup.await_count == 2
-        assert gateway.http_pool is not None
-        return await start_reverse_websocket(ingress)
-
-    with (
-        patch.object(gateway, "_close_transports", cleanup),
-        patch.object(gateway, "_start_reverse_websocket", observe_restart),
-    ):
-        with pytest.raises(RuntimeError, match="cleanup failed"):
-            await gateway.close()
-        await gateway.start()
-
-    assert gateway.reverse_websocket_ports
-    await gateway.close()
 
 
 async def test_http_action_timeout_covers_response_body() -> None:
@@ -257,15 +231,16 @@ async def test_http_action_timeout_covers_response_body() -> None:
 async def test_closed_gateway_rejects_new_http_actions() -> None:
     gateway = OneBot11Gateway(
         Bot(),
-        action=HttpAction("http://127.0.0.1:1"),
+        action=HttpAction(
+            "http://127.0.0.1:1",
+            http_pool=cast(AsyncPoolManager, AsyncMock(spec=AsyncPoolManager)),
+        ),
     )
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
     await gateway.close()
 
     with pytest.raises(RuntimeError, match="gateway is closed"):
         await connection.action("get_status")
-
-    assert gateway.http_pool is None
 
 
 async def test_http_action_cannot_cross_close_and_restart() -> None:
@@ -302,29 +277,6 @@ async def test_http_action_cannot_cross_close_and_restart() -> None:
             pool.release.set()
             async with timeout(1):
                 await gateway.close()
-
-
-async def test_gateway_does_not_close_borrowed_http_pool() -> None:
-    class FalseyPool(AsyncPoolManager):
-        def __bool__(self) -> bool:
-            return False
-
-    async with (
-        ActionServer(action_response_payload({})) as server,
-        FalseyPool() as pool,
-    ):
-        gateway = OneBot11Gateway(
-            Bot(),
-            action=HttpAction(server.base_url, http_pool=pool),
-        )
-        assert gateway.http_pool is pool
-
-        async with gateway:
-            pass
-
-        response = await pool.request("POST", server.base_url, json={})
-        assert response.status == HTTPStatus.OK
-        await response.data
 
 
 @pytest.mark.parametrize(
@@ -556,7 +508,10 @@ async def test_message_return_uses_group_action() -> None:
     assert event.self_ is not None
 
     async with ActionServer() as server:
-        gateway = OneBot11Gateway(Bot(), action=HttpAction(server.base_url))
+        gateway = OneBot11Gateway(
+            Bot(),
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
         connection = gateway.connection_for(event.self_)
         async with gateway:
             await gateway.execute_return_action(
@@ -589,7 +544,10 @@ async def test_message_return_uses_group_action() -> None:
 async def test_onebot11_does_not_support_internal_channel_send() -> None:
     gateway = OneBot11Gateway(
         Bot(),
-        action=HttpAction("http://127.0.0.1:1"),
+        action=HttpAction(
+            "http://127.0.0.1:1",
+            http_pool=cast(AsyncPoolManager, AsyncMock(spec=AsyncPoolManager)),
+        ),
     )
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
 

@@ -40,7 +40,7 @@ from bot.gateways.base import (
 from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from robyn import Headers
-from urllib3_future import AsyncHTTPResponse
+from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
@@ -73,7 +73,10 @@ def test_https_base_url_is_strict_and_canonical() -> None:
 
 def test_http_action_base_url_is_strict_and_canonical() -> None:
     assert (
-        HttpAction("http://onebot.example/action?source=test").base_url
+        HttpAction(
+            "http://onebot.example/action?source=test",
+            http_pool=AsyncMock(spec=AsyncPoolManager),
+        ).base_url
         == "http://onebot.example/action?source=test"
     )
     for invalid in (
@@ -87,7 +90,7 @@ def test_http_action_base_url_is_strict_and_canonical() -> None:
         "http://",
     ):
         with pytest.raises(ValueError, match=r"absolute HTTP\(S\) URL"):
-            HttpAction(invalid)
+            HttpAction(invalid, http_pool=AsyncMock(spec=AsyncPoolManager))
 
 
 def test_json_codec_is_compact_utf8_and_strict() -> None:
@@ -358,13 +361,6 @@ def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
 
 
 @pytest.mark.parametrize(
-    ("action_type", "args"),
-    [
-        pytest.param(WebSocketAction, (), id="websocket"),
-        pytest.param(HttpAction, ("https://onebot.example",), id="http"),
-    ],
-)
-@pytest.mark.parametrize(
     "timeout",
     [
         pytest.param(True, id="boolean"),
@@ -375,13 +371,18 @@ def test_gateway_does_not_cache_connections_from_untrusted_ids() -> None:
         pytest.param(float("inf"), id="infinity"),
     ],
 )
-def test_action_rejects_invalid_timeout(
-    action_type: type[HttpAction | WebSocketAction],
-    args: tuple[str, ...],
-    timeout: object,
-) -> None:
+def test_websocket_action_rejects_invalid_timeout(timeout: object) -> None:
     with pytest.raises(ValueError, match="Input should be"):
-        action_type(*args, timeout=timeout)  # ty: ignore[invalid-argument-type]
+        WebSocketAction(timeout=timeout)  # ty: ignore[invalid-argument-type]
+
+
+def test_http_action_uses_the_same_timeout_boundary() -> None:
+    with pytest.raises(ValueError, match="Input should be"):
+        HttpAction(
+            "https://onebot.example",
+            timeout=0,
+            http_pool=AsyncMock(spec=AsyncPoolManager),
+        )
 
 
 async def test_websockets_connection_requires_text_frames() -> None:

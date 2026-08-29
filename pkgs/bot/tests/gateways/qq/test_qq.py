@@ -328,7 +328,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
     assert not gateway._online
     assert gateway._task is None
     assert gateway._session_id is None
-    assert gateway._closed
+    assert gateway._closed_event.is_set()
 
 
 async def test_repeated_v2_messages_are_dispatched_once(

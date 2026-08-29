@@ -532,10 +532,10 @@ class QQGateway(Gateway, QQRestClient):
         *,
         app_id: str,
         client_secret: SecretStr | str,
+        http_pool: AsyncPoolManager,
         intents: QQIntent = QQIntent.GROUP_AND_C2C,
         shard: tuple[int, int] = (0, 1),
         base_url: str = QQ_API_BASE_URL,
-        http_pool: AsyncPoolManager | None = None,
         websocket_connector: WebSocketConnector | None = None,
     ) -> None:
         Gateway.__init__(self, bot)
