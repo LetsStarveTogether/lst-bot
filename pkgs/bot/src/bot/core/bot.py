@@ -7,6 +7,7 @@ from asyncio import (
     Task,
     create_task,
     current_task,
+    ensure_future,
     gather,
     get_running_loop,
     timeout_at,
@@ -312,7 +313,7 @@ class Bot(EventRouter):
         errors: list[BaseException] = []
         for callback in callbacks:
             try:
-                await callback()
+                await await_cleanup(ensure_future(callback()))
             except BaseException as exc:
                 failed.append(callback)
                 errors.append(exc)
@@ -400,30 +401,26 @@ class Bot(EventRouter):
         workers = self._event_workers
         for worker in workers:
             worker.cancel()
+        results = await gather(*workers, return_exceptions=True)
+        self._event_workers = ()
 
-        async def finish_stop() -> None:
-            results = await gather(*workers, return_exceptions=True)
-            self._event_workers = ()
+        queue, self._event_queue = self._event_queue, None
+        if queue is not None:
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except QueueEmpty:
+                    break
+                if item.result is not None and not item.result.done():
+                    item.result.cancel()
 
-            queue, self._event_queue = self._event_queue, None
-            if queue is not None:
-                while True:
-                    try:
-                        item = queue.get_nowait()
-                    except QueueEmpty:
-                        break
-                    if item.result is not None and not item.result.done():
-                        item.result.cancel()
-
-            errors = [
-                result
-                for result in results
-                if isinstance(result, BaseException)
-                and not isinstance(result, CancelledError)
-            ]
-            _raise_errors("Bot dispatcher shutdown failed", errors)
-
-        await await_cleanup(create_task(finish_stop(), name="bot-dispatch-close"))
+        errors = [
+            result
+            for result in results
+            if isinstance(result, BaseException)
+            and not isinstance(result, CancelledError)
+        ]
+        _raise_errors("Bot dispatcher shutdown failed", errors)
 
     async def _dispatch_worker(self, queue: Queue[_QueuedEvent]) -> None:
         worker = cast(Task[None], current_task())

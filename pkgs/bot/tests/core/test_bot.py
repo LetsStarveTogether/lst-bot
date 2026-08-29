@@ -566,6 +566,7 @@ async def test_cancelled_close_finishes_dispatcher_cleanup() -> None:
 
 async def test_repeated_close_cancellation_stays_cancelled() -> None:
     entered = [Event(), Event()]
+    release = [Event(), Event()]
 
     class BlockingGateway(Gateway):
         def __init__(self, bot: Bot, index: int) -> None:
@@ -578,7 +579,7 @@ async def test_repeated_close_cancellation_stays_cancelled() -> None:
             self.closes += 1
             if self.closes == 1:
                 entered[self.index].set()
-                await Event().wait()
+                await release[self.index].wait()
 
     bot = Bot()
     bot.add_gateway(BlockingGateway(bot, 0))
@@ -589,8 +590,14 @@ async def test_repeated_close_cancellation_stays_cancelled() -> None:
         closing = create_task(bot.close())
         await entered[1].wait()
         closing.cancel()
+        await sleep(0)
+        assert not closing.done()
+        release[1].set()
         await entered[0].wait()
         closing.cancel()
+        await sleep(0)
+        assert not closing.done()
+        release[0].set()
 
         with pytest.raises(CancelledError):
             await closing
