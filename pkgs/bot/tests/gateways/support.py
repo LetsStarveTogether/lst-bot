@@ -65,7 +65,6 @@ class Pool:
             for item in items
         ]
         self.requests: list[tuple[str, str, dict[str, object]]] = []
-        self.cleared = False
 
     async def request(
         self,
@@ -75,9 +74,6 @@ class Pool:
     ) -> AsyncHTTPResponse:
         self.requests.append((method, url, kwargs))
         return self.responses.pop(0)
-
-    async def clear(self) -> None:
-        self.cleared = True
 
 
 @dataclass(frozen=True, slots=True)

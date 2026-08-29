@@ -2068,7 +2068,6 @@ async def test_close_waits_for_all_inflight_requests() -> None:
         assert isinstance(await authenticated_task, DiscordNoContent)
         await close_task
     assert rest._interaction_callbacks == {}
-    assert not pool.cleared
 
 
 async def test_close_waits_for_request_not_its_caller() -> None:
@@ -2180,4 +2179,3 @@ async def test_unauthorized_client_preserves_external_pool() -> None:
     await rest.close()
 
     assert len(pool.requests) == 1
-    assert not pool.cleared

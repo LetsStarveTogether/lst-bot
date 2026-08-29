@@ -578,7 +578,6 @@ async def test_close_rejects_an_inflight_action_result_across_restart(
     result = await rest.request_qq(QQAction.LIST_BOT_GUILDS)
     assert result.model_dump() == []
     assert calls == 4
-    assert not pool.cleared
 
 
 async def test_nonempty_invalid_json_is_never_an_empty_success() -> None:
