@@ -419,17 +419,20 @@ def test_onebot11_action_response_status_matches_retcode() -> None:
         "status": "ok",
         "retcode": 0,
         "data": {"message_id": 1},
+        "message": "ignored on success",
     })
     failed = decode_action_response({
         "status": "failed",
         "retcode": 1404,
         "data": None,
         "message": "missing",
+        "msg": "legacy",
     })
     asynchronous = decode_action_response({
         "status": "async",
         "retcode": 1,
         "data": None,
+        "msg": "queued",
     })
 
     assert success == ActionResponse.ok({"message_id": 1})
@@ -438,6 +441,7 @@ def test_onebot11_action_response_status_matches_retcode() -> None:
     assert failed.message == "missing"
     assert asynchronous.status == ApiStatus.ASYNC
     assert asynchronous.retcode == 1
+    assert asynchronous.message == "queued"
 
 
 def test_action_response_requires_an_object_model() -> None:

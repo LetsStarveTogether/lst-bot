@@ -1,7 +1,6 @@
 from asyncio import Event, QueueFull, TaskGroup, gather, timeout
 from http import HTTPStatus
 from math import inf, nan
-from types import SimpleNamespace
 from typing import Any, cast, override
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -26,7 +25,6 @@ from bot.gateways.onebot11 import (
 from bot.json import dumpb, loads
 from bot.testing import ScriptedWebSocket
 from websockets.asyncio.client import connect
-from websockets.asyncio.server import Server
 from websockets.exceptions import InvalidStatus
 from websockets.typing import Origin
 
@@ -117,19 +115,6 @@ def test_http_webhook_repr_hides_secret() -> None:
     credential = "secret"
 
     assert credential not in repr(HttpWebhook(secret=credential))
-
-
-def test_reverse_websocket_reports_every_actual_port() -> None:
-    gateway = OneBot11Gateway(Bot())
-    sockets = (
-        SimpleNamespace(getsockname=lambda port=port: ("localhost", port))
-        for port in (10001, 10002, 10001)
-    )
-    gateway._reverse_servers.append(  # ruff: ignore[private-member-access]
-        cast(Server, SimpleNamespace(sockets=list(sockets)))
-    )
-
-    assert gateway.reverse_websocket_ports == (10001, 10002)
 
 
 def test_universal_websocket_identifies_events_before_extension_fields() -> None:
@@ -279,7 +264,7 @@ async def test_reverse_websocket_handshake_boundaries(
     bot.add_gateway(gateway)
 
     async with timeout(1), bot:
-        port = gateway.reverse_websocket_ports[0]
+        port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
         with pytest.raises(InvalidStatus) as exc_info:
             async with connect(
                 f"ws://127.0.0.1:{port}{path}",
@@ -309,7 +294,7 @@ async def test_reverse_websocket_close_cancels_handler_waiting_for_bot() -> None
     websocket = None
     try:
         with patch.object(bot, "wait_until_running", side_effect=mark_waiting):
-            port = gateway.reverse_websocket_ports[0]
+            port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
             async with timeout(1):
                 websocket = await connect(
                     f"ws://127.0.0.1:{port}/onebot/ws",
@@ -347,7 +332,7 @@ async def test_reverse_websocket_dispatches_and_matches_action_response() -> Non
         completed.set()
 
     async with timeout(2), bot:
-        port = gateway.reverse_websocket_ports[0]
+        port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
         async with connect(
             f"ws://127.0.0.1:{port}/onebot/ws",
             additional_headers={

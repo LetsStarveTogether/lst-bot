@@ -25,6 +25,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -211,28 +212,11 @@ class OneBot11ActionResponse(Model):
     status: Literal["ok", "async", "failed"]
     retcode: StrictInt
     data: JsonValue
-    message: StrictStr | None = Field(
-        default=None,
-        exclude_if=is_none,
-    )
-    msg: StrictStr | None = Field(
-        default=None,
-        exclude_if=is_none,
+    message: StrictStr = Field(
+        default="",
+        validation_alias=AliasChoices("message", "msg"),
     )
     echo: JsonValue = Field(default=None, exclude_if=is_none)
-
-    @model_validator(mode="after")
-    def match_status_and_retcode(self) -> Self:
-        if self.status == "ok" and self.retcode != 0:
-            msg = "OneBot 11 ok action response must use retcode 0"
-            raise ValueError(msg)
-        if self.status == "async" and self.retcode != 1:
-            msg = "OneBot 11 async action response must use retcode 1"
-            raise ValueError(msg)
-        if self.status == "failed" and self.retcode in {0, 1}:
-            msg = "OneBot 11 failed action response must not use retcode 0 or 1"
-            raise ValueError(msg)
-        return self
 
 
 class OneBot11MessageSegment(Model):
@@ -537,7 +521,6 @@ class OneBot11Gateway(Gateway):
         self._reverse_tasks: set[Task[None]] = set()
         self._lifecycle_lock = Lock()
         self._started = False
-        self._closing = False
         self._closed_event = AsyncEvent()
 
     @property
@@ -546,25 +529,14 @@ class OneBot11Gateway(Gateway):
             return None
         return {"Authorization": f"Bearer {self.access_token}"}
 
-    @property
-    def reverse_websocket_ports(self) -> tuple[int, ...]:
-        return tuple(
-            dict.fromkeys(
-                socket.getsockname()[1]
-                for server in self._reverse_servers
-                for socket in server.sockets
-            )
-        )
-
     @override
     async def start(self) -> None:
         async with self._lifecycle_lock:
             if self._started:
                 return
-            if self._closing:
+            if self._closed_event.is_set():
                 await self._finish_close()
             self._closed_event = AsyncEvent()
-            self._closing = False
             try:
                 for ingress in self.ingress:
                     if isinstance(ingress, ReverseWebSocket):
@@ -591,7 +563,6 @@ class OneBot11Gateway(Gateway):
     @override
     async def close(self) -> None:
         async with self._lifecycle_lock:
-            self._closing = True
             self._closed_event.set()
             finishing = create_task(
                 self._finish_close(),
@@ -600,7 +571,6 @@ class OneBot11Gateway(Gateway):
             await await_cleanup(finishing)
 
     async def _finish_close(self) -> None:
-        self._closing = True
         self._closed_event.set()
         try:
             await self._close_transports()
@@ -608,7 +578,6 @@ class OneBot11Gateway(Gateway):
             self._started = False
 
     async def _close_transports(self) -> None:
-        self._closing = True
         forward_tasks = tuple(self._forward_tasks)
         reverse_servers = tuple(self._reverse_servers)
         for server in reverse_servers:
@@ -753,11 +722,7 @@ class OneBot11Gateway(Gateway):
         return adapt_action_response(action, response, connection.self_)
 
     def _ensure_open(self, closed_event: AsyncEvent) -> None:
-        if (
-            self._closing
-            or closed_event is not self._closed_event
-            or closed_event.is_set()
-        ):
+        if closed_event is not self._closed_event or closed_event.is_set():
             msg = "OneBot 11 gateway is closed"
             raise RuntimeError(msg)
 
@@ -906,7 +871,7 @@ class OneBot11Gateway(Gateway):
         assert task is not None  # ruff: ignore[assert]
         self._reverse_tasks.add(task)
         try:
-            if self._closing:
+            if self._closed_event.is_set():
                 return
             request = websocket.request
             if request is None:
@@ -995,7 +960,7 @@ class OneBot11Gateway(Gateway):
         return expected_self or event_self
 
     async def _run_forward_websocket(self, ingress: ForwardWebSocket) -> None:
-        while not self._closing:
+        while not self._closed_event.is_set():
             try:
                 websocket = await self._websocket_connector(
                     ingress.url,
@@ -1003,7 +968,7 @@ class OneBot11Gateway(Gateway):
                 )
                 await self._serve_websocket(websocket, ingress.role, ingress.self_)
             except Exception as exc:
-                if not self._closing:
+                if not self._closed_event.is_set():
                     logger.warning(
                         "OneBot 11 forward WebSocket failed; retry=%ss (%s)",
                         ingress.reconnect_interval,
@@ -1013,7 +978,7 @@ class OneBot11Gateway(Gateway):
                             else type(exc).__name__
                         ),
                     )
-            if not self._closing:
+            if not self._closed_event.is_set():
                 await sleep(ingress.reconnect_interval)
 
 
@@ -1567,24 +1532,16 @@ def _action_time(value: JsonValue) -> float:
 
 def decode_action_response(payload: object) -> ActionResponse:
     response = OneBot11ActionResponse.model_validate(_json_object(payload))
-    echo = response.echo if isinstance(response.echo, str) else None
-    if response.status == "ok":
-        return ActionResponse.ok(response.data, echo=echo)
-    if response.status == "async":
-        return ActionResponse(
-            status=ApiStatus.ASYNC,
-            retcode=response.retcode,
-            data=response.data,
-            message=response.message or response.msg or "",
-            echo=echo or MISSING,
-        )
-    message = response.message or response.msg or ""
     return ActionResponse(
-        status=ApiStatus.FAILED,
+        status=ApiStatus(response.status),
         retcode=response.retcode,
         data=response.data,
-        message=message,
-        echo=echo or MISSING,
+        message="" if response.status == "ok" else response.message,
+        echo=(
+            response.echo
+            if isinstance(response.echo, str) and response.echo
+            else MISSING
+        ),
     )
 
 

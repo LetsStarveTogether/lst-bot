@@ -198,7 +198,6 @@ class OneBot12Gateway(Gateway):
         self._reverse_tasks: set[Task[None]] = set()
         self._lifecycle_lock = Lock()
         self._started = False
-        self._closing = False
         self._closed_event = AsyncEvent()
 
     @override
@@ -206,10 +205,9 @@ class OneBot12Gateway(Gateway):
         async with self._lifecycle_lock:
             if self._started:
                 return
-            if self._closing:
+            if self._closed_event.is_set():
                 await self._finish_close()
             self._closed_event = AsyncEvent()
-            self._closing = False
             try:
                 for ingress in self.ingress:
                     if isinstance(ingress, ReverseWebSocket):
@@ -236,7 +234,6 @@ class OneBot12Gateway(Gateway):
     @override
     async def close(self) -> None:
         async with self._lifecycle_lock:
-            self._closing = True
             self._closed_event.set()
             finishing = create_task(
                 self._finish_close(),
@@ -245,7 +242,6 @@ class OneBot12Gateway(Gateway):
             await await_cleanup(finishing)
 
     async def _finish_close(self) -> None:
-        self._closing = True
         self._closed_event.set()
         try:
             await self._close_transports()
@@ -253,7 +249,6 @@ class OneBot12Gateway(Gateway):
             self._started = False
 
     async def _close_transports(self) -> None:
-        self._closing = True
         servers = tuple(self._reverse_servers)
         for server in servers:
             server.close()
@@ -353,11 +348,7 @@ class OneBot12Gateway(Gateway):
         raise LookupError(msg)
 
     def _ensure_open(self, closed_event: AsyncEvent) -> None:
-        if (
-            self._closing
-            or closed_event is not self._closed_event
-            or closed_event.is_set()
-        ):
+        if closed_event is not self._closed_event or closed_event.is_set():
             msg = "OneBot 12 gateway is closed"
             raise RuntimeError(msg)
 
@@ -402,16 +393,6 @@ class OneBot12Gateway(Gateway):
         if self.access_token is None:
             return None
         return {"Authorization": f"Bearer {self.access_token}"}
-
-    @property
-    def reverse_websocket_ports(self) -> tuple[int, ...]:
-        return tuple(
-            dict.fromkeys(
-                socket.getsockname()[1]
-                for server in self._reverse_servers
-                for socket in server.sockets
-            )
-        )
 
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
@@ -498,7 +479,7 @@ class OneBot12Gateway(Gateway):
         assert task is not None  # ruff: ignore[assert]
         self._reverse_tasks.add(task)
         try:
-            if self._closing:
+            if self._closed_event.is_set():
                 return
             protocol = websocket.subprotocol
             if protocol is None:
@@ -520,7 +501,7 @@ class OneBot12Gateway(Gateway):
         session: WebSocketActionSession | None = None
         try:
             await self.bot.wait_until_running()
-            if self._closing:
+            if self._closed_event.is_set():
                 return
             if self._ws_actions is not None:
                 session = self._ws_actions.register(websocket)
@@ -605,7 +586,7 @@ class OneBot12Gateway(Gateway):
             self._ws_actions.bind_self(session, event.self_)
 
     async def _run_forward_websocket(self, ingress: ForwardWebSocket) -> None:
-        while not self._closing:
+        while not self._closed_event.is_set():
             try:
                 websocket = await self._websocket_connector(
                     ingress.url,
@@ -613,7 +594,7 @@ class OneBot12Gateway(Gateway):
                 )
                 await self._serve_websocket(websocket)
             except Exception as exc:
-                if not self._closing:
+                if not self._closed_event.is_set():
                     logger.warning(
                         "OneBot 12 forward WebSocket failed; retry=%ss (%s)",
                         ingress.reconnect_interval,
@@ -623,7 +604,7 @@ class OneBot12Gateway(Gateway):
                             else type(exc).__name__
                         ),
                     )
-            if not self._closing:
+            if not self._closed_event.is_set():
                 await sleep(ingress.reconnect_interval)
 
 
