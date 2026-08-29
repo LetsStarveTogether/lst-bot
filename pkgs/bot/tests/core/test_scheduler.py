@@ -154,6 +154,40 @@ async def test_scheduler_close_cancels_all_jobs_before_awaiting_cleanup() -> Non
         await bot.close()
 
 
+async def test_scheduler_rejects_restart_during_job_cleanup() -> None:
+    bot = Bot()
+    sleep = use_scripted_time(bot)
+    handler_started = Event()
+    cleanup_started = Event()
+    release_cleanup = Event()
+
+    @bot.scheduler.on_cron("* * * * *")
+    async def job() -> None:
+        handler_started.set()
+        try:
+            await Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    async with timeout(1):
+        await bot.start()
+        await sleep.advance()
+        await handler_started.wait()
+        await sleep.next_call()
+
+        closing = create_task(bot.scheduler.close())
+        await cleanup_started.wait()
+        with pytest.raises(RuntimeError, match="Scheduler is closing"):
+            bot.scheduler.start()
+
+        release_cleanup.set()
+        await closing
+        bot.scheduler.start()
+        await sleep.next_call()
+        await bot.close()
+
+
 async def test_cron_handler_cannot_close_its_bot() -> None:
     bot = Bot(scheduler_timezone=ZoneInfo("UTC"))
     sleep = use_scripted_time(bot)

@@ -39,10 +39,17 @@ def _scheduled_handler_is_active_for(bot: Bot) -> bool:
 
 
 def _raise_errors(message: str, errors: list[BaseException]) -> None:
+    cancelled = next(
+        (error for error in reversed(errors) if isinstance(error, CancelledError)),
+        None,
+    )
+    errors = [error for error in errors if not isinstance(error, CancelledError)]
+    if cancelled is not None:
+        errors.insert(0, cancelled)
     if len(errors) == 1:
-        raise errors[0]
+        raise errors[0] from None
     if errors:
-        raise BaseExceptionGroup(message, errors)
+        raise BaseExceptionGroup(message, errors) from None
 
 
 @dataclass(slots=True)
@@ -58,6 +65,7 @@ class CronJob:
     sleep: Sleep
     _runner: Task[None] | None = None
     _running: Task[None] | None = None
+    _closing: bool = False
 
     def __post_init__(self) -> None:
         self.handler = inject(self.handler)
@@ -66,21 +74,31 @@ class CronJob:
         return f"{self.name}[{self.expr}]"
 
     def start(self) -> None:
+        if self._closing:
+            msg = "Scheduled job is closing"
+            raise RuntimeError(msg)
         if self._runner is None or self._runner.done():
             self._runner = create_task(self._run())
 
     async def close(self) -> None:
+        if self._closing:
+            msg = "Scheduled job is already closing"
+            raise RuntimeError(msg)
         tasks = tuple(
             task for task in (self._runner, self._running) if task is not None
         )
         if current_task() in tasks:
             msg = "Scheduled jobs cannot close themselves"
             raise RuntimeError(msg)
-        for task in tasks:
-            task.cancel()
-        results = await gather(*tasks, return_exceptions=True)
-        self._runner = None
-        self._running = None
+        self._closing = True
+        try:
+            for task in tasks:
+                task.cancel()
+            results = await gather(*tasks, return_exceptions=True)
+        finally:
+            self._runner = None
+            self._running = None
+            self._closing = False
         errors = [
             result
             for result in results
@@ -183,6 +201,7 @@ class CronScheduler:
         )
         self._jobs: list[CronJob] = []
         self._running = False
+        self._closing = False
 
     @property
     def jobs(self) -> tuple[CronJob, ...]:
@@ -229,6 +248,12 @@ class CronScheduler:
         return decorator
 
     def start(self) -> None:
+        if self._closing or any(
+            job._closing  # ruff: ignore[private-member-access] - scheduler owns jobs
+            for job in self._jobs
+        ):
+            msg = "Scheduler is closing"
+            raise RuntimeError(msg)
         self._running = True
         for job in self._jobs:
             job.start()
@@ -237,10 +262,17 @@ class CronScheduler:
         if _scheduled_handler_is_active_for(self.bot):
             msg = "Scheduler cannot be closed from a scheduled handler"
             raise RuntimeError(msg)
+        if self._closing:
+            msg = "Scheduler is already closing"
+            raise RuntimeError(msg)
+        self._closing = True
         self._running = False
-        results = await gather(
-            *(job.close() for job in self._jobs),
-            return_exceptions=True,
-        )
+        try:
+            results = await gather(
+                *(job.close() for job in self._jobs),
+                return_exceptions=True,
+            )
+        finally:
+            self._closing = False
         errors = [result for result in results if isinstance(result, BaseException)]
         _raise_errors("Scheduler shutdown failed", errors)

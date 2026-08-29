@@ -562,3 +562,37 @@ async def test_cancelled_close_retries_interrupted_dispatcher_cleanup() -> None:
                 await dispatch_task
     finally:
         cleanup_release.set()
+
+
+async def test_repeated_close_cancellation_stays_cancelled() -> None:
+    entered = [Event(), Event()]
+
+    class BlockingGateway(Gateway):
+        def __init__(self, bot: Bot, index: int) -> None:
+            super().__init__(bot)
+            self.index = index
+            self.closes = 0
+
+        @override
+        async def close(self) -> None:
+            self.closes += 1
+            if self.closes == 1:
+                entered[self.index].set()
+                await Event().wait()
+
+    bot = Bot()
+    bot.add_gateway(BlockingGateway(bot, 0))
+    bot.add_gateway(BlockingGateway(bot, 1))
+
+    async with timeout(1):
+        await bot.start()
+        closing = create_task(bot.close())
+        await entered[1].wait()
+        closing.cancel()
+        await entered[0].wait()
+        closing.cancel()
+
+        with pytest.raises(CancelledError):
+            await closing
+        assert closing.cancelled()
+        await bot.close()

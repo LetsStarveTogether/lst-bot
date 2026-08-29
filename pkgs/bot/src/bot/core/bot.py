@@ -274,7 +274,7 @@ class Bot(EventRouter):
             if cleanup_errors:
                 msg = "Bot startup and rollback failed"
                 errors = [startup_error, *cleanup_errors]
-                raise BaseExceptionGroup(msg, errors) from None
+                _raise_errors(msg, errors)
             raise
 
     def _reject_lifecycle_reentry(self) -> None:
