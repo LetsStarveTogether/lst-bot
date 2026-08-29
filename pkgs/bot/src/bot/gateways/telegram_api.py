@@ -228,7 +228,6 @@ _PARAMS_ADAPTER = TypeAdapter(TelegramParams, config=_STRICT_CONFIG)
 _FILES_ADAPTER = TypeAdapter(TelegramFiles, config=_STRICT_CONFIG)
 _REQUEST_TIMEOUT_ADAPTER = TypeAdapter(PositiveSeconds, config=_STRICT_CONFIG)
 _OFFSET_ADAPTER = TypeAdapter(TelegramUpdateOffset | None, config=_STRICT_CONFIG)
-_POLL_TIMEOUT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _NON_NEGATIVE_INT_ADAPTER = TypeAdapter(NonNegativeInt, config=_STRICT_CONFIG)
 _POSITIVE_INT_ADAPTER = TypeAdapter(PositiveInt, config=_STRICT_CONFIG)
 _METHODS_BY_CASE = {method.casefold(): method for method in TELEGRAM_METHODS}
@@ -828,7 +827,7 @@ class TelegramRestClient:
         poll_timeout: int,
     ) -> list[TelegramUpdate]:
         offset = _OFFSET_ADAPTER.validate_python(offset)
-        poll_timeout = _POLL_TIMEOUT_ADAPTER.validate_python(poll_timeout)
+        poll_timeout = _NON_NEGATIVE_INT_ADAPTER.validate_python(poll_timeout)
         params: dict[str, JsonValue] = {
             "timeout": poll_timeout,
             "limit": 100,
