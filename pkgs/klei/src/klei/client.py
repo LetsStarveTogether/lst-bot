@@ -19,6 +19,7 @@ from .models import (
     RoomData,
     Version,
     _parse_versions,
+    _RoomDataResponse,
 )
 
 _DEFAULT_REGIONS: tuple[Region, ...] = (
@@ -94,7 +95,7 @@ class KleiClient:
             "query": {"__rowId": row_id},
         }
         async with self._room_slots:
-            data = KleiDataResponse[RoomData].model_validate_json(
+            data = _RoomDataResponse.model_validate_json(
                 await self._request(HTTPMethod.POST, url, json=payload),
             )
         return data.rows[0] if data.rows else None

@@ -107,3 +107,7 @@ class RoomData(BaseModel):
             msg = "connected cannot exceed maxconnections"
             raise ValueError(msg)
         return self
+
+
+class _RoomDataResponse(KleiDataResponse[RoomData]):
+    rows: list[RoomData] = Field(alias="GET")

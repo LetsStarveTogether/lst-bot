@@ -205,12 +205,17 @@ async def test_client_parses_official_lobbies_and_room() -> None:
     assert pool.calls[-1]["redirect"] is False
 
 
-async def test_client_rejects_malformed_room_details() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        rows_payload([room_row() | {"port": "10999"}]),
+        b'{"Error":{"Code":"E_FAIL_BUSINESS_LOGIC"}}',
+    ],
+)
+async def test_client_rejects_invalid_room_response(body: bytes) -> None:
     region = "us-east-1"
     pool = RecordingPool({
-        ROOM_URL.format(region=region): rows_payload([
-            room_row() | {"port": "10999"},
-        ]),
+        ROOM_URL.format(region=region): body,
     })
 
     with pytest.RaisesGroup(ValidationError):
