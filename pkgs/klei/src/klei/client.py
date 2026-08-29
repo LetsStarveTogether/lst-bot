@@ -35,9 +35,7 @@ _ROOM_URL = "https://lobby-v2-{region}.klei.com/lobby/read"
 _HTTP_TIMEOUT_SECONDS = 30.0
 _MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
 _ROOM_CONCURRENCY = 24  # ponytail: configure only if Klei throttling demands it
-_ROOMS = TypeAdapter(
-    tuple[tuple[Annotated[str, Field(strict=True, min_length=1)], Region], ...]
-)
+_ROOM = TypeAdapter(tuple[Annotated[str, Field(strict=True, min_length=1)], Region])
 
 
 class KleiClient:
@@ -52,11 +50,12 @@ class KleiClient:
         self._room_slots = Semaphore(_ROOM_CONCURRENCY)
 
     async def get_latest_versions(self) -> list[Version]:
-        body = await self._request(HTTPMethod.GET, _VERSION_URL)
+        async with timeout(_HTTP_TIMEOUT_SECONDS):
+            body = await self._request(HTTPMethod.GET, _VERSION_URL)
         return _parse_versions(body.decode())
 
     async def get_lobby_data(self) -> list[LobbyData]:
-        async with TaskGroup() as tg:
+        async with timeout(_HTTP_TIMEOUT_SECONDS), TaskGroup() as tg:
             tasks = [
                 tg.create_task(self._get_single_lobby(region))
                 for region in _DEFAULT_REGIONS
@@ -67,14 +66,27 @@ class KleiClient:
         self,
         rooms: Iterable[tuple[str, Region]],
     ) -> list[RoomData]:
-        room_values = _ROOMS.validate_python(tuple(rooms))
         results: list[RoomData] = []
-        for batch in batched(room_values, _ROOM_CONCURRENCY, strict=False):
-            async with TaskGroup() as tg:
-                tasks = [tg.create_task(self._get_single_room(*room)) for room in batch]
-            results.extend(
-                result for task in tasks if (result := task.result()) is not None
-            )
+        seen: set[tuple[str, Region]] = set()
+        async with timeout(_HTTP_TIMEOUT_SECONDS):
+            for values in batched(
+                map(_ROOM.validate_python, rooms),
+                _ROOM_CONCURRENCY,
+                strict=False,
+            ):
+                batch = tuple(
+                    room for room in dict.fromkeys(values) if room not in seen
+                )
+                seen.update(batch)
+                if not batch:
+                    continue
+                async with TaskGroup() as tg:
+                    tasks = [
+                        tg.create_task(self._get_single_room(*room)) for room in batch
+                    ]
+                results.extend(
+                    result for task in tasks if (result := task.result()) is not None
+                )
         return results
 
     async def _get_single_lobby(
@@ -112,26 +124,25 @@ class KleiClient:
         *,
         json: object | None = None,
     ) -> bytes:
-        async with timeout(_HTTP_TIMEOUT_SECONDS):
-            response = await self.http_pool.request(
-                method,
-                url,
-                json=json,
-                preload_content=False,
-                redirect=False,
-                retries=False,
+        response = await self.http_pool.request(
+            method,
+            url,
+            json=json,
+            preload_content=False,
+            redirect=False,
+            retries=False,
+        )
+        try:
+            body = await response.read(
+                _MAX_HTTP_BODY_BYTES + 1,
+                decode_content=True,
             )
-            try:
-                body = await response.read(
-                    _MAX_HTTP_BODY_BYTES + 1,
-                    decode_content=True,
-                )
-                if len(body) > _MAX_HTTP_BODY_BYTES:
-                    msg = f"Klei response body exceeds {_MAX_HTTP_BODY_BYTES} bytes"
-                    raise HTTPError(msg)
-            finally:
-                await response.close()
-            if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
-                msg = f"Klei request failed: HTTP {response.status} {method} {url}"
+            if len(body) > _MAX_HTTP_BODY_BYTES:
+                msg = f"Klei response body exceeds {_MAX_HTTP_BODY_BYTES} bytes"
                 raise HTTPError(msg)
-            return body
+        finally:
+            await response.close()
+        if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
+            msg = f"Klei request failed: HTTP {response.status} {method} {url}"
+            raise HTTPError(msg)
+        return body

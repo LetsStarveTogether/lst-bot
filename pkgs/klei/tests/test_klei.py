@@ -1,6 +1,6 @@
 import json as jsonlib
 from asyncio import Event, create_task, sleep, timeout
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast
@@ -13,6 +13,7 @@ from klei import (
     RoomData,
     VersionType,
 )
+from klei.enums import Region
 from klei.models import KleiDataResponse
 from pydantic import JsonValue, SecretStr, ValidationError
 from urllib3_future import AsyncPoolManager
@@ -21,7 +22,12 @@ from urllib3_future.exceptions import HTTPError
 VERSION_URL = "https://kleiforums.com/game-updates/dst/"
 LOBBY_URL = "https://lobby-v2-cdn.klei.com/{region}-Steam.json.gz"
 ROOM_URL = "https://lobby-v2-{region}.klei.com/lobby/read"
-REGIONS = ("us-east-1", "eu-central-1", "ap-southeast-1", "ap-east-1")
+REGIONS: tuple[Region, ...] = (
+    "us-east-1",
+    "eu-central-1",
+    "ap-southeast-1",
+    "ap-east-1",
+)
 
 VERSION_HTML = """
 <li class="cCmsRecord_row">
@@ -244,19 +250,67 @@ async def test_room_lookup_bounds_shared_requests(
         for group in range(2)
     )
     lookups = tuple(create_task(value.get_room_data(rooms)) for rooms in room_groups)
-    try:
-        await requests_started.wait()
-        await sleep(0)
-        assert max_active_requests == batch_size
-    finally:
-        release.set()
-    assert [await lookup for lookup in lookups] == [[], []]
+    async with timeout(1):
+        try:
+            await requests_started.wait()
+            await sleep(0)
+            assert max_active_requests == batch_size
+        finally:
+            release.set()
+        assert [await lookup for lookup in lookups] == [[], []]
+
+
+async def test_room_lookup_streams_unique_refs_in_first_seen_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", 2)
+    east, europe = REGIONS[:2]
+    pool = RecordingPool({
+        ROOM_URL.format(region=east): rows_payload([room_row("east")]),
+        ROOM_URL.format(region=europe): rows_payload([room_row("europe")]),
+    })
+
+    def rooms() -> Iterator[tuple[str, Region]]:
+        yield "row-1", east
+        yield "row-1", east
+        assert len(pool.calls) == 1
+        yield "row-1", europe
+        yield "row-1", east
+
+    results = await client(pool).get_room_data(rooms())
+
+    assert [result.name for result in results] == ["east", "europe"]
+    assert [call["url"] for call in pool.calls] == [
+        ROOM_URL.format(region=east),
+        ROOM_URL.format(region=europe),
+    ]
+
+
+async def test_room_lookup_has_wall_clock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", 1)
+    monkeypatch.setattr(client_module, "_HTTP_TIMEOUT_SECONDS", 0.1)
+    value = client(RecordingPool({}))
+    calls = 0
+
+    async def request(*_args: object, **_kwargs: object) -> bytes:
+        nonlocal calls
+        calls += 1
+        await sleep(0.06)
+        return rows_payload([])
+
+    monkeypatch.setattr(value, "_request", request)
+    with pytest.raises(TimeoutError):
+        await value.get_room_data((("row-1", REGIONS[0]), ("row-2", REGIONS[0])))
+    assert calls == 2
 
 
 @pytest.mark.parametrize(
     "body",
     [
         rows_payload([room_row() | {"port": "10999"}]),
+        rows_payload([room_row(), room_row("duplicate")]),
         b'{"Error":{"Code":"E_FAIL_BUSINESS_LOGIC"}}',
     ],
 )
@@ -319,6 +373,7 @@ async def test_request_has_wall_clock_timeout(
             await client(pool).get_latest_versions()
     if stage == "body":
         assert pool.responses[0].body_accessed
+        assert pool.responses[0].closed
 
 
 def test_response_envelope_and_consumed_fields_are_validated() -> None:

@@ -110,4 +110,4 @@ class RoomData(BaseModel):
 
 
 class _RoomDataResponse(KleiDataResponse[RoomData]):
-    rows: list[RoomData] = Field(alias="GET")
+    rows: list[RoomData] = Field(alias="GET", max_length=1)
