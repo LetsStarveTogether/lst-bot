@@ -1,6 +1,7 @@
-from asyncio import Semaphore, TaskGroup, timeout
+from asyncio import TaskGroup, timeout
 from collections.abc import Iterable
 from http import HTTPMethod, HTTPStatus
+from itertools import batched
 from typing import Annotated
 
 from pydantic import (
@@ -47,7 +48,6 @@ class KleiClient:
     ) -> None:
         self.access_token = access_token
         self.http_pool = http_pool
-        self._room_slots = Semaphore(_ROOM_CONCURRENCY)
 
     async def get_latest_versions(self) -> list[Version]:
         body = await self._request(HTTPMethod.GET, _VERSION_URL)
@@ -66,11 +66,14 @@ class KleiClient:
         rooms: Iterable[tuple[str, Region]],
     ) -> list[RoomData]:
         room_values = _ROOMS.validate_python(tuple(rooms))
-        async with TaskGroup() as tg:
-            tasks = [
-                tg.create_task(self._get_single_room(*room)) for room in room_values
-            ]
-        return [result for task in tasks if (result := task.result()) is not None]
+        results: list[RoomData] = []
+        for batch in batched(room_values, _ROOM_CONCURRENCY, strict=False):
+            async with TaskGroup() as tg:
+                tasks = [tg.create_task(self._get_single_room(*room)) for room in batch]
+            results.extend(
+                result for task in tasks if (result := task.result()) is not None
+            )
+        return results
 
     async def _get_single_lobby(
         self,
@@ -94,10 +97,9 @@ class KleiClient:
             "__token": self.access_token.get_secret_value(),
             "query": {"__rowId": row_id},
         }
-        async with self._room_slots:
-            data = _RoomDataResponse.model_validate_json(
-                await self._request(HTTPMethod.POST, url, json=payload),
-            )
+        data = _RoomDataResponse.model_validate_json(
+            await self._request(HTTPMethod.POST, url, json=payload),
+        )
         return data.rows[0] if data.rows else None
 
     async def _request(

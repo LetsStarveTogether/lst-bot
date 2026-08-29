@@ -1,5 +1,5 @@
 import json as jsonlib
-from asyncio import Event, timeout
+from asyncio import Event, create_task, sleep, timeout
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -203,6 +203,38 @@ async def test_client_parses_official_lobbies_and_room() -> None:
         "query": {"__rowId": "row-1"},
     }
     assert pool.calls[-1]["redirect"] is False
+
+
+async def test_room_lookup_batches_created_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_size = 2
+    monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", batch_size)
+    value = client(RecordingPool({}))
+    release = Event()
+    batch_started = Event()
+    active = 0
+    max_active = 0
+
+    async def get_room(_row_id: str, _region: str) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == batch_size:
+            batch_started.set()
+        await release.wait()
+        active -= 1
+
+    monkeypatch.setattr(value, "_get_single_room", get_room)
+    rooms = ((str(index), "us-east-1") for index in range(batch_size + 1))
+    lookup = create_task(value.get_room_data(rooms))
+    try:
+        await batch_started.wait()
+        await sleep(0)
+        assert max_active == batch_size
+    finally:
+        release.set()
+    assert await lookup == []
 
 
 @pytest.mark.parametrize(
