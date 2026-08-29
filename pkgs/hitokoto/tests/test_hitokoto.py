@@ -1,6 +1,15 @@
 import os
 import sqlite3
-from asyncio import Future, gather, get_running_loop, timeout
+from asyncio import (
+    CancelledError,
+    Event,
+    Future,
+    create_task,
+    gather,
+    get_running_loop,
+    sleep,
+    timeout,
+)
 from collections.abc import Mapping
 from contextlib import closing
 from json import dumps
@@ -8,6 +17,7 @@ from pathlib import Path
 from time import time
 from typing import Any, override
 
+import hitokoto.cache as cache_module
 import hitokoto.client as client_module
 import pytest
 from hitokoto import (
@@ -15,7 +25,6 @@ from hitokoto import (
     HitokotoClient,
 )
 from hitokoto.cache import (
-    is_cache_valid,
     read_cached_hitokoto,
     write_cache,
 )
@@ -30,6 +39,7 @@ class RecordingPool(AsyncPoolManager):
     def __init__(self, routes: Mapping[str, object]) -> None:
         self.routes = routes
         self.calls: list[dict[str, object]] = []
+        self.request_started = Event()
 
     @override
     async def request(
@@ -45,9 +55,13 @@ class RecordingPool(AsyncPoolManager):
         _ = body, fields, headers, json, urlopen_kw
         call: dict[str, object] = {"method": method, "url": url}
         self.calls.append(call)
+        self.request_started.set()
+        await sleep(0)
         result = self.routes[url]
         if result is None:
             return await get_running_loop().create_future()
+        if isinstance(result, Future):
+            result = await result
         if isinstance(result, AsyncHTTPResponse | RecordingResponse):
             return result
         payload = result if isinstance(result, bytes) else dumps(result).encode()
@@ -170,20 +184,30 @@ async def test_client_applies_wall_clock_timeout_to_all_io(
 
 async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
     cache_path = tmp_path / "cache" / "hitokoto.db"
-    pool = RecordingPool(bundle_routes())
+    routes = bundle_routes()
+    version_url = f"{BUNDLE_URL}version.json"
+    version = get_running_loop().create_future()
+    routes[version_url] = version
+    pool = RecordingPool(routes)
     client = HitokotoClient(
         http_pool=pool,
         cache_path=cache_path,
     )
+    cancelled = create_task(client.get_hitokoto())
+    surviving = create_task(client.get_hitokoto())
+    await pool.request_started.wait()
 
-    results = await gather(*(client.get_hitokoto() for _ in range(8)))
+    cancelled.cancel()
+    with pytest.raises(CancelledError):
+        await cancelled
+    version.set_result(bundle_routes()[version_url])
+    result = await surviving
 
-    assert {result.hitokoto for result in results} == {"cached hello"}
+    assert result.hitokoto == "cached hello"
     assert [call["url"] for call in pool.calls] == [
-        f"{BUNDLE_URL}version.json",
+        version_url,
         f"{BUNDLE_URL}sentences/a.json",
     ]
-    assert await is_cache_valid(cache_path) is True
 
 
 async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:
@@ -194,7 +218,6 @@ async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:
 
     result = await read_cached_hitokoto(cache_path)
     assert result.hitokoto in values
-    assert await is_cache_valid(cache_path) is True
     assert not any(cache_path.parent.glob(f".{cache_path.name}.*.tmp"))
 
 
@@ -206,16 +229,6 @@ async def test_real_sqlite_cache_rejects_an_empty_database(tmp_path: Path) -> No
         await read_cached_hitokoto(cache_path)
 
 
-async def test_cache_validity_handles_missing_and_current_database(
-    tmp_path: Path,
-) -> None:
-    cache_path = tmp_path / "hitokoto.db"
-
-    assert await is_cache_valid(cache_path) is False
-    await write_cache(cache_path, bundle())
-    assert await is_cache_valid(cache_path) is True
-
-
 @pytest.mark.parametrize(
     "offset_seconds",
     [
@@ -224,34 +237,46 @@ async def test_cache_validity_handles_missing_and_current_database(
     ],
     ids=["stale", "future"],
 )
-async def test_cache_validity_rejects_invalid_mtime(
+async def test_invalid_mtime_refreshes_cache(
     tmp_path: Path,
     offset_seconds: int,
 ) -> None:
     cache_path = tmp_path / "hitokoto.db"
-    await write_cache(cache_path, bundle())
+    await write_cache(cache_path, bundle("old"))
     timestamp = time() + offset_seconds
     os.utime(cache_path, (timestamp, timestamp))
+    pool = RecordingPool(bundle_routes("refreshed"))
 
-    assert await is_cache_valid(cache_path) is False
+    result = await HitokotoClient(http_pool=pool, cache_path=cache_path).get_hitokoto()
+
+    assert result.hitokoto == "refreshed"
+    assert len(pool.calls) == 2
 
 
-async def test_cache_validity_rejects_corruption(tmp_path: Path) -> None:
+async def test_selected_corrupt_cache_row_is_refreshed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     cache_path = tmp_path / "hitokoto.db"
-    cache_path.write_bytes(b"not a sqlite database")
+    await write_cache(cache_path, [*bundle("valid"), *bundle("corrupt")])
+    with closing(sqlite3.connect(cache_path)) as db, db:
+        db.execute("UPDATE sentence SET payload = '{}' WHERE rowid = 2")
+    original_open = cache_module._open_read_only  # ruff: ignore[private-member-access]
 
-    assert await is_cache_valid(cache_path) is False
+    def open_selecting_corrupt_row(path: Path) -> sqlite3.Connection:
+        db = original_open(path)
+        db.create_function("random", 0, lambda: 1)
+        return db
+
+    monkeypatch.setattr(cache_module, "_open_read_only", open_selecting_corrupt_row)
+    pool = RecordingPool(bundle_routes("recovered"))
     client = HitokotoClient(
-        http_pool=RecordingPool(bundle_routes("recovered")),
+        http_pool=pool,
         cache_path=cache_path,
     )
+
     assert (await client.get_hitokoto()).hitokoto == "recovered"
-    assert await is_cache_valid(cache_path) is True
-
-    with closing(sqlite3.connect(cache_path)) as db, db:
-        db.execute("UPDATE sentence SET payload = '{}'")
-
-    assert await is_cache_valid(cache_path) is False
+    assert len(pool.calls) == 2
 
 
 async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
@@ -262,13 +287,14 @@ async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
     pool = RecordingPool({
         f"{BUNDLE_URL}version.json": RecordingResponse(503, b"error"),
     })
-
-    result = await HitokotoClient(
+    client = HitokotoClient(
         http_pool=pool,
         cache_path=cache_path,
-    ).get_hitokoto()
+    )
 
-    assert result.hitokoto == "stale"
+    results = await gather(*(client.get_hitokoto() for _ in range(8)))
+
+    assert {result.hitokoto for result in results} == {"stale"}
     assert pool.calls == [{"method": "GET", "url": f"{BUNDLE_URL}version.json"}]
 
 
@@ -288,6 +314,10 @@ async def test_bundle_allows_an_empty_part_when_another_has_sentences(
     tmp_path: Path,
 ) -> None:
     routes = bundle_routes()
+    sentence_url = f"{BUNDLE_URL}sentences/a.json"
+    sentence = get_running_loop().create_future()
+    original_sentence = routes[sentence_url]
+    routes[sentence_url] = sentence
     routes[f"{BUNDLE_URL}version.json"] = {
         "protocol_version": "1.0.0",
         "sentences": [
@@ -301,12 +331,21 @@ async def test_bundle_allows_an_empty_part_when_another_has_sentences(
         http_pool=pool,
         cache_path=tmp_path / "hitokoto.db",
     )
+    request = create_task(client.get_hitokoto())
+    await pool.request_started.wait()
+    pool.request_started.clear()
+    await pool.request_started.wait()
 
-    await client.get_hitokoto()
-
-    assert await is_cache_valid(client.cache_path)
     assert [call["url"] for call in pool.calls] == [
         f"{BUNDLE_URL}version.json",
-        f"{BUNDLE_URL}sentences/a.json",
+        sentence_url,
+    ]
+    sentence.set_result(original_sentence)
+    result = await request
+
+    assert result.hitokoto == "cached hello"
+    assert [call["url"] for call in pool.calls] == [
+        f"{BUNDLE_URL}version.json",
+        sentence_url,
         f"{BUNDLE_URL}sentences/empty.json",
     ]

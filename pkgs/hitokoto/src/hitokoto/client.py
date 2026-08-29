@@ -1,4 +1,5 @@
-from asyncio import Lock, TaskGroup, timeout
+from asyncio import Task, create_task, shield, timeout
+from contextlib import suppress
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
 from pathlib import Path
@@ -8,7 +9,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
-from .cache import is_cache_valid, read_cached_hitokoto, write_cache
+from .cache import read_cached_hitokoto, write_cache
 from .models import Hitokoto
 
 HTTP_TIMEOUT_SECONDS = 30.0
@@ -38,66 +39,67 @@ class HitokotoClient:
     ) -> None:
         self.http_pool = http_pool
         self.cache_path = Path(cache_path)
-        self._cache_lock = Lock()
+        self._refresh_task: Task[None] | None = None
 
     async def get_hitokoto(self) -> Hitokoto:
+        if self._refresh_task is not None and self._refresh_task.done():
+            self._refresh_task = None
+        with suppress(Exception):
+            return await read_cached_hitokoto(self.cache_path, fresh=True)
         try:
-            await self._ensure_cache()
+            task = self._refresh_task
+            if task is None:
+                task = self._refresh_task = create_task(
+                    self._refresh_cache(),
+                    name="hitokoto-cache-refresh",
+                )
+            await shield(task)
+            return await read_cached_hitokoto(self.cache_path)
         except Exception as error:
             try:
-                hitokoto = await read_cached_hitokoto(self.cache_path)
+                return await read_cached_hitokoto(self.cache_path)
             except Exception:
                 raise error from None
-            logger.warning(
-                "use stale Hitokoto cache after refresh failure: %s",
-                self.cache_path,
-                exc_info=True,
-            )
-            return hitokoto
-        return await read_cached_hitokoto(self.cache_path)
 
-    async def _ensure_cache(self) -> None:
-        if await is_cache_valid(self.cache_path):
-            return
-        async with self._cache_lock:
-            if await is_cache_valid(self.cache_path):
-                return
-            logger.info("refresh Hitokoto cache: %s", self.cache_path)
-            version = _BundleVersion.model_validate_json(
-                await self._get(f"{_BUNDLE_URL}version.json"),
-            )
-            async with TaskGroup() as group:
-                tasks = [
-                    group.create_task(
-                        self._get(
-                            f"{_BUNDLE_URL}{item.path.removeprefix('./').lstrip('/')}",
-                        ),
-                    )
+    async def _refresh_cache(self) -> None:
+        logger.info("refresh Hitokoto cache: %s", self.cache_path)
+        try:
+            async with timeout(HTTP_TIMEOUT_SECONDS):
+                version = _BundleVersion.model_validate_json(
+                    await self._get(f"{_BUNDLE_URL}version.json"),
+                )
+                sentences = _HITOKOTO_BUNDLE.validate_python([
+                    sentence
                     for item in version.sentences
-                ]
-            sentences = _HITOKOTO_BUNDLE.validate_python([
-                sentence
-                for task in tasks
-                for sentence in _HITOKOTO_SENTENCES.validate_json(task.result())
-            ])
-            await write_cache(self.cache_path, sentences)
-            logger.info(
-                "Hitokoto cache refreshed: %s (%d sentences)",
+                    for sentence in _HITOKOTO_SENTENCES.validate_json(
+                        await self._get(
+                            f"{_BUNDLE_URL}{item.path.removeprefix('./').lstrip('/')}"
+                        )
+                    )
+                ])
+                await write_cache(self.cache_path, sentences)
+        except Exception:
+            logger.exception(
+                "Hitokoto cache refresh failed: %s",
                 self.cache_path,
-                len(sentences),
             )
+            raise
+        logger.info(
+            "Hitokoto cache refreshed: %s (%d sentences)",
+            self.cache_path,
+            len(sentences),
+        )
 
     async def _get(
         self,
         url: str,
     ) -> bytes:
-        async with timeout(HTTP_TIMEOUT_SECONDS):
-            response = await self.http_pool.request(
-                HTTPMethod.GET,
-                url,
-            )
-            body = await response.data
-            if response.status != HTTPStatus.OK:
-                msg = f"Hitokoto request failed: HTTP {response.status}"
-                raise HTTPError(msg)
-            return body
+        response = await self.http_pool.request(
+            HTTPMethod.GET,
+            url,
+        )
+        body = await response.data
+        if response.status != HTTPStatus.OK:
+            msg = f"Hitokoto request failed: HTTP {response.status}"
+            raise HTTPError(msg)
+        return body

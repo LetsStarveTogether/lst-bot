@@ -8,28 +8,11 @@ from time import time
 
 from .models import Hitokoto
 
+_CACHE_MAX_AGE_SECONDS = 72 * 60 * 60
+
 
 def _open_read_only(cache_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"{cache_path.resolve().as_uri()}?mode=ro", uri=True)
-
-
-def _is_cache_valid(cache_path: Path) -> bool:
-    try:
-        if not 0 <= time() - cache_path.stat().st_mtime <= 72 * 60 * 60:
-            return False
-        with closing(_open_read_only(cache_path)) as db:
-            row = db.execute("SELECT payload FROM sentence LIMIT 1").fetchone()
-        if row is None:
-            return False
-        Hitokoto.model_validate_json(row[0])
-    except OSError, sqlite3.Error, ValueError:
-        return False
-    else:
-        return True
-
-
-async def is_cache_valid(cache_path: Path) -> bool:
-    return await to_thread(_is_cache_valid, cache_path)
 
 
 def _write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
@@ -57,10 +40,17 @@ async def write_cache(cache_path: Path, sentences: Sequence[Hitokoto]) -> None:
     await to_thread(_write_cache, cache_path, sentences)
 
 
-def _read_cached_hitokoto(cache_path: Path) -> Hitokoto:
+def _read_cached_hitokoto(cache_path: Path, *, fresh: bool) -> Hitokoto:
+    if fresh and not (
+        0 <= time() - cache_path.stat().st_mtime <= _CACHE_MAX_AGE_SECONDS
+    ):
+        msg = "hitokoto cache is stale"
+        raise RuntimeError(msg)
     with closing(_open_read_only(cache_path)) as db:
+        # A cache rebuild only inserts rows, so rowids are contiguous.
         row = db.execute(
-            "SELECT payload FROM sentence ORDER BY random() LIMIT 1"
+            "SELECT payload FROM sentence WHERE rowid = "
+            "abs(random()) % (SELECT max(rowid) FROM sentence) + 1"
         ).fetchone()
     if row is None:
         msg = "hitokoto cache has no matching sentences"
@@ -68,5 +58,9 @@ def _read_cached_hitokoto(cache_path: Path) -> Hitokoto:
     return Hitokoto.model_validate_json(row[0])
 
 
-async def read_cached_hitokoto(cache_path: Path) -> Hitokoto:
-    return await to_thread(_read_cached_hitokoto, cache_path)
+async def read_cached_hitokoto(
+    cache_path: Path,
+    *,
+    fresh: bool = False,
+) -> Hitokoto:
+    return await to_thread(_read_cached_hitokoto, cache_path, fresh=fresh)
