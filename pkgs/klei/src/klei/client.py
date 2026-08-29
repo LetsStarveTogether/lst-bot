@@ -30,11 +30,8 @@ _DEFAULT_REGIONS: tuple[Region, ...] = (
 _VERSION_URL = "https://kleiforums.com/game-updates/dst/"
 _LOBBY_URL = "https://lobby-v2-cdn.klei.com/{region}-Steam.json.gz"
 _ROOM_URL = "https://lobby-v2-{region}.klei.com/lobby/read"
-_POSITIVE_INT = TypeAdapter(Annotated[int, Field(strict=True, gt=0)])
-_POSITIVE_FLOAT = TypeAdapter(
-    Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
-)
-_REGIONS = TypeAdapter(tuple[Region, ...])
+_HTTP_TIMEOUT_SECONDS = 30.0
+_ROOM_CONCURRENCY = 24  # ponytail: configure only if Klei throttling demands it
 _ROOMS = TypeAdapter(
     tuple[tuple[Annotated[str, Field(strict=True, min_length=1)], Region], ...]
 )
@@ -46,27 +43,20 @@ class KleiClient:
         access_token: SecretStr,
         *,
         http_pool: AsyncPoolManager,
-        room_concurrency: int = 24,
-        http_timeout: float = 30.0,
     ) -> None:
         self.access_token = access_token
-        self.http_timeout = _POSITIVE_FLOAT.validate_python(http_timeout)
         self.http_pool = http_pool
-        self._room_slots = Semaphore(_POSITIVE_INT.validate_python(room_concurrency))
+        self._room_slots = Semaphore(_ROOM_CONCURRENCY)
 
     async def get_latest_versions(self) -> list[Version]:
         body = await self._request(HTTPMethod.GET, _VERSION_URL)
         return _parse_versions(body.decode())
 
-    async def get_lobby_data(
-        self,
-        regions: Iterable[Region] = _DEFAULT_REGIONS,
-    ) -> list[LobbyData]:
-        region_values = _REGIONS.validate_python(tuple(regions))
+    async def get_lobby_data(self) -> list[LobbyData]:
         async with TaskGroup() as tg:
             tasks = [
                 tg.create_task(self._get_single_lobby(region))
-                for region in region_values
+                for region in _DEFAULT_REGIONS
             ]
         return [row for task in tasks for row in task.result()]
 
@@ -116,7 +106,7 @@ class KleiClient:
         *,
         json: object | None = None,
     ) -> bytes:
-        async with timeout(self.http_timeout):
+        async with timeout(_HTTP_TIMEOUT_SECONDS):
             response = await self.http_pool.request(
                 method,
                 url,

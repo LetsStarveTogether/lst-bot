@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast
 
+import klei.client as client_module
 import pytest
 from klei import (
     KleiClient,
@@ -20,6 +21,7 @@ from urllib3_future.exceptions import HTTPError
 VERSION_URL = "https://kleiforums.com/game-updates/dst/"
 LOBBY_URL = "https://lobby-v2-cdn.klei.com/{region}-Steam.json.gz"
 ROOM_URL = "https://lobby-v2-{region}.klei.com/lobby/read"
+REGIONS = ("us-east-1", "eu-central-1", "ap-southeast-1", "ap-east-1")
 
 VERSION_HTML = """
 <li class="cCmsRecord_row">
@@ -127,16 +129,9 @@ def rows_payload(rows: list[JsonValue]) -> bytes:
     return jsonlib.dumps({"GET": rows}).encode()
 
 
-def client(
-    pool: RecordingPool,
-    *,
-    room_concurrency: int = 24,
-    http_timeout: float = 1.0,
-) -> KleiClient:
+def client(pool: RecordingPool) -> KleiClient:
     return KleiClient(
         access_token=SecretStr("test-token"),
-        room_concurrency=room_concurrency,
-        http_timeout=http_timeout,
         http_pool=cast("AsyncPoolManager", pool),
     )
 
@@ -160,20 +155,24 @@ async def test_client_reads_only_consumed_version_fields() -> None:
     ]
 
 
-async def test_client_parses_dynamic_region_lobby_and_room() -> None:
-    region = "sa-east-1"
+async def test_client_parses_official_lobbies_and_room() -> None:
+    region = REGIONS[0]
     lobby_url = LOBBY_URL.format(region=region)
     room_url = ROOM_URL.format(region=region)
-    pool = RecordingPool({
-        lobby_url: rows_payload([
-            lobby_row() | {"season": "mild", "region": "eu-west-1"},
-            {"__rowId": "invalid"},
-        ]),
-        room_url: rows_payload([room_row()]),
-    })
+    routes = {LOBBY_URL.format(region=item): rows_payload([]) for item in REGIONS}
+    pool = RecordingPool(
+        routes
+        | {
+            lobby_url: rows_payload([
+                lobby_row() | {"season": "mild", "region": "eu-west-1"},
+                {"__rowId": "invalid"},
+            ]),
+            room_url: rows_payload([room_row()]),
+        }
+    )
 
     value = client(pool)
-    lobbies = await value.get_lobby_data(regions=(region,))
+    lobbies = await value.get_lobby_data()
     rooms = await value.get_room_data(((lobbies[0].row_id, region),))
 
     assert len(lobbies) == 1
@@ -195,12 +194,15 @@ async def test_client_parses_dynamic_region_lobby_and_room() -> None:
         "season",
         "data",
     }
-    assert pool.calls[1]["json"] == {
+    assert [call["url"] for call in pool.calls[:4]] == [
+        LOBBY_URL.format(region=item) for item in REGIONS
+    ]
+    assert pool.calls[-1]["json"] == {
         "__gameId": "DontStarveTogether",
         "__token": "test-token",
         "query": {"__rowId": "row-1"},
     }
-    assert pool.calls[1]["redirect"] is False
+    assert pool.calls[-1]["redirect"] is False
 
 
 async def test_client_rejects_malformed_room_details() -> None:
@@ -225,7 +227,11 @@ async def test_non_success_http_status_consumes_body_before_failing() -> None:
 
 
 @pytest.mark.parametrize("stage", ["request", "body"])
-async def test_request_has_wall_clock_timeout(stage: str) -> None:
+async def test_request_has_wall_clock_timeout(
+    stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_HTTP_TIMEOUT_SECONDS", 0.01)
     blocked = Event()
     pool = RecordingPool({
         VERSION_URL: Reply(
@@ -237,28 +243,9 @@ async def test_request_has_wall_clock_timeout(stage: str) -> None:
 
     async with timeout(1):
         with pytest.raises(TimeoutError):
-            await client(pool, http_timeout=0.01).get_latest_versions()
+            await client(pool).get_latest_versions()
     if stage == "body":
         assert pool.responses[0].body_accessed
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"room_concurrency": 0},
-        {"room_concurrency": 1.0},
-        {"http_timeout": 0},
-        {"http_timeout": float("nan")},
-        {"http_timeout": float("inf")},
-    ],
-)
-def test_client_limits_are_strict_positive_finite(kwargs: Any) -> None:
-    with pytest.raises(ValidationError):
-        KleiClient(
-            SecretStr("token"),
-            http_pool=cast("AsyncPoolManager", RecordingPool({})),
-            **kwargs,
-        )
 
 
 def test_response_envelope_and_consumed_fields_are_validated() -> None:
