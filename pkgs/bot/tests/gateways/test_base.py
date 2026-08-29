@@ -75,6 +75,7 @@ def test_http_action_base_url_is_strict_and_canonical() -> None:
         "ftp://onebot.example/action",
         " http://onebot.example/action",
         "http://onebot.example/a b",
+        "http://user:secret@onebot.example/action",
         "http://onebot.example/action#fragment",
         "http://",
     ):

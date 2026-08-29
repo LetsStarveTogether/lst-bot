@@ -592,6 +592,7 @@ def test_ingress_path_must_be_origin_form(path: str) -> None:
         pytest.param("http://onebot.example/ws", id="http"),
         pytest.param("/onebot/ws", id="relative"),
         pytest.param("ws://", id="missing-host"),
+        pytest.param("ws://user:secret@onebot.example/ws", id="credentials"),
         pytest.param("ws://onebot.example/has space", id="space"),
     ],
 )

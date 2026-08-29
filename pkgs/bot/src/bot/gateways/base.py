@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from asyncio import (
     FIRST_COMPLETED,
     CancelledError,
@@ -83,14 +81,16 @@ def validate_https_base_url(value: str, platform: str) -> str:
         parsed = _HTTPS_BASE_URL_ADAPTER.validate_python(value)
     except ValueError:
         raise ValueError(msg) from None
-    if (
-        parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
+    if url_has_credentials(parsed) or parsed.query or parsed.fragment:
         raise ValueError(msg)
     return str(parsed).rstrip("/")
+
+
+def url_has_credentials(value: object) -> bool:
+    return (
+        getattr(value, "username", None) is not None
+        or getattr(value, "password", None) is not None
+    )
 
 
 async def run_while_open[T](
@@ -170,7 +170,7 @@ class HttpAction:
             parsed = _HTTP_BASE_URL_ADAPTER.validate_python(self.base_url)
         except ValueError:
             raise ValueError(msg) from None
-        if parsed.fragment is not None:
+        if parsed.fragment is not None or url_has_credentials(parsed):
             raise ValueError(msg)
         self.base_url = str(parsed)
         self.timeout = _POSITIVE_SECONDS_ADAPTER.validate_python(self.timeout)
@@ -561,10 +561,10 @@ class WebSocketActionManager:
 
     def fail_all(self) -> None:
         exc = ConnectionError("WebSocket action backend closed")
-        for echo, (_, future) in list(self._pending.items()):
+        for _, future in self._pending.values():
             if not future.done():
                 future.set_exception(exc)
-            self._pending.pop(echo, None)
+        self._pending.clear()
         self._sessions.clear()
 
     def _session_for(self, self_: BotSelf) -> WebSocketActionSession | None:

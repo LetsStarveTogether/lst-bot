@@ -73,6 +73,7 @@ from .base import (
     request_target_path,
     run_while_open,
     token_matches,
+    url_has_credentials,
 )
 
 logger = getLogger(__name__)
@@ -133,10 +134,12 @@ class ForwardWebSocket:
         except (InvalidURI, ValueError) as exc:
             msg = "OneBot 12 forward WebSocket URL must use ws or wss"
             raise ValueError(msg) from exc
-        if not parsed.host.strip() or any(
-            character.isspace() for character in self.url
+        if (
+            url_has_credentials(parsed)
+            or not parsed.host.strip()
+            or any(character.isspace() for character in self.url)
         ):
-            msg = "OneBot 12 forward WebSocket URL must not contain whitespace"
+            msg = "OneBot 12 forward WebSocket URL contains credentials or whitespace"
             raise ValueError(msg)
 
 

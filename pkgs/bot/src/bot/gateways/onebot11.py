@@ -19,6 +19,7 @@ from hmac import compare_digest, new
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
 from math import isfinite
+from operator import is_none
 from typing import Annotated, Any, Literal, Self, cast, override
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
@@ -104,6 +105,7 @@ from .base import (
     run_while_open,
     text_response,
     token_matches,
+    url_has_credentials,
 )
 
 logger = getLogger(__name__)
@@ -202,7 +204,7 @@ def _qq_self(user_id: str) -> BotSelf:
 class OneBot11ActionRequest(Model):
     action: StrictStr
     params: SerializeAsAny[Model] = Field(default_factory=Model)
-    echo: JsonValue = Field(default=None, exclude_if=lambda value: value is None)
+    echo: JsonValue = Field(default=None, exclude_if=is_none)
 
 
 class OneBot11ActionResponse(Model):
@@ -211,13 +213,13 @@ class OneBot11ActionResponse(Model):
     data: JsonValue
     message: StrictStr | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
     msg: StrictStr | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
-    echo: JsonValue = Field(default=None, exclude_if=lambda value: value is None)
+    echo: JsonValue = Field(default=None, exclude_if=is_none)
 
     @model_validator(mode="after")
     def match_status_and_retcode(self) -> Self:
@@ -245,23 +247,23 @@ class OneBot11Message(RootModel[list[OneBot11MessageSegment]]):
 class OneBot11QuickOperation(Model):
     reply: OneBot11Message | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
     at_sender: StrictBool | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
     approve: StrictBool | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
     remark: StrictStr | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
     reason: StrictStr | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
 
 
@@ -290,7 +292,7 @@ class OneBot11MessageEvent(OneBot11Event):
     message: JsonValue
     raw_message: StrictStr | None = Field(
         default=None,
-        exclude_if=lambda value: value is None,
+        exclude_if=is_none,
     )
 
 
@@ -457,6 +459,7 @@ class ForwardWebSocket:
         if (
             parsed_url.scheme not in {"ws", "wss"}
             or parsed_url.hostname is None
+            or url_has_credentials(parsed_url)
             or parsed_url.fragment
             or any(char.isspace() for char in self.url)
         ):

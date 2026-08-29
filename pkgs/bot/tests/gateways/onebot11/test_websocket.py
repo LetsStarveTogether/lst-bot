@@ -60,6 +60,7 @@ def test_forward_websocket_validates_role_endpoint_and_identity() -> None:
         "//onebot.example/event",
         "http://onebot.example/event",
         "ws://one bot.example/event",
+        "ws://user:secret@onebot.example/event",
         "ws://onebot.example/event//",
         "ws://onebot.example/event#fragment",
         "ws://onebot.example:invalid/event",
