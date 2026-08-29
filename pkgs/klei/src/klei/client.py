@@ -33,6 +33,7 @@ _VERSION_URL = "https://kleiforums.com/game-updates/dst/"
 _LOBBY_URL = "https://lobby-v2-cdn.klei.com/{region}-Steam.json.gz"
 _ROOM_URL = "https://lobby-v2-{region}.klei.com/lobby/read"
 _HTTP_TIMEOUT_SECONDS = 30.0
+_MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
 _ROOM_CONCURRENCY = 24  # ponytail: configure only if Klei throttling demands it
 _ROOMS = TypeAdapter(
     tuple[tuple[Annotated[str, Field(strict=True, min_length=1)], Region], ...]
@@ -116,9 +117,20 @@ class KleiClient:
                 method,
                 url,
                 json=json,
-                redirect=method == HTTPMethod.GET,
+                preload_content=False,
+                redirect=False,
+                retries=False,
             )
-            body = await response.data
+            try:
+                body = await response.read(
+                    _MAX_HTTP_BODY_BYTES + 1,
+                    decode_content=True,
+                )
+                if len(body) > _MAX_HTTP_BODY_BYTES:
+                    msg = f"Klei response body exceeds {_MAX_HTTP_BODY_BYTES} bytes"
+                    raise HTTPError(msg)
+            finally:
+                await response.close()
             if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
                 msg = f"Klei request failed: HTTP {response.status} {method} {url}"
                 raise HTTPError(msg)

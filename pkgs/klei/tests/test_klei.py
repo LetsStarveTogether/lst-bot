@@ -1,6 +1,6 @@
 import json as jsonlib
 from asyncio import Event, create_task, sleep, timeout
-from collections.abc import Awaitable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, cast
@@ -58,16 +58,22 @@ class Response:
         self._body = body
         self._body_release = body_release
         self.body_accessed = False
+        self.read_args: tuple[int | None, bool | None] | None = None
+        self.closed = False
 
-    @property
-    def data(self) -> Awaitable[bytes]:
+    async def read(
+        self,
+        amt: int | None = None,
+        decode_content: bool | None = None,
+    ) -> bytes:
         self.body_accessed = True
-        return self._read()
-
-    async def _read(self) -> bytes:
+        self.read_args = (amt, decode_content)
         if self._body_release is not None:
             await self._body_release.wait()
-        return self._body
+        return self._body if amt is None else self._body[:amt]
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class RecordingPool:
@@ -85,7 +91,9 @@ class RecordingPool:
         call: dict[str, object] = {
             "method": method,
             "url": url,
+            "preload_content": kwargs.get("preload_content"),
             "redirect": kwargs.get("redirect"),
+            "retries": kwargs.get("retries"),
         }
         if (json := kwargs.get("json")) is not None:
             call["json"] = json
@@ -150,7 +158,9 @@ async def test_client_reads_only_consumed_version_fields() -> None:
         {
             "method": "GET",
             "url": VERSION_URL,
-            "redirect": True,
+            "preload_content": False,
+            "redirect": False,
+            "retries": False,
         }
     ]
 
@@ -267,6 +277,26 @@ async def test_non_success_http_status_consumes_body_before_failing() -> None:
         await client(pool).get_latest_versions()
 
     assert pool.responses[0].body_accessed is True
+
+
+async def test_response_body_boundary_closes_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = VERSION_HTML.encode()
+    monkeypatch.setattr(client_module, "_MAX_HTTP_BODY_BYTES", len(body))
+    accepted = RecordingPool({VERSION_URL: body})
+    rejected = RecordingPool({VERSION_URL: body + b"x"})
+
+    await client(accepted).get_latest_versions()
+    with pytest.raises(HTTPError, match="response body exceeds"):
+        await client(rejected).get_latest_versions()
+
+    for pool in (accepted, rejected):
+        assert pool.responses[0].read_args == (len(body) + 1, True)
+        assert pool.responses[0].closed is True
+        assert pool.calls[0]["preload_content"] is False
+        assert pool.calls[0]["redirect"] is False
+        assert pool.calls[0]["retries"] is False
 
 
 @pytest.mark.parametrize("stage", ["request", "body"])
