@@ -13,7 +13,7 @@ from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
-from bot import Bot, BotSelf, Msg, Status
+from bot import Bot, BotSelf, Injected, Msg, Status
 from bot.gateways import telegram as telegram_module
 from bot.gateways import telegram_api as telegram_api_module
 from bot.gateways.telegram import TelegramGateway
@@ -43,7 +43,6 @@ from bot.protocol.events import (
     MessageEvent,
     NoticeEvent,
 )
-from diwire import Injected
 from pydantic import JsonValue, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
@@ -995,33 +994,7 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
         await gateway.close()
 
 
-async def test_cancelling_one_start_waiter_keeps_shared_startup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gateway = make_gateway()
-    identifying = Event()
-    continue_identification = Event()
-
-    async def identify() -> TelegramUser:
-        identifying.set()
-        await continue_identification.wait()
-        return TelegramUser(id=123, is_bot=True, first_name="Bot")
-
-    monkeypatch.setattr(gateway, "_identify", identify)
-    async with timeout(1), TaskGroup() as tasks:
-        cancelled = tasks.create_task(gateway.start())
-        surviving = tasks.create_task(gateway.start())
-        await identifying.wait()
-        cancelled.cancel()
-        with pytest.raises(CancelledError):
-            await cancelled
-        continue_identification.set()
-        await surviving
-        assert gateway._task is not None
-        await gateway.close()
-
-
-async def test_cancelling_only_start_waiter_rolls_back(
+async def test_cancelling_start_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gateway = make_gateway()
@@ -1041,7 +1014,7 @@ async def test_cancelling_only_start_waiter_rolls_back(
             await startup
 
     assert gateway._closed_event.is_set()
-    assert gateway._startup_task is None
+    assert gateway._task is None
 
 
 async def test_failed_start_can_retry(
@@ -1066,7 +1039,6 @@ async def test_failed_start_can_retry(
         finally:
             async with timeout(1):
                 await gateway.close()
-    assert not pool.cleared
 
 
 async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:

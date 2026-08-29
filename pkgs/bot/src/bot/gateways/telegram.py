@@ -6,7 +6,6 @@ from asyncio import (
     create_task,
     current_task,
     sleep,
-    wait,
 )
 from collections.abc import Mapping
 from contextlib import suppress
@@ -210,10 +209,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
             http_pool=http_pool,
         )
         self.poll_timeout = _NON_NEGATIVE_INT_ADAPTER.validate_python(poll_timeout)
-        self._gateway_lock = Lock()
-        self._startup_task: Task[None] | None = None
-        self._startup_waiters = 0
-        self._close_task: Task[None] | None = None
+        self._lifecycle_lock = Lock()
         self._task: Task[None] | None = None
         self._closing = False
         self._online = False
@@ -222,75 +218,33 @@ class TelegramGateway(Gateway, TelegramRestClient):
         self._me: TelegramUser | None = None
 
     @override
-    async def start(  # ruff: ignore[complex-structure] - shared startup keeps paired rollback failures
-        self,
-    ) -> None:
-        while True:
-            async with self._gateway_lock:
-                cleanup = self._close_task
-                if cleanup is None:
-                    if self._task is not None:
-                        if not self._task.done():
-                            return
-                        self._task.result()
-                    startup = self._startup_task
-                    if startup is None or startup.done():
-                        self._task = None
-                        self._closing = False
-                        startup = create_task(
-                            self._start_gateway(),
-                            name="telegram-gateway-start",
-                        )
-                        self._startup_task = startup
-                    self._startup_waiters += 1
-                    break
-            await wait((cleanup,))
-            await self._await_close_task(cleanup)
-
-        startup_error: BaseException | None = None
-        try:
-            await wait((startup,))
-            startup.result()
-        except BaseException as exc:
-            startup_error = exc
-        async with self._gateway_lock:
-            cleanup = self._release_startup_waiter(startup)
-
-        cleanup_error: BaseException | None = None
-        if cleanup is not None:
+    async def start(self) -> None:
+        async with self._lifecycle_lock:
+            task = self._task
+            if task is not None:
+                if not task.done():
+                    return
+                self._task = None
+                task.result()
+            self._closing = False
+            await TelegramRestClient.start(self)
             try:
-                await self._await_close_task(cleanup)
-            except BaseException as exc:
-                cleanup_error = exc
-
-        if startup_error is not None and cleanup_error is not None:
-            msg = "Telegram startup and cleanup failed"
-            raise BaseExceptionGroup(msg, [startup_error, cleanup_error]) from None
-        if startup_error is not None:
-            raise startup_error
-        if cleanup_error is not None:
-            raise cleanup_error
-
-    def _release_startup_waiter(self, startup: Task[None]) -> Task[None] | None:
-        self._startup_waiters -= 1
-        if not startup.done():
-            if not self._startup_waiters and self._startup_task is startup:
-                return self._ensure_close_task()
-            return None
-
-        failed = startup.cancelled() or startup.exception() is not None
-        if self._startup_task is startup:
-            self._startup_task = None
-            if failed:
-                return self._ensure_close_task()
-        return self._close_task if failed else None
-
-    async def _start_gateway(self) -> None:
-        await TelegramRestClient.start(self)
-        me = await self._identify()
-        async with self._gateway_lock:
-            if self._closing:
-                raise CancelledError
+                me = await self._identify()
+            except BaseException as startup_error:
+                self._closing = True
+                cleanup = create_task(
+                    self._finish_gateway_close(),
+                    name="telegram-gateway-close",
+                )
+                try:
+                    await await_cleanup(cleanup)
+                except BaseException as cleanup_error:
+                    msg = "Telegram startup and cleanup failed"
+                    raise BaseExceptionGroup(
+                        msg,
+                        [startup_error, cleanup_error],
+                    ) from None
+                raise
             self._me = me
             self._self = BotSelf(platform="telegram", user_id=str(me.id))
             self._online = True
@@ -311,50 +265,29 @@ class TelegramGateway(Gateway, TelegramRestClient):
 
     @override
     async def close(self) -> None:
-        async with self._gateway_lock:
-            cleanup = self._ensure_close_task()
-        await self._await_close_task(cleanup)
-
-    async def _await_close_task(self, cleanup: Task[None]) -> None:
-        try:
-            await await_cleanup(cleanup)
-        finally:
-            async with self._gateway_lock:
-                if self._close_task is cleanup and cleanup.done():
-                    self._close_task = None
-
-    def _ensure_close_task(self) -> Task[None]:
-        cleanup = self._close_task
-        if cleanup is None or cleanup.done():
-            cleanup = create_task(
-                self._close_gateway(),
+        async with self._lifecycle_lock:
+            self._closing = True
+            finishing = create_task(
+                self._finish_gateway_close(),
                 name="telegram-gateway-close",
             )
-            self._close_task = cleanup
-        return cleanup
+            await await_cleanup(finishing)
 
-    async def _close_gateway(self) -> None:
-        async with self._gateway_lock:
-            self._closing = True
-            self._online = False
-            tasks = tuple(
-                task for task in (self._startup_task, self._task) if task is not None
-            )
-            for task in tasks:
-                task.cancel()
+    async def _finish_gateway_close(self) -> None:
+        self._online = False
+        task = self._task
+        if task is not None:
+            task.cancel()
         try:
-            for task in tasks:
+            if task is not None:
                 with suppress(CancelledError, Exception):
                     await task
         finally:
             try:
                 await TelegramRestClient.close(self)
             finally:
-                async with self._gateway_lock:
-                    if self._startup_task in tasks:
-                        self._startup_task = None
-                    if self._task in tasks:
-                        self._task = None
+                if self._task is task:
+                    self._task = None
 
     @override
     def connection_for(self, self_: BotSelf) -> TelegramConnection:
@@ -384,7 +317,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         )
 
     @override
-    async def request_action(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements] - protocol action router is intentionally flat
+    async def request_action(  # ruff: ignore[complex-structure, too-many-branches] - protocol action router is intentionally flat
         self,
         connection: Connection,
         action: str,
@@ -482,13 +415,10 @@ class TelegramGateway(Gateway, TelegramRestClient):
                 data["title"] = data.pop("group_name")
             return await self.call(method, {"chat_id": chat_id, **data})
 
-        if action.casefold() in map(str.casefold, _NATIVE_ACTIONS):
+        if common_action is None:
             files = cast(Mapping[str, bytes | TelegramUpload], data.pop("files", {}))
             return await self.call(action, data, files)
 
-        if common_action is None:
-            msg = f"unsupported Telegram action: {action}"
-            raise LookupError(msg)
         msg = f"Telegram does not support common action {common_action.value}"
         raise LookupError(msg)
 

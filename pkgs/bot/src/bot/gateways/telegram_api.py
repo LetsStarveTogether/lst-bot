@@ -92,17 +92,6 @@ TELEGRAM_METHODS = frozenset(
     """.split()  # ruff: ignore[split-static-string] - compact official manifest
 )
 
-TELEGRAM_UPDATE_TYPES = tuple(
-    """
-    message edited_message channel_post edited_channel_post business_connection
-    business_message edited_business_message deleted_business_messages guest_message
-    message_reaction message_reaction_count inline_query chosen_inline_result
-    callback_query shipping_query pre_checkout_query purchased_paid_media poll
-    poll_answer my_chat_member chat_member chat_join_request chat_boost
-    removed_chat_boost managed_bot subscription stopped_message_generation
-    """.split()  # ruff: ignore[split-static-string] - compact official manifest
-)
-
 TELEGRAM_SERVICE_MESSAGE_TYPES = tuple(
     """
     new_chat_members left_chat_member chat_owner_left chat_owner_changed
@@ -590,6 +579,9 @@ class TelegramUpdate(Model):
         return self.model_dump(mode="json", exclude_none=True)
 
 
+TELEGRAM_UPDATE_TYPES = tuple(
+    name for name in TelegramUpdate.model_fields if name != "update_id"
+)
 _UPDATES_ADAPTER = TypeAdapter(Annotated[list[TelegramUpdate], Field(max_length=100)])
 
 
