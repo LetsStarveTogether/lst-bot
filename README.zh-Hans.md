@@ -91,6 +91,7 @@ Discord 除通用机器人动作外，还开放 `discord.request` 和 `discord.g
 仓库提供的 systemd 单元使用 `/srv/lst-bot`；可选的 OneBot 11 部署还使用 `/srv/napcat`。
 
 启用 OneBot 11 时，`systemd/napcat.container` 使用 Podman 运行 NapCat。
+请让 NapCat 的 OneBot 11 WebSocket 服务监听 `0.0.0.0:3001`，设置 `ONEBOT_WS_URL=ws://127.0.0.1:3001`，并确保其 token 与 `ONEBOT_ACCESS_TOKEN` 一致。
 
 1. 项目位于 `/srv/lst-bot`，并已运行 `just sync`。
 2. 配置 `.env`。

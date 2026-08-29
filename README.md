@@ -91,6 +91,7 @@ A single `DiscordGateway` owns one shard; bots at Discord's mandatory large-scal
 The supplied systemd units use `/srv/lst-bot`; the optional OneBot 11 deployment also uses `/srv/napcat`.
 
 `systemd/napcat.container` runs NapCat with Podman when OneBot 11 is enabled.
+Configure NapCat's OneBot 11 WebSocket server to listen on `0.0.0.0:3001`, set `ONEBOT_WS_URL=ws://127.0.0.1:3001`, and keep its token equal to `ONEBOT_ACCESS_TOKEN`.
 
 1. Place the repository at `/srv/lst-bot` and run `just sync`.
 2. Configure `.env`.
