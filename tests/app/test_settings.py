@@ -47,8 +47,8 @@ def test_ai_service_settings_are_required_and_validated(
         Settings(_env_file=None, **overrides)
 
 
-def test_empty_http_proxy_means_direct_connection() -> None:
-    settings = Settings(_env_file=None, http_proxy="")
+def test_http_proxy_defaults_to_direct_connection() -> None:
+    settings = Settings(_env_file=None)
     assert settings.http_proxy is None
     assert settings.proxy_url is None
 

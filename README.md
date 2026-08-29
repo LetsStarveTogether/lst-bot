@@ -39,7 +39,7 @@ flowchart LR
 
 ## Configuration
 
-The app reads `.env` from the repository root.
+The app reads `.env` from the current working directory; the documented commands and service run from the repository root.
 
 | Name | Purpose |
 | --- | --- |

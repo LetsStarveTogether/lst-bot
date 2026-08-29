@@ -50,9 +50,7 @@ class Settings(BaseSettings):
     bot_timezone: ZoneInfo | None = None
 
     log_level: StrictInt = DEBUG
-    http_proxy: _OptionalSecretHttpUrl = Secret[AnyHttpUrl](
-        AnyHttpUrl("http://127.0.0.1:1080")
-    )
+    http_proxy: _OptionalSecretHttpUrl = None
 
     onebot_self_id: str = ""
     onebot_ws_url: str = ""
