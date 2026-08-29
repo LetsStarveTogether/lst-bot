@@ -14,6 +14,7 @@ from .models import Hitokoto
 
 HTTP_TIMEOUT_SECONDS = 30.0
 _BUNDLE_URL = "https://sentences-bundle.hitokoto.cn/"
+_MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
 _HITOKOTO_SENTENCES = TypeAdapter(list[Hitokoto])
 _HITOKOTO_BUNDLE = TypeAdapter(
     Annotated[list[Hitokoto], Field(min_length=1)],
@@ -97,8 +98,20 @@ class HitokotoClient:
         response = await self.http_pool.request(
             HTTPMethod.GET,
             url,
+            preload_content=False,
+            redirect=False,
+            retries=False,
         )
-        body = await response.data
+        try:
+            body = await response.read(
+                _MAX_HTTP_BODY_BYTES + 1,
+                decode_content=True,
+            )
+        finally:
+            await response.close()
+        if len(body) > _MAX_HTTP_BODY_BYTES:
+            msg = f"Hitokoto response exceeds {_MAX_HTTP_BODY_BYTES} bytes"
+            raise HTTPError(msg)
         if response.status != HTTPStatus.OK:
             msg = f"Hitokoto request failed: HTTP {response.status}"
             raise HTTPError(msg)

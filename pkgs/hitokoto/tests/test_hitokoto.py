@@ -29,7 +29,7 @@ from hitokoto.cache import (
     write_cache,
 )
 from pydantic import ValidationError
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
+from urllib3_future import AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 
 BUNDLE_URL = "https://sentences-bundle.hitokoto.cn/"
@@ -39,6 +39,7 @@ class RecordingPool(AsyncPoolManager):
     def __init__(self, routes: Mapping[str, object]) -> None:
         self.routes = routes
         self.calls: list[dict[str, object]] = []
+        self.request_options: list[dict[str, object]] = []
         self.request_started = Event()
 
     @override
@@ -52,9 +53,10 @@ class RecordingPool(AsyncPoolManager):
         json: Any = None,
         **urlopen_kw: Any,
     ) -> Any:
-        _ = body, fields, headers, json, urlopen_kw
+        _ = body, fields, headers, json
         call: dict[str, object] = {"method": method, "url": url}
         self.calls.append(call)
+        self.request_options.append(urlopen_kw)
         self.request_started.set()
         await sleep(0)
         result = self.routes[url]
@@ -62,10 +64,10 @@ class RecordingPool(AsyncPoolManager):
             return await get_running_loop().create_future()
         if isinstance(result, Future):
             result = await result
-        if isinstance(result, AsyncHTTPResponse | RecordingResponse):
+        if isinstance(result, RecordingResponse):
             return result
         payload = result if isinstance(result, bytes) else dumps(result).encode()
-        return AsyncHTTPResponse(body=payload, status=200)
+        return RecordingResponse(200, payload)
 
 
 class RecordingResponse:
@@ -73,14 +75,22 @@ class RecordingResponse:
         self.status = status
         self.body = body
         self.body_accessed = False
+        self.closed = False
+        self.read_calls: list[tuple[int | None, bool | None]] = []
 
-    @property
-    def data(self) -> Future[bytes]:
+    async def read(
+        self,
+        amount: int | None = None,
+        decode_content: bool | None = None,
+    ) -> bytes:
         self.body_accessed = True
-        future = get_running_loop().create_future()
-        if self.body is not None:
-            future.set_result(self.body)
-        return future
+        self.read_calls.append((amount, decode_content))
+        if self.body is None:
+            return await get_running_loop().create_future()
+        return self.body if amount is None else self.body[:amount]
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def hitokoto_payload(text: str = "hello") -> dict[str, object]:
@@ -156,6 +166,39 @@ async def test_client_consumes_error_body_before_failing(tmp_path: Path) -> None
         ).get_hitokoto()
 
     assert response.body_accessed is True
+    assert response.closed is True
+
+
+@pytest.mark.parametrize(
+    ("body_size", "oversized"),
+    [(8, False), (9, True)],
+    ids=["exact", "over"],
+)
+async def test_client_limits_decoded_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+    body_size: int,
+    oversized: bool,
+) -> None:
+    limit = 8
+    monkeypatch.setattr(client_module, "_MAX_HTTP_BODY_BYTES", limit)
+    body = b"x" * body_size
+    url = f"{BUNDLE_URL}body"
+    response = RecordingResponse(200, body)
+    pool = RecordingPool({url: response})
+    client = HitokotoClient(http_pool=pool)
+    get = client._get  # ruff: ignore[private-member-access] - focused HTTP boundary
+
+    if oversized:
+        with pytest.raises(HTTPError, match="exceeds"):
+            await get(url)
+    else:
+        assert await get(url) == body
+
+    assert response.read_calls == [(limit + 1, True)]
+    assert response.closed is True
+    assert pool.request_options == [
+        {"preload_content": False, "redirect": False, "retries": False}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -180,6 +223,7 @@ async def test_client_applies_wall_clock_timeout_to_all_io(
 
     if isinstance(route, RecordingResponse):
         assert route.body_accessed is True
+        assert route.closed is True
 
 
 async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
