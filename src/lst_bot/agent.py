@@ -1,4 +1,5 @@
 from httpx import AsyncClient as MCPHttpClient
+from httpx import Timeout as MCPTimeout
 from httpx2 import AsyncClient
 from pydantic_ai import Agent, WebSearchTool
 from pydantic_ai.capabilities import NativeTool
@@ -70,7 +71,7 @@ def build_question_agent(
                         "X-Dosu-API-Key": settings.dosu_api_key.get_secret_value()
                     },
                     proxy=settings.proxy_url,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=MCPTimeout(REQUEST_TIMEOUT, connect=5),
                     trust_env=False,
                     follow_redirects=False,
                 ),

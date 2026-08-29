@@ -9,6 +9,7 @@ from bot.gateways.onebot11 import ForwardWebSocket, OneBot11Gateway, WebSocketAc
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
 from httpx2 import AsyncClient
+from httpx2 import Timeout as ModelTimeout
 from klei import KleiClient
 from lst import LstClient
 from pydantic_ai import Agent
@@ -103,7 +104,7 @@ async def run(settings: Settings) -> None:
         AsyncProxyManager(proxy) if proxy else AsyncPoolManager() as http_pool,
         AsyncClient(
             proxy=proxy,
-            timeout=REQUEST_TIMEOUT,
+            timeout=ModelTimeout(REQUEST_TIMEOUT, connect=5),
             trust_env=False,
         ) as model_http_client,
     ):

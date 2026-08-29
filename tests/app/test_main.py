@@ -1,5 +1,5 @@
 from datetime import timedelta
-from logging import DEBUG, INFO, getLogger
+from logging import DEBUG, ERROR, INFO, getLogger
 from typing import Never
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
@@ -11,7 +11,9 @@ from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
 from httpx import AsyncClient as MCPHttpClient
+from httpx import Timeout as MCPTimeout
 from httpx2 import AsyncClient
+from httpx2 import Timeout as ModelTimeout
 from klei import KleiClient
 from lst import LstClient
 from pydantic import SecretStr
@@ -28,6 +30,7 @@ async def test_run_closes_model_client_when_agent_build_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clients: list[AsyncClient] = []
+    create_client = Mock(wraps=AsyncClient)
 
     def fail(_settings: Settings, *, http_client: AsyncClient) -> Never:
         clients.append(http_client)
@@ -35,42 +38,57 @@ async def test_run_closes_model_client_when_agent_build_fails(
         raise RuntimeError(msg)
 
     monkeypatch.setenv("ALL_PROXY", "invalid://proxy")
+    monkeypatch.setattr("lst_bot.main.AsyncClient", create_client)
     monkeypatch.setattr("lst_bot.main.build_question_agent", fail)
 
     with pytest.raises(RuntimeError, match="build failed"):
         await run(Settings(_env_file=None, http_proxy=""))
 
     assert clients[0].is_closed
+    create_client.assert_called_once_with(
+        proxy=None,
+        timeout=ModelTimeout(REQUEST_TIMEOUT, connect=5),
+        trust_env=False,
+    )
 
 
+@pytest.mark.parametrize(
+    ("proxy", "expected_proxy"),
+    [(None, None), ("http://proxy.example", "http://proxy.example/")],
+)
 async def test_mcp_client_uses_hardened_http_config(
     monkeypatch: pytest.MonkeyPatch,
+    proxy: str | None,
+    expected_proxy: str | None,
 ) -> None:
     create_client = Mock(return_value=Mock(spec=MCPHttpClient))
     monkeypatch.setattr("lst_bot.agent.MCPHttpClient", create_client)
     async with AsyncClient(trust_env=False) as model_client:
         build_question_agent(
-            Settings(_env_file=None, http_proxy=""),
+            Settings(_env_file=None, http_proxy=proxy),
             http_client=model_client,
         )
 
     create_client.assert_called_once_with(
         headers={"X-Dosu-API-Key": "test"},
-        proxy=None,
-        timeout=REQUEST_TIMEOUT,
+        proxy=expected_proxy,
+        timeout=MCPTimeout(REQUEST_TIMEOUT, connect=5),
         trust_env=False,
         follow_redirects=False,
     )
 
 
+@pytest.mark.parametrize(("level", "expected"), [(DEBUG, INFO), (ERROR, ERROR)])
 def test_main_never_lowers_dependency_log_level(
     monkeypatch: pytest.MonkeyPatch,
+    level: int,
+    expected: int,
 ) -> None:
     loggers = {
         name: Mock()
         for name in ("httpcore", "urllib3_future", "websockets", "mcp", "fastmcp")
     }
-    monkeypatch.setattr("lst_bot.main.Settings", lambda: Mock(log_level=DEBUG))
+    monkeypatch.setattr("lst_bot.main.Settings", lambda: Mock(log_level=level))
     monkeypatch.setattr("lst_bot.main.logging.basicConfig", Mock())
     monkeypatch.setattr(
         "lst_bot.main.logging.getLogger",
@@ -82,7 +100,7 @@ def test_main_never_lowers_dependency_log_level(
     main()
 
     for logger in loggers.values():
-        logger.setLevel.assert_called_once_with(INFO)
+        logger.setLevel.assert_called_once_with(expected)
 
 
 def test_build_bot_registers_runtime_settings() -> None:
