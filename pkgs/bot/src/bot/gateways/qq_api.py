@@ -291,7 +291,7 @@ class QQKeyboardRenderData(QQRequest):
 
 
 class QQKeyboardButton(QQRequest):
-    id: QQID
+    id: QQID | None = None
     render_data: QQKeyboardRenderData
     action: QQKeyboardAction
     group_id: QQID | None = None
@@ -329,6 +329,33 @@ class QQMessageReference(QQRequest):
 class QQInputNotify(QQRequest):
     input_type: StrictIntLiteral[Literal[1]]
     input_second: Annotated[StrictInt, Field(ge=1, le=60)]
+
+
+class QQArkObjKV(QQRequest):
+    key: StrictStr
+    value: StrictStr
+
+
+class QQArkObj(QQRequest):
+    obj_kv: Annotated[list[QQArkObjKV], Field(min_length=1)]
+
+
+class QQArkKv(QQRequest):
+    key: StrictStr
+    value: StrictStr | None = None
+    obj: Annotated[list[QQArkObj], Field(min_length=1)] | None = None
+
+    @model_validator(mode="after")
+    def value_or_object(self) -> Self:
+        if (self.value is None) == (self.obj is None):
+            msg = "ark kv requires exactly one of value and obj"
+            raise ValueError(msg)
+        return self
+
+
+class QQArk(QQRequest):
+    template_id: StrictInt
+    kv: list[QQArkKv]
 
 
 class QQReplySourceFields(QQRequest):
@@ -414,25 +441,18 @@ class QQSendC2CMessageRequest(QQUserParams, QQMessageRequestBase):
         return self
 
 
-class QQArkKv(QQRequest):
-    key: StrictStr
-    value: StrictStr | None = None
-    obj: list[dict[StrictStr, JsonValue]] | None = None
-
-
-class QQArk(QQRequest):
-    template_id: StrictInt
-    kv: list[QQArkKv]
-
-
 class QQEmbedField(QQRequest):
     name: StrictStr
+
+
+class QQEmbedThumbnail(QQRequest):
+    url: StrictStr
 
 
 class QQEmbed(QQRequest):
     title: StrictStr | None = None
     prompt: StrictStr | None = None
-    thumbnail: dict[StrictStr, JsonValue] | None = None
+    thumbnail: QQEmbedThumbnail | None = None
     fields: list[QQEmbedField] | None = None
 
 

@@ -103,7 +103,6 @@ def test_keyboard_permission_rejects_mismatched_subjects(
 
 def test_keyboard_button_matches_qq_wire_contract() -> None:
     payload = {
-        "id": "btn_signin",
         "render_data": {"label": "签到", "visited_label": "已签到", "style": 1},
         "action": {"type": 2, "permission": {"type": 2}, "data": "/signin"},
     }
@@ -149,6 +148,16 @@ def test_response_models_accept_current_qq_wire_values() -> None:
 
 
 def test_rest_request_models_follow_current_qq_contract() -> None:
+    ark = {
+        "template_id": 23,
+        "kv": [
+            {"key": "#DESC#", "value": "机器人消息"},
+            {
+                "key": "#LIST#",
+                "obj": [{"obj_kv": [{"key": "name", "value": "列表项"}]}],
+            },
+        ],
+    }
     for model, target in (
         (QQSendGroupMessageRequest, {"group_openid": "group"}),
         (QQSendC2CMessageRequest, {"user_openid": "user"}),
@@ -159,6 +168,19 @@ def test_rest_request_models_follow_current_qq_contract() -> None:
             "content": "answer",
             "msg_type": 0,
         }
+    channel_message = qq_api.QQSendChannelMessageRequest.model_validate({
+        "channel_id": "channel",
+        "ark": ark,
+    })
+    assert channel_message.model_dump(mode="json", exclude_none=True) == {
+        "channel_id": "channel",
+        "ark": ark,
+    }
+    with pytest.raises(ValidationError, match="exactly one"):
+        qq_api.QQSendChannelMessageRequest.model_validate({
+            "channel_id": "channel",
+            "ark": {"template_id": 23, "kv": [{"key": "#DESC#"}]},
+        })
 
     upload = QQFileUploadFields(file_type=1, url="https://qq.example/image.png")
     assert upload.srv_send_msg is False
@@ -378,11 +400,11 @@ def test_v2_messages_reject_legacy_payload_types() -> None:
     for model, payload in (
         (
             QQSendGroupMessageRequest,
-            {"group_openid": "group", "msg_type": 3, "ark": {}},
+            {"group_openid": "group", "msg_type": 3, "content": "answer"},
         ),
         (
             QQSendC2CMessageRequest,
-            {"user_openid": "user", "msg_type": 4, "embed": {}},
+            {"user_openid": "user", "msg_type": 4, "content": "answer"},
         ),
     ):
         with pytest.raises(ValidationError):
