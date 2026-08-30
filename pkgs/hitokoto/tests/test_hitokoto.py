@@ -7,7 +7,6 @@ from asyncio import (
     create_task,
     gather,
     get_running_loop,
-    sleep,
     timeout,
 )
 from collections.abc import Mapping
@@ -58,7 +57,6 @@ class RecordingPool(AsyncPoolManager):
         self.calls.append(call)
         self.request_options.append(urlopen_kw)
         self.request_started.set()
-        await sleep(0)
         result = self.routes[url]
         if result is None:
             return await get_running_loop().create_future()
