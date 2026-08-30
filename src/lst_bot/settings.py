@@ -8,6 +8,7 @@ from pydantic import (
     AnyHttpUrl,
     BeforeValidator,
     Field,
+    Json,
     Secret,
     SecretStr,
     StrictInt,
@@ -22,6 +23,7 @@ type _OptionalSecretHttpUrl = Annotated[
     Secret[AnyHttpUrl] | None,
     BeforeValidator(lambda value: None if value == "" else value),
 ]
+type _NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0)]
 
 
 def _endpoint_url(value: AnyHttpUrl) -> AnyHttpUrl:
@@ -57,7 +59,7 @@ class Settings(BaseSettings):
     onebot_access_token: SecretStr = SecretStr("")
     telegram_bot_token: SecretStr = SecretStr("")
     discord_bot_token: SecretStr = SecretStr("")
-    discord_intents: int = Field(default=4609, ge=0)
+    discord_intents: _NonNegativeStrictInt | Json[_NonNegativeStrictInt] = 4609
 
     klei_access_token: SecretStr = SecretStr("")
     klei_host_id: str = ""

@@ -152,13 +152,25 @@ def test_multi_value_environment_variables_parse_json(
 ) -> None:
     monkeypatch.setenv("BOT_CMD_PREFIXES", '["/", "!"]')
     monkeypatch.setenv("BOT_ADMIN", '{"qq":["u1"],"discord":["u2"]}')
+    monkeypatch.setenv("DISCORD_INTENTS", "37377")
     monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "secret")
 
     settings = Settings(_env_file=None)
 
     assert settings.bot_cmd_prefixes == ("/", "!")
     assert settings.bot_admin == {"qq": {"u1"}, "discord": {"u2"}}
+    assert settings.discord_intents == 37377
     assert settings.onebot_access_token.get_secret_value() == "secret"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, 4609.0, "4609.0"],
+    ids=("boolean", "float", "float-string"),
+)
+def test_discord_intents_rejects_lossy_coercion(value: Any) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, discord_intents=value)
 
 
 def test_bot_timeout_configuration() -> None:
