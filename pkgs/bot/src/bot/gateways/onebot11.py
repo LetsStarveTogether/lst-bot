@@ -33,7 +33,6 @@ from pydantic import (
     RootModel,
     SerializeAsAny,
     StrictBool,
-    StrictFloat,
     StrictInt,
     StrictStr,
     ValidationError,
@@ -54,6 +53,7 @@ from bot.protocol.actions import (
     ActionResponse,
     SendGroupMsgParams,
     SendPrivateMsgParams,
+    StrictInt64,
 )
 from bot.protocol.base import Model
 from bot.protocol.common import BotSelf, BotStatus, Status
@@ -154,7 +154,6 @@ _NOTICE_SUB_TYPES = {
     ("group_increase", "approve"): "join",
 }
 type OneBot11Id = StrictInt | StrictStr
-type OneBot11Time = StrictInt | StrictFloat
 type WebSocketRole = Literal["api", "event", "universal"]
 
 _ACTION_ROLES = frozenset({"api", "universal"})
@@ -262,7 +261,7 @@ class OneBot11SendGroupMsgParams(Model):
 
 
 class OneBot11Event(Model):
-    time: OneBot11Time
+    time: StrictInt64
     self_id: OneBot11Id
     post_type: StrictStr
     sub_type: StrictStr = ""

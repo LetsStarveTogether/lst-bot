@@ -47,6 +47,22 @@ def group_notice_payload(
 
 
 @pytest.mark.parametrize(
+    "time",
+    [
+        pytest.param(1.5, id="fractional"),
+        pytest.param(-(2**63) - 1, id="below-int64-minimum"),
+        pytest.param(2**63, id="above-int64-maximum"),
+    ],
+)
+def test_event_time_is_int64(time: JsonValue) -> None:
+    payload = private_msg_payload()
+    payload["time"] = time
+
+    with pytest.raises(ValueError, match="time"):
+        event(payload)
+
+
+@pytest.mark.parametrize(
     ("notice_type", "values", "detail_type"),
     [
         pytest.param(
