@@ -873,7 +873,8 @@ class TelegramRestClient:
         url = f"{self.base_url}/bot{self.token.get_secret_value()}/{method}"
         if files:
             fields: list[tuple[str, str | bytes | tuple[str, str | bytes, str]]] = [
-                (name, _form_value(value)) for name, value in params.items()
+                (name, value if isinstance(value, str) else dumpb(value).decode())
+                for name, value in params.items()
             ]
             fields.extend(
                 (
@@ -920,10 +921,6 @@ class TelegramRestClient:
                 raise ConnectionError(msg) from None
             raise RuntimeError(msg) from None
         return envelope, response.status
-
-
-def _form_value(value: JsonValue) -> str:
-    return value if isinstance(value, str) else dumpb(value).decode()
 
 
 def _download_path(value: str) -> str:
