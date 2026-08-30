@@ -1204,8 +1204,6 @@ def _ob11_segment(
 def _load_ob11_message(value: JsonValue) -> Msg:
     if isinstance(value, str):
         return Msg.model_validate(_parse_cq_message(value).model_dump(mode="json"))
-    if isinstance(value, Mapping):
-        return Msg.model_validate([_load_ob11_segment(value).model_dump(mode="json")])
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
         return Msg.model_validate([
             _load_ob11_segment(cast(JsonValue, segment)).model_dump(mode="json")

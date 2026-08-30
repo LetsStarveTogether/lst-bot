@@ -398,6 +398,11 @@ def test_message_event_requires_message() -> None:
         event(payload)
 
 
+def test_message_event_rejects_single_segment_object() -> None:
+    with pytest.raises(TypeError, match="string or segment array"):
+        event(private_msg_payload({"type": "text", "data": {"text": "hello"}}))
+
+
 def test_cq_parameters_are_unescaped_once() -> None:
     converted = event(private_msg_payload("[CQ:share,title=&amp;#44;]"))
 
