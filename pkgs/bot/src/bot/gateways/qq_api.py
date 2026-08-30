@@ -153,8 +153,7 @@ class QQGuild(Model):
     joined_at: AwareDatetime | None = None
 
 
-class QQGuildList(RootModel[list[QQGuild]]):
-    pass
+QQGuildList = RootModel[list[QQGuild]]
 
 
 class QQChannel(Model):
@@ -172,8 +171,7 @@ class QQChannel(Model):
     permissions: StrictStr | None = None
 
 
-class QQChannelList(RootModel[list[QQChannel]]):
-    pass
+QQChannelList = RootModel[list[QQChannel]]
 
 
 class QQGatewayInfo(Model):
@@ -1080,8 +1078,7 @@ class QQMember(Model):
     joined_at: AwareDatetime
 
 
-class QQMemberList(RootModel[list[QQMember]]):
-    pass
+QQMemberList = RootModel[list[QQMember]]
 
 
 class QQMemberListParams(QQGuildParams):
@@ -1307,8 +1304,7 @@ class QQSchedule(Model):
     remind_type: Literal["0", "1", "2", "3", "4", "5"] | None = None
 
 
-class QQScheduleList(RootModel[list[QQSchedule]]):
-    pass
+QQScheduleList = RootModel[list[QQSchedule]]
 
 
 class QQAudioControlRequest(QQChannelParams):

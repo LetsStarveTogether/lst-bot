@@ -194,7 +194,7 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
     )
 
     assert isinstance(guilds, QQGuildList)
-    assert guilds.root[0].name == "Guild"
+    assert guilds.model_dump(exclude_none=True) == [{"id": "guild", "name": "Guild"}]
     assert isinstance(sent, QQSentMessage)
     assert [request[:2] for request in pool.requests] == [
         (HTTPMethod.POST, "https://qq.example/app/getAppAccessToken"),
