@@ -10,41 +10,28 @@ from lst_bot.settings import Settings
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    ("name", "value"),
     [
-        {},
-        {
-            "openrouter_api_key": "",
-            "dosu_mcp_endpoint": "https://example.com/mcp",
-            "dosu_api_key": "test",
-        },
-        {
-            "openrouter_api_key": "test",
-            "dosu_mcp_endpoint": "invalid",
-            "dosu_api_key": "test",
-        },
-        {
-            "openrouter_api_key": "test",
-            "dosu_mcp_endpoint": "http://example.com/mcp",
-            "dosu_api_key": "test",
-        },
-        {
-            "openrouter_api_key": "test",
-            "dosu_mcp_endpoint": "https://example.com/mcp",
-            "dosu_api_key": "",
-        },
+        ("OPENROUTER_API_KEY", None),
+        ("DOSU_MCP_ENDPOINT", None),
+        ("DOSU_API_KEY", None),
+        ("OPENROUTER_API_KEY", ""),
+        ("DOSU_MCP_ENDPOINT", "invalid"),
+        ("DOSU_MCP_ENDPOINT", "http://example.com/mcp"),
+        ("DOSU_API_KEY", ""),
     ],
 )
 def test_ai_service_settings_are_required_and_validated(
     monkeypatch: pytest.MonkeyPatch,
-    overrides: dict[str, Any],
+    name: str,
+    value: str | None,
 ) -> None:
-    monkeypatch.delenv("OPENROUTER_API_KEY")
-    monkeypatch.delenv("DOSU_MCP_ENDPOINT")
-    monkeypatch.delenv("DOSU_API_KEY")
-
+    if value is None:
+        monkeypatch.delenv(name)
+    else:
+        monkeypatch.setenv(name, value)
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, **overrides)
+        Settings(_env_file=None)
 
 
 def test_http_proxy_defaults_to_direct_connection(
