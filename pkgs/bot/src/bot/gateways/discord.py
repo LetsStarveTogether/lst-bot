@@ -1349,11 +1349,9 @@ class DiscordRequestGuildMembers(DiscordRequestModel):
     query: StrictStr | None = None
     limit: Annotated[StrictInt, Field(ge=0, le=100)] | None = None
     presences: StrictBool = False
-    user_ids: (
-        Snowflake
-        | Annotated[list[Snowflake], Field(min_length=1, max_length=100)]
-        | None
-    ) = None
+    user_ids: Snowflake | Annotated[list[Snowflake], Field(max_length=100)] | None = (
+        None
+    )
     nonce: DiscordNonce | None = None
 
     @model_validator(mode="after")
