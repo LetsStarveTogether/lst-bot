@@ -1428,11 +1428,11 @@ class QQGuildAnnounceRequest(QQGuildParams):
                 msg = "message announcement requires channel_id"
                 raise ValueError(msg)
             if self.announces_type != 0 or self.recommend_channels is not None:
-                msg = "message announcement must be a member announcement"
+                msg = "message announcement requires type 0 and no recommended channels"
                 raise ValueError(msg)
             return self
-        if self.announces_type != 1 or not self.recommend_channels:
-            msg = "recommended channels announcement requires type 1 and channels"
+        if not self.recommend_channels:
+            msg = "recommended channels announcement requires channels"
             raise ValueError(msg)
         return self
 

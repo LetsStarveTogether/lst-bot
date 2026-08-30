@@ -155,19 +155,29 @@ def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None
                 "message_id": "message",
                 "announces_type": 1,
             },
-            "member announcement",
+            "requires type 0 and no recommended channels",
         ),
-        ({"guild_id": "guild"}, "requires type 1 and channels"),
+        (
+            {
+                "guild_id": "guild",
+                "channel_id": "channel",
+                "message_id": "message",
+                "recommend_channels": [
+                    {"channel_id": "recommended", "introduce": "intro"}
+                ],
+            },
+            "requires type 0 and no recommended channels",
+        ),
+        ({"guild_id": "guild"}, "requires channels"),
     ):
         with pytest.raises(ValidationError, match=error):
             QQGuildAnnounceRequest.model_validate(payload)
 
     assert QQGuildAnnounceRequest.model_validate({
         "guild_id": "guild",
-        "announces_type": 1,
         "recommend_channels": [{"channel_id": "channel", "introduce": "intro"}],
     }).model_dump(exclude={"guild_id"}, exclude_none=True) == {
-        "announces_type": 1,
+        "announces_type": 0,
         "recommend_channels": [{"channel_id": "channel", "introduce": "intro"}],
     }
 
@@ -177,6 +187,7 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
         {"access_token": "token", "expires_in": "7200"},
         [{"id": "guild", "name": "Guild"}],
         {"id": "sent", "timestamp": "2026-08-17T00:00:00Z"},
+        _response(204),
     )
     client = support.client(pool)
 
@@ -192,10 +203,16 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
         content="hello",
         msg_id="source-message",
     )
+    deleted = await client.request_qq(
+        QQAction.DELETE_GUILD_ANNOUNCE,
+        guild_id="guild",
+        message_id="all",
+    )
 
     assert isinstance(guilds, QQGuildList)
     assert guilds.model_dump(exclude_none=True) == [{"id": "guild", "name": "Guild"}]
     assert isinstance(sent, QQSentMessage)
+    assert isinstance(deleted, QQNoContent)
     assert [request[:2] for request in pool.requests] == [
         (HTTPMethod.POST, "https://qq.example/app/getAppAccessToken"),
         (
@@ -203,6 +220,10 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
             "https://qq.example/users/@me/guilds?after=cursor&limit=10",
         ),
         (HTTPMethod.POST, "https://qq.example/v2/groups/group%2Fone/messages"),
+        (
+            HTTPMethod.DELETE,
+            "https://qq.example/guilds/guild/announces/all",
+        ),
     ]
     assert pool.requests[0][2]["json"] == {
         "appId": "app",
@@ -214,6 +235,7 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
         "msg_id": "source-message",
         "msg_type": 0,
     }
+    assert pool.requests[3][2]["json"] is None
     for _, _, kwargs in pool.requests:
         assert kwargs["retries"] is False
         assert kwargs["preload_content"] is False
