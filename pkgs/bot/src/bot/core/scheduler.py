@@ -72,8 +72,12 @@ class CronJob:
         if self._closing:
             msg = "Scheduled job is closing"
             raise RuntimeError(msg)
-        if self._runner is None or self._runner.done():
-            self._runner = create_task(self._run())
+        if (runner := self._runner) is not None:
+            if not runner.done():
+                return
+            if not runner.cancelled():
+                runner.exception()
+        self._runner = create_task(self._run())
 
     async def close(self) -> None:
         if self._closing:

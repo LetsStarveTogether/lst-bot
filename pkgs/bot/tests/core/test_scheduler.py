@@ -156,8 +156,9 @@ async def test_scheduler_close_cancels_all_jobs_before_awaiting_cleanup() -> Non
         await bot.close()
 
 
-async def test_runner_failure_is_logged_once(
+async def test_failed_runner_is_logged_and_safely_restarted(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     msg = "clock failed"
 
@@ -168,12 +169,18 @@ async def test_runner_failure_is_logged_once(
     bot.scheduler.clock = failing_clock
     bot.scheduler.on_cron("* * * * *")(lambda: None)
     (job,) = bot.scheduler.jobs
+    reports: list[dict[str, object]] = []
+    monkeypatch.setattr(get_running_loop(), "call_exception_handler", reports.append)
+
+    job.start()
+    await async_sleep(0)
     job.start()
     await async_sleep(0)
 
     with pytest.raises(RuntimeError, match=msg):
         await job.close()
-    assert sum("Scheduled job stopped" in item for item in caplog.messages) == 1
+    assert reports == []
+    assert sum("Scheduled job stopped" in item for item in caplog.messages) == 2
 
 
 async def test_cancelled_job_close_finishes_handler_cleanup() -> None:
