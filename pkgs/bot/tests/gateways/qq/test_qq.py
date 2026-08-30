@@ -1390,9 +1390,9 @@ async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> No
     gateway = support.gateway(pool)
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
 
-    supported = await connection.action(Action.GET_SUPPORTED_ACTIONS)
-    assert Action.DELETE_MESSAGE.value not in supported.root  # ty: ignore[unresolved-attribute]
-    assert QQAction.RECALL_DM_MESSAGE.value in supported.root  # ty: ignore[unresolved-attribute]
+    supported = (await connection.action(Action.GET_SUPPORTED_ACTIONS)).model_dump()
+    assert Action.DELETE_MESSAGE.value not in supported
+    assert QQAction.RECALL_DM_MESSAGE.value in supported
     with pytest.raises(LookupError, match="does not support"):
         await connection.action(Action.DELETE_MESSAGE, message_id="message")
     response = await connection.action(

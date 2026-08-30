@@ -276,15 +276,19 @@ def test_media_caption_limit(length: int, methods: list[str]) -> None:
     ])
     calls = telegram_module._message_calls("42", message, {"parse_mode": "HTML"})
     assert [method for method, _ in calls] == methods
-    assert calls[-1][1].get("caption") == (text if length == 1024 else None)
     assert calls[0][1]["parse_mode"] == "HTML"
-    assert calls[-1][1].get("parse_mode") == ("HTML" if length == 1024 else None)
+    if length == 1024:
+        assert calls[-1][1]["caption"] == text
+    else:
+        assert {"caption", "parse_mode"}.isdisjoint(calls[-1][1])
     entities = [{"type": "bold", "offset": 0, "length": 1}]
     calls = telegram_module._message_calls("42", message, {"entities": entities})
-    assert calls[0][1].get("entities") == (entities if length == 1025 else None)
-    assert calls[-1][1].get("caption_entities") == (
-        entities if length == 1024 else None
-    )
+    if length == 1024:
+        assert "entities" not in calls[0][1]
+        assert calls[-1][1]["caption_entities"] == entities
+    else:
+        assert calls[0][1]["entities"] == entities
+        assert "caption_entities" not in calls[-1][1]
 
 
 def test_message_text_limit() -> None:
@@ -964,10 +968,10 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
     self_ = BotSelf(platform="telegram", user_id="123")
     connection = gateway.connection_for(self_)
     try:
-        supported = await connection.action(Action.GET_SUPPORTED_ACTIONS)
-        assert "getUpdates" not in supported.root  # ty: ignore[unresolved-attribute]
-        assert "setWebhook" not in supported.root  # ty: ignore[unresolved-attribute]
-        assert "getFile" in supported.root  # ty: ignore[unresolved-attribute]
+        supported = (await connection.action(Action.GET_SUPPORTED_ACTIONS)).model_dump()
+        assert "getUpdates" not in supported
+        assert "setWebhook" not in supported
+        assert "getFile" in supported
         result = await connection.send_msg("hello", user_id="42")
         assert isinstance(result, TelegramResult)
         assert result.root == {"message_id": 1}
