@@ -101,7 +101,7 @@ type QQText30 = Annotated[StrictStr, _qq_weighted_length(30)]
 
 
 class QQRequest(Model):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class QQNoContent(QQRequest):

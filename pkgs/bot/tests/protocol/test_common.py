@@ -30,15 +30,12 @@ def test_bot_self_rejects_invalid_platform_name(payload: object) -> None:
         BotSelf.model_validate(payload)
 
 
-def test_bot_self_is_a_frozen_value_key() -> None:
+def test_bot_self_is_a_value_key() -> None:
     self_ = BotSelf(platform="qq", user_id="10000")
 
     assert {self_: "connected"}[BotSelf(platform="qq", user_id="10000")] == (
         "connected"
     )
-    field = "user_id"
-    with pytest.raises(ValidationError):
-        setattr(self_, field, "10001")
 
 
 @pytest.mark.parametrize(
@@ -90,6 +87,14 @@ def test_model_hides_invalid_input() -> None:
 
     assert marker not in repr(error.value)
     assert marker not in str(error.value)
+
+
+def test_models_are_frozen() -> None:
+    status = Status(good=True, bots=[])
+    field = "good"
+
+    with pytest.raises(ValidationError):
+        setattr(status, field, False)
 
 
 @pytest.mark.parametrize(

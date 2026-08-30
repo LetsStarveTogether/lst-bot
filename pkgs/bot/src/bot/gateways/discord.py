@@ -197,7 +197,7 @@ _CHANNEL_NAME_ADAPTER = TypeAdapter(DiscordChannelName)
 
 
 class DiscordRequestModel(Model):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class DiscordUser(Model):

@@ -1537,8 +1537,15 @@ def test_offset_advances_only_after_enqueue(
 
     reply_update = message_update(10)
     assert reply_update.message is not None
-    reply_update.message.reply_to_message = reply_update.message.model_copy(
+    reply = reply_update.message.model_copy(
         update={"message_id": 9, "text": "previous"}
+    )
+    reply_update = reply_update.model_copy(
+        update={
+            "message": reply_update.message.model_copy(
+                update={"reply_to_message": reply}
+            )
+        }
     )
     monkeypatch.setattr(gateway, "enqueue_event", enqueue)
     with pytest.raises(QueueFull):

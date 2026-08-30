@@ -37,6 +37,7 @@ class Model(BaseModel):
     model_config = ConfigDict(
         allow_inf_nan=False,
         extra="allow",
+        frozen=True,
         hide_input_in_errors=True,
         serialize_by_alias=True,
         validate_by_name=True,

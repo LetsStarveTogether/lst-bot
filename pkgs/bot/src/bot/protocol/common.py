@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, StrictBool, StrictStr
+from pydantic import Field, StrictBool, StrictStr
 
 from .base import Model
 from .constants import NAME_PATTERN
@@ -12,8 +12,6 @@ type _Name = Annotated[
 
 
 class BotSelf(Model):
-    model_config = ConfigDict(frozen=True)
-
     platform: _Name
     user_id: StrictStr
 
