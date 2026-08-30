@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from inspect import isawaitable
-from typing import TYPE_CHECKING, get_args, get_origin, get_type_hints
+from inspect import isawaitable, signature
+from typing import TYPE_CHECKING, get_args, get_origin
 
 from bot.gateways import Connection, Gateway
 from bot.protocol.events import Event
@@ -44,14 +44,10 @@ class InjectionContext:
 
 
 def inject(func: Callable) -> InjectedCall:
-    hints = (
-        get_type_hints(func, include_extras=True)
-        if getattr(func, "__annotations__", None)
-        else {}
-    )
     dependencies: list[tuple[str, type[object]]] = []
-    for name, annotation in hints.items():
-        if name == "return" or get_origin(annotation) is not Injected:
+    for name, parameter in signature(func, eval_str=True).parameters.items():
+        annotation = parameter.annotation
+        if get_origin(annotation) is not Injected:
             continue
         dependency = get_args(annotation)[0]
         if not isinstance(dependency, type):

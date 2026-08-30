@@ -7,18 +7,19 @@ from bot import (
     GroupMessageEvent,
     Injected,
     InjectionContext,
+    MessageEvent,
     admin_permission,
 )
 from bot_test_support import private_message_event, recording_gateway
 
 
-async def test_falsey_predicate_is_not_replaced() -> None:
+async def test_falsey_callable_predicate_receives_injection() -> None:
     class Deny:
         def __bool__(self) -> bool:
             return False
 
-        def __call__(self) -> bool:
-            return False
+        def __call__(self, event: Injected[MessageEvent]) -> bool:
+            return event.message.text == "hello"
 
     bot = Bot()
     router = EventRouter()
@@ -33,7 +34,7 @@ async def test_falsey_predicate_is_not_replaced() -> None:
     async with bot:
         await bot.dispatch(gateway.connection, private_message_event("hello"))
 
-    assert seen == []
+    assert seen == ["allowed"]
 
 
 def test_admin_permission_rejects_untrusted_sender_roles() -> None:
