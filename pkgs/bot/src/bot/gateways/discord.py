@@ -1358,9 +1358,6 @@ class DiscordRequestGuildMembers(DiscordRequestModel):
         if self.query is not None and self.limit is None:
             msg = "Discord member query requires limit"
             raise ValueError(msg)
-        if self.user_ids is not None and self.limit is not None:
-            msg = "Discord member user-id request cannot specify limit"
-            raise ValueError(msg)
         return self
 
 

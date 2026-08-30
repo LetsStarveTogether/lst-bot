@@ -84,11 +84,6 @@ def test_strict_boundaries_and_secret_repr() -> None:
         DiscordIntent(1 << 19)
     with pytest.raises(ValidationError):
         DiscordGatewayPayload.model_validate({"op": True, "d": None})
-    with pytest.raises(ValidationError, match="cannot specify limit"):
-        discord_module.DiscordGatewayCommand(
-            opcode=8,
-            data={"guild_id": "1", "user_ids": [], "limit": 1},
-        ).payload()
     with pytest.raises(ValidationError):
         DiscordMessage.model_validate({**message(message_id="01")})
     with pytest.raises(ValidationError):
