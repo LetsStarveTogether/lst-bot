@@ -155,7 +155,7 @@ class Bot(EventRouter):
     def scheduler(self) -> CronScheduler:
         return self._scheduler
 
-    def resolve_gateway(self, gateway_type: type[Gateway]) -> Gateway:
+    def resolve_gateway[G: Gateway](self, gateway_type: type[G]) -> G:
         gateways = [
             gateway for gateway in self._gateways if isinstance(gateway, gateway_type)
         ]

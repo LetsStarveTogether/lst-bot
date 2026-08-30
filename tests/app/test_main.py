@@ -150,8 +150,6 @@ def test_build_bot_registers_runtime_settings() -> None:
     assert isinstance(klei, KleiClient)
     telegram = bot.resolve_gateway(TelegramGateway)
     discord = bot.resolve_gateway(DiscordGateway)
-    assert isinstance(telegram, TelegramGateway)
-    assert isinstance(discord, DiscordGateway)
     bot.resolve_gateway(OneBot11Gateway)
     assert telegram.http_pool is discord.http_pool
     assert telegram.http_pool is hitokoto.http_pool is klei.http_pool is http_pool
