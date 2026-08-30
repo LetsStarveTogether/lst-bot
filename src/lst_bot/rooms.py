@@ -1,14 +1,12 @@
-import re
 from logging import getLogger
 from operator import attrgetter
+from re import search
 
 from bot import Bot, Cmd, EventRouter, Injected, UserEvent
 from klei import KleiClient, RoomData
 from lst import LstClient
 
 from .settings import Settings
-
-DAY_PATTERN = re.compile(r"day=(\d+)")
 
 logger = getLogger(__name__)
 router = EventRouter()
@@ -35,7 +33,7 @@ def format_lobby_data(data: RoomData) -> str:
         "summer": "夏",
     }.get(data.season, "")
     day = ""
-    if data.data and (match := DAY_PATTERN.search(data.data)):
+    if data.data and (match := search(r"day=(\d+)", data.data)):
         day = match[1]
 
     return f"{mark:3}{player_count:7}{season + day:7}{data.name}"
