@@ -56,6 +56,7 @@ _MEDIA_MESSAGE_TYPE = 7
 type QQID = Annotated[StrictStr, Field(min_length=1)]
 type QQLimit50 = Annotated[StrictInt, Field(ge=1, le=50)]
 type QQLimit100 = Annotated[StrictInt, Field(ge=1, le=100)]
+type QQNonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 type QQPositiveInt = Annotated[StrictInt, Field(gt=0)]
 type QQByteSize = Annotated[StrictStr, Field(pattern=r"^[0-9]+$")]
 type QQHttpsUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
@@ -147,8 +148,8 @@ class QQGuild(Model):
     icon: StrictStr | None = None
     owner_id: StrictStr | None = None
     owner: StrictBool | None = None
-    member_count: Annotated[StrictInt, Field(ge=0)] | None = None
-    max_members: Annotated[StrictInt, Field(ge=0)] | None = None
+    member_count: QQNonNegativeInt | None = None
+    max_members: QQNonNegativeInt | None = None
     description: StrictStr | None = None
     joined_at: AwareDatetime | None = None
 
@@ -162,7 +163,7 @@ class QQChannel(Model):
     name: StrictStr | None = None
     type: StrictInt | None = None
     sub_type: StrictInt | None = None
-    position: Annotated[StrictInt, Field(ge=0)] | None = None
+    position: QQNonNegativeInt | None = None
     parent_id: StrictStr | None = None
     owner_id: StrictStr | None = None
     private_type: StrictIntLiteral[Literal[0, 1, 2]] | None = None
@@ -179,9 +180,9 @@ class QQGatewayInfo(Model):
 
 
 class QQSessionStartLimit(Model):
-    total: Annotated[StrictInt, Field(ge=0)]
-    remaining: Annotated[StrictInt, Field(ge=0)]
-    reset_after: Annotated[StrictInt, Field(ge=0)]
+    total: QQNonNegativeInt
+    remaining: QQNonNegativeInt
+    reset_after: QQNonNegativeInt
     max_concurrency: QQPositiveInt
 
 
@@ -283,7 +284,7 @@ class QQKeyboardAction(QQRequest):
     reply: StrictBool | None = None
     enter: StrictBool | None = None
     anchor: StrictInt | None = None
-    click_limit: Annotated[StrictInt, Field(ge=0)] | None = None
+    click_limit: QQNonNegativeInt | None = None
     unsupport_tips: StrictStr | None = None
 
 
@@ -540,7 +541,7 @@ class QQSentMessage(Model):
     id: QQID
     timestamp: AwareDatetime
     ext_info: QQMessageExtInfo | None = None
-    remain_msg_len: Annotated[StrictInt, Field(ge=0)] | None = None
+    remain_msg_len: QQNonNegativeInt | None = None
 
 
 class QQCreateDMRequest(QQRequest):
@@ -557,7 +558,7 @@ class QQDirectMessage(Model):
 class QQStreamMessageRequest(QQUserParams, QQReplySourceFields):
     input_mode: Literal["append", "replace"] = "append"
     input_state: StrictIntLiteral[Literal[1, 10]]
-    index: Annotated[StrictInt, Field(ge=0)]
+    index: QQNonNegativeInt
     content_type: Literal["text", "markdown"]
     content_raw: StrictStr
     stream_msg_id: QQID | None = None
@@ -602,7 +603,7 @@ class QQUploadC2CFileRequest(QQUserParams, QQFileUploadFields):
 class QQFileInfo(Model):
     file_uuid: StrictStr
     file_info: StrictStr
-    ttl: Annotated[StrictInt, Field(ge=0)]
+    ttl: QQNonNegativeInt
     id: StrictStr | None = None
     raw_url: StrictStr | None = None
 
@@ -625,7 +626,7 @@ class QQPrepareC2CFileRequest(QQFilePrepareFields):
 
 
 class QQUploadPart(Model):
-    index: Annotated[StrictInt, Field(ge=0)]
+    index: QQNonNegativeInt
     presigned_url: StrictStr
     block_size: QQByteSize
 
@@ -645,7 +646,7 @@ class QQFilePrepareResult(Model):
 
 class QQFinishFileFields(QQRequest):
     upload_id: QQID
-    part_index: Annotated[StrictInt, Field(ge=0)]
+    part_index: QQNonNegativeInt
     block_size: QQByteSize
     md5: Annotated[StrictStr, Field(pattern=r"^[0-9a-fA-F]{32}$")]
 
@@ -664,7 +665,7 @@ class QQGroupInfo(Model):
     group_finger_memo: StrictStr
     group_class_text: StrictStr
     group_tags: list[StrictStr]
-    group_member_num: Annotated[StrictInt, Field(ge=0)]
+    group_member_num: QQNonNegativeInt
 
 
 class QQGroupBotState(Model):
@@ -862,7 +863,7 @@ class QQUpdateStrategyWhitelistRequest(QQDeleteStrategyRequest):
 
 class QQStrategyWhitelistResult(Model):
     strategy_id: QQID
-    whitelist_user_count: Annotated[StrictInt, Field(ge=0)]
+    whitelist_user_count: QQNonNegativeInt
     updated_at: AwareDatetime
 
 
@@ -873,7 +874,7 @@ class QQStrategyRecord(Model):
     remark: StrictStr | None = None
     group_openids: list[QQID] | None = None
     group_ids: list[StrictStr] | None = None
-    whitelist_user_count: Annotated[StrictInt, Field(ge=0)] | None = None
+    whitelist_user_count: QQNonNegativeInt | None = None
     created_at: AwareDatetime | None = None
     updated_at: AwareDatetime | None = None
 
@@ -947,12 +948,12 @@ class QQPutMenuRequest(QQRequest):
 
 
 class QQMenuResult(Model):
-    version: Annotated[StrictInt, Field(ge=0)]
+    version: QQNonNegativeInt
     menu: QQMenu | None = None
 
 
 class QQVersionResult(Model):
-    version: Annotated[StrictInt, Field(ge=0)]
+    version: QQNonNegativeInt
 
 
 class QQPanelCommandItem(QQRequest):
@@ -981,7 +982,7 @@ class QQPanel(QQRequest):
         default_factory=list
     )
     remark: Annotated[StrictStr, Field(max_length=255)] | None = None
-    version: Annotated[StrictInt, Field(ge=0)] | None = None
+    version: QQNonNegativeInt | None = None
 
 
 class QQPanelListParams(QQRequest):
@@ -1058,7 +1059,7 @@ class QQPanelRecord(Model):
     group_openids: list[QQID] | None = None
     created_at: AwareDatetime | None = None
     updated_at: AwareDatetime | None = None
-    version: Annotated[StrictInt, Field(ge=0)] | None = None
+    version: QQNonNegativeInt | None = None
 
 
 class QQPanelList(Model):
@@ -1068,7 +1069,7 @@ class QQPanelList(Model):
 
 
 class QQOnlineNumbers(Model):
-    online_nums: Annotated[StrictInt, Field(ge=0)]
+    online_nums: QQNonNegativeInt
 
 
 class QQMember(Model):
@@ -1111,10 +1112,10 @@ class QQDeleteMemberRequest(QQMemberParams):
 class QQRole(Model):
     id: QQID
     name: StrictStr | None = None
-    color: Annotated[StrictInt, Field(ge=0)] | None = None
+    color: QQNonNegativeInt | None = None
     hoist: StrictInt | None = None
-    number: Annotated[StrictInt, Field(ge=0)] | None = None
-    member_limit: Annotated[StrictInt, Field(ge=0)] | None = None
+    number: QQNonNegativeInt | None = None
+    member_limit: QQNonNegativeInt | None = None
 
 
 class QQGuildRoles(Model):
@@ -1257,7 +1258,7 @@ class QQScheduleParams(QQChannelParams):
 
 
 class QQScheduleListParams(QQChannelParams):
-    since: Annotated[StrictInt, Field(ge=0)] | None = None
+    since: QQNonNegativeInt | None = None
 
 
 class QQScheduleFields(QQRequest):
@@ -1395,7 +1396,7 @@ class QQMessageSetting(Model):
     disable_create_dm: StrictBool
     disable_push_msg: StrictBool
     channel_ids: list[QQID]
-    channel_push_max_num: Annotated[StrictInt, Field(ge=0)]
+    channel_push_max_num: QQNonNegativeInt
 
 
 class QQRecommendChannel(QQRequest):
