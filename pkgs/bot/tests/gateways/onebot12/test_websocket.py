@@ -24,7 +24,7 @@ from bot.gateways.onebot12 import (
 from bot.json import dumpb, loads
 from bot_test_support import ScriptedWebSocket
 from pydantic import JsonValue
-from websockets.asyncio.client import ClientConnection, connect
+from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.typing import Origin, Subprotocol
 
@@ -60,14 +60,10 @@ def websocket_url(port: int, path: str = "/onebot/ws") -> str:
     return f"ws://127.0.0.1:{port}{path}"
 
 
-async def open_onebot12(
-    port: int,
-    *,
-    impl: str = "test",
-) -> ClientConnection:
-    return await connect(
+def onebot12_connection(port: int) -> connect:
+    return connect(
         websocket_url(port),
-        subprotocols=[Subprotocol(f"12.{impl}")],
+        subprotocols=[Subprotocol("12.test")],
         proxy=None,
     )
 
@@ -84,7 +80,7 @@ async def test_reverse_websocket_dispatches_real_text_frames() -> None:
 
     async with timeout(3), bot:
         port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
-        async with await open_onebot12(port) as websocket:
+        async with onebot12_connection(port) as websocket:
             await websocket.send(dumpb(connect_payload()).decode())
             await websocket.send(dumpb(private_message_payload()).decode())
             await received.wait()
@@ -97,7 +93,7 @@ async def test_reverse_websocket_close_cancels_prestartup_handler() -> None:
         await gateway.start()
         try:
             port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
-            websocket = await open_onebot12(port)
+            websocket = await onebot12_connection(port)
             await bot.waiting.wait()
             await gateway.close()
             with pytest.raises(ConnectionClosed):
@@ -278,7 +274,7 @@ async def test_action_response_is_read_while_dispatch_is_blocked() -> None:
 
     async with timeout(3), bot:
         port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
-        async with await open_onebot12(port) as websocket:
+        async with onebot12_connection(port) as websocket:
             await websocket.send(dumpb(connect_payload()).decode())
             await websocket.send(dumpb(status_payload(SELF)).decode())
             await status_seen.wait()
@@ -340,8 +336,8 @@ async def test_action_response_must_come_from_selected_session() -> None:
     async with timeout(3), bot:
         port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
         async with (
-            await open_onebot12(port) as websocket_a,
-            await open_onebot12(port) as websocket_b,
+            onebot12_connection(port) as websocket_a,
+            onebot12_connection(port) as websocket_b,
         ):
             for websocket, self_ in ((websocket_a, self_a), (websocket_b, self_b)):
                 await websocket.send(dumpb(connect_payload()).decode())
@@ -386,7 +382,7 @@ async def test_pending_action_fails_when_session_disconnects() -> None:
 
     async with timeout(3), bot:
         port = gateway._reverse_servers[0].sockets[0].getsockname()[1]  # ruff: ignore[private-member-access]
-        async with await open_onebot12(port) as websocket:
+        async with onebot12_connection(port) as websocket:
             await websocket.send(dumpb(connect_payload()).decode())
             await websocket.send(dumpb(status_payload(SELF)).decode())
             await status_seen.wait()
