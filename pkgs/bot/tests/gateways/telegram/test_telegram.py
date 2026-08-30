@@ -220,7 +220,18 @@ def test_current_telegram_model_boundaries() -> None:
     with pytest.raises(ValidationError):
         TelegramMessageEntity.model_validate(entity | {"date_time_format": "rw"})
 
+    minimum_int32 = -(2**31)
     maximum_int32 = 2**31 - 1
+    for value in (minimum_int32 - 1, maximum_int32 + 1):
+        with pytest.raises(ValidationError):
+            TelegramMessageEntity.model_validate(entity | {"unix_time": value})
+        with pytest.raises(ValidationError):
+            TelegramEnvelope.model_validate({
+                "ok": False,
+                "error_code": value,
+                "description": "bad",
+            })
+
     message = {
         "message_id": maximum_int32,
         "date": maximum_int32,

@@ -139,12 +139,13 @@ type TelegramUserID = Annotated[
     Field(gt=0, le=_MAX_TELEGRAM_ID),
 ]
 type TelegramTopicID = TelegramUserID
-type TelegramUpdateOffset = Annotated[
+type Int32 = Annotated[
     StrictInt,
     Field(ge=-_MAX_INT32 - 1, le=_MAX_INT32),
 ]
-type NonNegativeInt = Annotated[StrictInt, Field(ge=0, le=_MAX_INT32)]
-type PositiveInt = Annotated[StrictInt, Field(gt=0, le=_MAX_INT32)]
+type TelegramUpdateOffset = Int32
+type NonNegativeInt = Annotated[Int32, Field(ge=0)]
+type PositiveInt = Annotated[Int32, Field(gt=0)]
 type TelegramUpdateID = PositiveInt
 type Latitude = Annotated[
     StrictInt | StrictFloat,
@@ -318,7 +319,7 @@ class TelegramMessageEntity(Model):
     user: TelegramUser | None = None
     language: StrictStr | None = None
     custom_emoji_id: StrictStr | None = None
-    unix_time: StrictInt | None = None
+    unix_time: Int32 | None = None
     date_time_format: (
         Annotated[StrictStr, Field(pattern=r"^(?:r|w?[dD]?[tT]?)$")] | None
     ) = None
@@ -606,7 +607,7 @@ class TelegramEnvelope(Model):
     ok: StrictBool
     result: JsonValue = None
     description: StrictStr | None = None
-    error_code: StrictInt | None = None
+    error_code: Int32 | None = None
     parameters: TelegramResponseParameters | None = None
 
     @model_validator(mode="after")
