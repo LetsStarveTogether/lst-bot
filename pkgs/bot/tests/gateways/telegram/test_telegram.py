@@ -459,6 +459,12 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
             Msg.from_input({"type": "image", "data": {"file_id": "photo"}}),
             {"has_spoiler": True},
         )
+    with pytest.raises(ValidationError):
+        telegram_module._message_calls(
+            "42",
+            Msg.from_input({"type": "telegram.sticker", "data": {"file_id": 1}}),
+            {},
+        )
     with pytest.raises(ValidationError, match="mutually exclusive"):
         telegram_module._message_calls(
             "42",

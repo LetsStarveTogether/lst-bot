@@ -42,6 +42,7 @@ from bot.protocol.events import (
     PrivateMessageEvent,
 )
 from bot.protocol.msg import (
+    FileSegmentData,
     LocationSegment,
     MentionAllSegment,
     MentionSegment,
@@ -727,9 +728,8 @@ def _message_calls(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             raise TypeError(msg)
         elif segment.type in _MEDIA_METHODS:
             method, field = _MEDIA_METHODS[segment.type]
-            resources.append(
-                (method, {field: cast(object, segment.data).file_id})  # ty: ignore[unresolved-attribute]
-            )
+            data = FileSegmentData.model_validate(segment.data, from_attributes=True)
+            resources.append((method, {field: data.file_id}))
         elif isinstance(segment, LocationSegment):
             location = TelegramLocation(
                 latitude=segment.data.latitude,
