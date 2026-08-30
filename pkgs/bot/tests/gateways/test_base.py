@@ -38,7 +38,7 @@ from bot.gateways.base import (
     validate_https_base_url,
 )
 from bot.json import dumpb, loads
-from bot.testing import ScriptedWebSocket
+from bot_test_support import ScriptedWebSocket
 from robyn import Headers
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError

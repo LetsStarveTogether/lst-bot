@@ -22,7 +22,7 @@ from bot import (
     CronScheduler,
     Injected,
 )
-from bot.testing import RecordingGateway, recording_gateway
+from bot_test_support import RecordingGateway, recording_gateway
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 from bot import ActionResponse, ApiStatus, Bot, Cmd, MessageEvent, Msg, Retcode
-from bot.testing import RecordingGateway, private_message_event
+from bot_test_support import RecordingGateway, private_message_event
 from pydantic_ai import Agent
 
 from lst_bot.question import ask_dst_question, message_payload_text

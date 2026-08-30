@@ -81,11 +81,13 @@ allowed-confusables = ['，', '：', '；', '？', '！', '（', '）']
 ignore-one-line-docstrings = true
 
 [tool.ty.environment]
+extra-paths = ['pkgs/bot/tests']
 python-platform = "linux"
 
 [tool.pytest]
 minversion = '9.1.1'
 testpaths = ['tests', 'pkgs']
+pythonpath = ['pkgs/bot/tests']
 strict = true
 filterwarnings = ['error']
 asyncio_mode = 'auto'

@@ -23,7 +23,7 @@ from bot.gateways.onebot11 import (
     WebSocketAction,
 )
 from bot.json import dumpb, loads
-from bot.testing import ScriptedWebSocket
+from bot_test_support import ScriptedWebSocket
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 from websockets.typing import Origin

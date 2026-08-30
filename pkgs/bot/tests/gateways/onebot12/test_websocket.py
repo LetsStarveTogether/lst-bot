@@ -22,7 +22,7 @@ from bot.gateways.onebot12 import (
     WebSocketAction,
 )
 from bot.json import dumpb, loads
-from bot.testing import ScriptedWebSocket
+from bot_test_support import ScriptedWebSocket
 from pydantic import JsonValue
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus

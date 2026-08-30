@@ -17,8 +17,8 @@ from bot import (
     Retcode,
     admin_permission,
 )
-from bot.testing import private_message_event as make_event
-from bot.testing import recording_gateway
+from bot_test_support import private_message_event as make_event
+from bot_test_support import recording_gateway
 
 
 def group_message_event(

@@ -13,7 +13,7 @@ from bot import (
 from bot.gateways import qq as qq_gateway_module
 from bot.gateways.qq import QQDispatch, QQGatewayPayload
 from bot.gateways.qq_api import QQGatewayInfo, QQNoContent
-from bot.testing import ScriptedWebSocket
+from bot_test_support import ScriptedWebSocket
 from pydantic import ValidationError
 
 from .support import gateway as _gateway

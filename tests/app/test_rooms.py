@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 from bot import Bot, BotSelf, Cmd, GroupMessageEvent
-from bot.testing import private_message_event, recording_gateway
+from bot_test_support import private_message_event, recording_gateway
 from klei import KleiClient, RoomData
 from lst import LstClient
 from support import lobby_data, room_data

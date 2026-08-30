@@ -2,7 +2,7 @@ from datetime import date
 from unittest.mock import Mock
 
 from bot import Bot
-from bot.testing import RecordingGateway
+from bot_test_support import RecordingGateway
 from hitokoto import HitokotoClient
 from klei import (
     KleiClient,

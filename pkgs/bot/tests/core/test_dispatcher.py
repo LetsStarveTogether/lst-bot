@@ -17,7 +17,7 @@ from bot import Bot, BotSelf, Injected, PrivateMessageEvent
 from bot.core.bot import (
     _CURRENT_DISPATCHER,  # ruff: ignore[import-private-name] - lifetime regression
 )
-from bot.testing import RecordingGateway, private_message_event
+from bot_test_support import RecordingGateway, private_message_event
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
 

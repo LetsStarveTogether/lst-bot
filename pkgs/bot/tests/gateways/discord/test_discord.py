@@ -43,7 +43,7 @@ from bot.gateways.discord import (
 )
 from bot.json import loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel
-from bot.testing import ScriptedWebSocket
+from bot_test_support import ScriptedWebSocket
 from pydantic import BaseModel, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError

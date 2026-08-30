@@ -5,7 +5,7 @@ from typing import override
 import pytest
 from bot import Bot, Gateway
 from bot.core import bot as bot_module
-from bot.testing import RecordingGateway, private_message_event
+from bot_test_support import RecordingGateway, private_message_event
 from pydantic import ValidationError
 
 

@@ -62,7 +62,7 @@ from bot.gateways.qq_api import (
 )
 from bot.json import dumpb, loads
 from bot.protocol.actions import ActionParamModel
-from bot.testing import ScriptedWebSocket
+from bot_test_support import ScriptedWebSocket
 from pydantic import JsonValue, TypeAdapter, ValidationError
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from websockets.exceptions import ConnectionClosedError

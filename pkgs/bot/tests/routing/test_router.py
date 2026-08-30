@@ -7,7 +7,7 @@ from bot import (
     InjectionContext,
     admin_permission,
 )
-from bot.testing import private_message_event, recording_gateway
+from bot_test_support import private_message_event, recording_gateway
 
 
 async def test_falsey_predicate_is_not_replaced() -> None:

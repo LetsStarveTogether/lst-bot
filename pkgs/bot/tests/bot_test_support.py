@@ -1,8 +1,6 @@
 from asyncio import Event, Queue
 from typing import override
 
-from pydantic import JsonValue
-
 from bot import (
     ActionCall,
     ActionResponse,
@@ -14,6 +12,7 @@ from bot import (
 )
 from bot.json import dumpb
 from bot.protocol.actions import ActionParamModel
+from pydantic import JsonValue
 
 
 def private_message_event(
@@ -109,11 +108,3 @@ class ScriptedWebSocket:
     async def close(self, code: int = 1000) -> None:
         self.close_code = code
         self.closed.set()
-
-
-__all__ = [
-    "RecordingGateway",
-    "ScriptedWebSocket",
-    "private_message_event",
-    "recording_gateway",
-]
