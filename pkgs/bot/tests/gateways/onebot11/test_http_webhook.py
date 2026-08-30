@@ -21,7 +21,7 @@ from pydantic import JsonValue
 from robyn import Response, Robyn
 from robyn.testing import TestClient as RobynTestClient
 
-from tests.gateways.support import ActionServer
+from tests.gateways.support import ActionServer, ObservableReadinessBot
 
 from .support import (
     friend_request_payload,
@@ -57,10 +57,45 @@ async def test_http_webhook_rejects_invalid_event_shape() -> None:
     gateway = OneBot11Gateway(Bot())
     payload = {**private_msg_payload(), "self_id": True}
 
-    response = await gateway.handle_http(Model.model_validate(payload))
+    async with timeout(1):
+        response = await gateway.handle_http(Model.model_validate(payload))
 
     assert response.status_code == HTTPStatus.BAD_REQUEST
     assert "self_id" in str(response.description)
+
+
+async def test_http_event_waits_for_bot_startup() -> None:
+    bot = ObservableReadinessBot()
+    gateway = OneBot11Gateway(bot)
+    bot.add_gateway(gateway)
+
+    async with timeout(1), TaskGroup() as tasks:
+        request = tasks.create_task(
+            gateway.handle_http(Model.model_validate(private_msg_payload()))
+        )
+        await bot.waiting.wait()
+        assert not request.done()
+        await bot.start()
+        try:
+            response = await request
+        finally:
+            await bot.close()
+
+    assert response.status_code == HTTPStatus.NO_CONTENT
+
+
+async def test_http_dispatch_errors_are_not_bad_requests() -> None:
+    gateway = OneBot11Gateway(Bot())
+    with (
+        patch.object(gateway.bot, "wait_until_running", AsyncMock()),
+        patch.object(
+            gateway,
+            "dispatch_event",
+            AsyncMock(side_effect=ValueError("dispatch failed")),
+        ),
+        pytest.raises(ValueError, match="dispatch failed"),
+    ):
+        await gateway.handle_http(Model.model_validate(private_msg_payload()))
 
 
 async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> None:

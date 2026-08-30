@@ -1,21 +1,7 @@
-from asyncio import Event as AsyncEvent
-from typing import override
-
-from bot import Bot, BotSelf
+from bot import BotSelf
 from pydantic import JsonValue
 
 SELF = BotSelf(platform="qq", user_id="10000")
-
-
-class ObservableReadinessBot(Bot):
-    def __init__(self) -> None:
-        super().__init__()
-        self.waiting = AsyncEvent()
-
-    @override
-    async def wait_until_running(self) -> None:
-        self.waiting.set()
-        await super().wait_until_running()
 
 
 def private_message_payload(message: str = "hello") -> dict[str, JsonValue]:

@@ -4,8 +4,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from threading import Thread
-from typing import Self, cast
+from typing import Self, cast, override
 
+from bot import Bot
 from bot.json import dumpb, loads
 from pydantic import JsonValue
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
@@ -15,6 +16,17 @@ _DEFAULT_ACTION_RESPONSE: JsonValue = {
     "retcode": 0,
     "data": {"message_id": 1},
 }
+
+
+class ObservableReadinessBot(Bot):
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiting = Event()
+
+    @override
+    async def wait_until_running(self) -> None:
+        self.waiting.set()
+        await super().wait_until_running()
 
 
 def response(

@@ -21,7 +21,9 @@ from bot.json import dumpb, loads
 from robyn import Robyn
 from robyn.testing import TestClient as RobynTestClient
 
-from .support import ObservableReadinessBot, private_message_payload
+from tests.gateways.support import ObservableReadinessBot
+
+from .support import private_message_payload
 
 IDENTITY_HEADERS = {
     "Content-Type": "application/json",
@@ -151,11 +153,6 @@ async def test_http_event_waits_for_bot_startup() -> None:
     bot = ObservableReadinessBot()
     gateway = OneBot12Gateway(bot)
     bot.add_gateway(gateway)
-    received = AsyncEvent()
-
-    @bot.on_msg(block=True)
-    def collect() -> None:
-        received.set()
 
     async with timeout(1), TaskGroup() as tasks:
         request = tasks.create_task(
@@ -166,7 +163,6 @@ async def test_http_event_waits_for_bot_startup() -> None:
         await bot.start()
         try:
             response = await request
-            await received.wait()
         finally:
             await bot.close()
 

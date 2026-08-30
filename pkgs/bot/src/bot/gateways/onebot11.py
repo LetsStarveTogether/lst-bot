@@ -609,25 +609,29 @@ class OneBot11Gateway(Gateway):
         *,
         quick_response: bool = True,
     ) -> Response:
+        try:
+            event = decode_event(payload)
+        except ValidationError as exc:
+            logger.warning(
+                "reject OneBot 11 HTTP payload (%s)",
+                exc.errors(include_url=False, include_input=False),
+            )
+            return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "reject OneBot 11 HTTP payload (%s)",
+                type(exc).__name__,
+            )
+            return text_response(HTTPStatus.BAD_REQUEST, str(exc))
+
+        await self.bot.wait_until_running()
         collector = _QuickOperations() if quick_response else None
         with _HTTP_QUICK_OPERATIONS.set(collector):
             try:
                 try:
-                    await self.dispatch_event(decode_event(payload))
+                    await self.dispatch_event(event)
                 except QueueFull:
                     return empty_response(HTTPStatus.SERVICE_UNAVAILABLE)
-                except ValidationError as exc:
-                    logger.warning(
-                        "reject OneBot 11 HTTP payload (%s)",
-                        exc.errors(include_url=False, include_input=False),
-                    )
-                    return text_response(HTTPStatus.BAD_REQUEST, str(exc))
-                except (TypeError, ValueError) as exc:
-                    logger.warning(
-                        "reject OneBot 11 HTTP payload (%s)",
-                        type(exc).__name__,
-                    )
-                    return text_response(HTTPStatus.BAD_REQUEST, str(exc))
                 quick_operations = collector.values if collector is not None else []
             finally:
                 if collector is not None:
@@ -823,7 +827,6 @@ class OneBot11Gateway(Gateway):
                     HTTPStatus.BAD_REQUEST,
                     "OneBot 11 HTTP X-Self-ID must match the event",
                 )
-            await self.bot.wait_until_running()
             return await self.handle_http(
                 data,
                 quick_response=ingress.quick_response,

@@ -28,9 +28,10 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.typing import Origin, Subprotocol
 
+from tests.gateways.support import ObservableReadinessBot
+
 from .support import (
     SELF,
-    ObservableReadinessBot,
     connect_payload,
     private_message_payload,
     status_payload,
