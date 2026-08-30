@@ -289,14 +289,15 @@ async def test_room_lookup_has_wall_clock_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", 1)
-    monkeypatch.setattr(client_module, "_HTTP_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(client_module, "_HTTP_TIMEOUT_SECONDS", 0.01)
     value = client(RecordingPool({}))
     calls = 0
 
     async def request(*_args: object, **_kwargs: object) -> bytes:
         nonlocal calls
         calls += 1
-        await sleep(0.06)
+        if calls == 2:
+            await Event().wait()
         return rows_payload([])
 
     monkeypatch.setattr(value, "_request", request)
