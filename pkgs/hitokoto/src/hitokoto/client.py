@@ -63,11 +63,10 @@ class HitokotoClient:
             await wait((task,))
             await task
             return await read_cached_hitokoto(self.cache_path)
-        except Exception as error:
-            try:
+        except Exception:
+            with suppress(Exception):
                 return await read_cached_hitokoto(self.cache_path)
-            except Exception:
-                raise error from None
+            raise
 
     async def _refresh_cache(self) -> None:
         logger.info("refresh Hitokoto cache: %s", self.cache_path)

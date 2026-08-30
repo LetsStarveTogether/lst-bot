@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from bot import ActionResponse, ApiStatus, Bot, Cmd, MessageEvent, Msg, Retcode
+from bot import ActionResponse, ApiStatus, Bot, Cmd, MessageEvent, Msg
 from bot_test_support import RecordingGateway, private_message_event
 from pydantic_ai import Agent
 
@@ -83,12 +83,7 @@ async def test_question_handler_builds_agent_prompt_from_reply() -> None:
 
     for response in (
         ActionResponse.ok({"raw_message": "legacy"}),
-        ActionResponse(
-            status=ApiStatus.FAILED,
-            retcode=Retcode.INTERNAL_HANDLER_ERROR,
-            data=None,
-            message="internal details",
-        ),
+        ActionResponse(status=ApiStatus.FAILED, retcode=2, data=None, message="x"),
         ActionResponse(
             status=ApiStatus.ASYNC,
             retcode=1,

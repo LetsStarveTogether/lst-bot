@@ -863,18 +863,11 @@ class QQGateway(Gateway, QQRestClient):
         else:
             sequence = dispatch.s
             if isinstance(dispatch.d, QQC2CMessage):
+                ext = getattr(dispatch.d.message_scene, "ext", ())
                 message_key = (
                     dispatch.t,
                     dispatch.d.id,
-                    *(
-                        item
-                        for item in (
-                            dispatch.d.message_scene.ext
-                            if dispatch.d.message_scene is not None
-                            else ()
-                        )
-                        if item.startswith("msg_idx=")
-                    ),
+                    *(item for item in ext if item.startswith("msg_idx=")),
                 )
                 if message_key in self._recent_messages:
                     self._seq = sequence
@@ -1298,7 +1291,6 @@ def _qq_message(  # ruff: ignore[complex-structure, too-many-branches] - protoco
     mentions = getattr(message, "mentions", ())
     content = message.content or ""
     position = 0
-    has_marker = False
     for match in _MENTION_PATTERN.finditer(content):
         if match.start() > position:
             segments.append({
@@ -1314,14 +1306,13 @@ def _qq_message(  # ruff: ignore[complex-structure, too-many-branches] - protoco
             if user_id is not None
             else {"type": "mention_all", "data": {}}
         )
-        has_marker = True
         position = match.end()
     if position < len(content):
         segments.append({
             "type": "text",
             "data": {"text": unescape(content[position:])},
         })
-    if not has_marker:
+    if position == 0:
         fallback_mentions: list[dict[str, object]] = []
         for mention in mentions:
             if (mention.model_extra or {}).get("scope") == "all":

@@ -785,7 +785,13 @@ class DiscordRestClient:
             raise RuntimeError(msg)
         pending = self._interaction_callbacks.get(canonical_path) if callback else None
         if pending is not None:
-            return await self._submit_interaction_callback(pending, request)
+            if pending.claimed or pending.request is not None:
+                msg = "Discord interaction callback was already claimed"
+                raise RuntimeError(msg)
+            pending.request = request
+            pending.outcome = Future()
+            pending.ready.set()
+            return await pending.outcome
         return await self._perform_tracked_request(request)
 
     async def _perform_tracked_request(
@@ -799,19 +805,6 @@ class DiscordRestClient:
         finally:
             completed.set()
             self._inflight_requests.discard(completed)
-
-    @staticmethod
-    async def _submit_interaction_callback(
-        pending: _DiscordInteractionCallback,
-        request: DiscordRequest,
-    ) -> _DiscordResponse:
-        if pending.claimed or pending.request is not None:
-            msg = "Discord interaction callback was already claimed"
-            raise RuntimeError(msg)
-        pending.request = request
-        pending.outcome = Future()
-        pending.ready.set()
-        return await pending.outcome
 
     async def _perform_request(  # ruff: ignore[complex-structure] - one loop owns bucket rebinding and 429 retries
         self,

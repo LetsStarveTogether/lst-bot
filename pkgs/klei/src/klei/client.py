@@ -78,8 +78,6 @@ class KleiClient:
                     room for room in dict.fromkeys(values) if room not in seen
                 )
                 seen.update(batch)
-                if not batch:
-                    continue
                 async with TaskGroup() as tg:
                     tasks = [
                         tg.create_task(self._get_single_room(*room)) for room in batch

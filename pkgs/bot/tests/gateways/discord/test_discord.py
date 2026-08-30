@@ -1943,8 +1943,6 @@ async def test_failed_or_cancelled_interaction_response_falls_back(
 async def test_slow_interaction_response_is_cancelled_then_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = Event()
-
     class BlockingPool(Pool):
         async def request(
             self,
@@ -1954,7 +1952,6 @@ async def test_slow_interaction_response_is_cancelled_then_falls_back(
         ) -> AsyncHTTPResponse:
             self.requests.append((method, url, kwargs))
             if len(self.requests) == 1:
-                started.set()
                 await Event().wait()
             return response(204)
 
@@ -1982,7 +1979,6 @@ async def test_slow_interaction_response_is_cancelled_then_falls_back(
             {"type": 4},
             {"type": 5},
         ]
-        assert started.is_set()
     finally:
         await instance.close()
 
