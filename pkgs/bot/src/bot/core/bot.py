@@ -455,7 +455,8 @@ class Bot(EventRouter):
                 async with timeout_scope:
                     if not await route.matches(context):
                         continue
-                    await self._run_route(context, route)
+                    if (value := await route.handler(context)) is not None:
+                        await self._execute_return_value(context, value)
             except Exception as exc:
                 if isinstance(exc, TimeoutError) and timeout_scope.expired():
                     self._log_dispatch_timeout(context, route)
@@ -464,15 +465,6 @@ class Bot(EventRouter):
             else:
                 if route.block:
                     break
-
-    async def _run_route(
-        self,
-        context: InjectionContext,
-        route: _EventRoute,
-    ) -> None:
-        value = await route.handler(context)
-        if value is not None:
-            await self._execute_return_value(context, value)
 
     def _log_dispatch_exception(
         self,
