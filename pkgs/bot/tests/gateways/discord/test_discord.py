@@ -830,7 +830,7 @@ async def test_dispatch_models_commit_only_valid_session_and_rate_state(
     assert marker not in caplog.text
 
 
-async def test_gateway_discovery_refetches_and_throttles_identify(
+async def test_gateway_identify_limits_and_resume_session_lifetime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def info(remaining: int, *, reset_after: int, max_concurrency: int) -> dict:
@@ -856,9 +856,9 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
         )
     )
 
-    assert await instance._gateway_url() == (
-        "wss://gateway.discord.example/?route=stable&v=10&encoding=json"
-    )
+    initial_url = "wss://gateway.discord.example/?route=stable&v=10&encoding=json"
+    assert await instance._gateway_url() == initial_url
+    assert instance._initial_gateway_url == initial_url
     websocket = ScriptedWebSocket()
     await instance._authenticate_websocket(websocket)
     await instance._wait_to_identify()
@@ -882,47 +882,50 @@ async def test_gateway_discovery_refetches_and_throttles_identify(
     resuming = gateway(discovery_pool)
     resuming._session_id = "session"
     resuming._seq = 1
+    resuming._initial_gateway_url = initial_url
     resuming._resume_gateway_url = "wss://resume.discord.example"
     attempts: list[str] = []
     connections: list[ScriptedWebSocket] = []
+    resume_attempts = 5
 
     async def reconnecting(  # ruff: ignore[unused-async] - async connector test double
         url: str,
         _: dict[str, str] | None,
     ) -> ScriptedWebSocket:
         attempts.append(url)
-        if url.startswith("wss://resume.discord.example"):
-            if len(attempts) > discord_module._MAX_RESUME_ATTEMPTS + 1:
-                raise DiscordGatewayFatalError
-            websocket = ScriptedWebSocket(
-                {"op": 10, "d": {"heartbeat_interval": 60_000}},
-                {"op": 11, "d": None},
-                {"op": 9, "d": True},
-            )
-        else:
+        if len(attempts) == 1:
+            raise OSError
+        if len(connections) == resume_attempts - 1:
             resuming._closing = True
-            websocket = ScriptedWebSocket(
-                {"op": 10, "d": {"heartbeat_interval": 60_000}},
-                {"op": 7, "d": None},
-            )
+        reconnect = (
+            {"op": 7, "d": None} if len(connections) < 2 else {"op": 9, "d": True}
+        )
+        websocket = ScriptedWebSocket(
+            {"op": 10, "d": {"heartbeat_interval": 60_000}},
+            {"op": 11, "d": None},
+            reconnect,
+        )
         connections.append(websocket)
         return websocket
 
     monkeypatch.setattr(resuming.bot, "wait_until_running", AsyncMock())
     monkeypatch.setattr(resuming, "_websocket_connector", reconnecting)
+    mocked_sleep.reset_mock()
     async with timeout(1):
         await resuming._run_gateway()
 
     resume_url = "wss://resume.discord.example/?v=10&encoding=json"
-    assert attempts == [resume_url] * (discord_module._MAX_RESUME_ATTEMPTS + 1) + [
-        "wss://gateway.discord.example/?route=stable&v=10&encoding=json"
+    assert attempts == [
+        resume_url,
+        initial_url,
+        *([resume_url] * (resume_attempts - 1)),
     ]
-    assert discovery_pool.requests[0][1].endswith("/gateway/bot")
+    assert not discovery_pool.requests
     assert [loads(item.sent.get_nowait())["op"] for item in connections] == [
-        *([6] * (discord_module._MAX_RESUME_ATTEMPTS + 1)),
-        2,
-    ]
-    assert resuming._session_id is None
+        6
+    ] * resume_attempts
+    assert resuming._session_id == "session"
+    assert [call.args[0] for call in mocked_sleep.await_args_list] == [0, 2, 5, 10, 30]
 
 
 async def test_gateway_native_limits_and_intent_boundaries(

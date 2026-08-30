@@ -55,6 +55,7 @@ from pydantic import (
 from urllib3.filepost import encode_multipart_formdata
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
+from websockets.exceptions import InvalidHandshake
 
 from bot._tasks import await_cleanup
 from bot.core import Bot
@@ -100,7 +101,6 @@ _HELLO_TIMEOUT = 30.0
 _RECONNECT_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
 _FATAL_CLOSE_CODES = frozenset({4004, 4010, 4011, 4012, 4013, 4014})
 _NEW_SESSION_CLOSE_CODES = frozenset({4003, 4007, 4009})
-_MAX_RESUME_ATTEMPTS = 3
 _USER_AGENT = "DiscordBot (https://github.com/LetsStarveTogether/lst-bot, 0.0.0)"
 _MAX_GATEWAY_PAYLOAD_BYTES = 4096
 _MAX_GATEWAY_EVENTS = 120
@@ -1535,6 +1535,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         self._closing = False
         self._session_id: str | None = None
         self._seq: int | None = None
+        self._initial_gateway_url: str | None = None
         self._resume_gateway_url: str | None = None
         self._online = False
         self._self = BotSelf(platform="discord", user_id="0")
@@ -1798,20 +1799,23 @@ class DiscordGateway(Gateway, DiscordRestClient):
     def _id(data: Mapping[str, object], name: str) -> str:
         return _SNOWFLAKE_ADAPTER.validate_python(data.get(name))
 
+    async def _connect_gateway(self, url: str) -> WebSocketConnection:
+        try:
+            return await self._websocket_connector(url, None)
+        except OSError, InvalidHandshake:
+            fallback_url = self._initial_gateway_url
+            if fallback_url is None or fallback_url == url:
+                raise
+            return await self._websocket_connector(fallback_url, None)
+
     async def _run_gateway(self) -> None:
         await self.bot.wait_until_running()
         while not self._closing:
-            resuming = (
-                self._session_id is not None
-                and self._seq is not None
-                and self._resume_gateway_url is not None
-            )
             delay = _RECONNECT_DELAYS[
                 min(self._retry_count, len(_RECONNECT_DELAYS) - 1)
             ]
             try:
-                gateway_url = await self._gateway_url()
-                websocket = await self._websocket_connector(gateway_url, None)
+                websocket = await self._connect_gateway(await self._gateway_url())
                 await self._serve_websocket(websocket)
                 return  # ruff: ignore[try-consider-else] - keep success path local.
             except DiscordGatewayFatalError:
@@ -1831,16 +1835,13 @@ class DiscordGateway(Gateway, DiscordRestClient):
                 if exc.reset_session:
                     self._clear_session()
                 if exc.delay is not None:
-                    delay = exc.delay
+                    delay = max(exc.delay, delay if self._retry_count else 0.0)
             except Exception:
                 logger.exception(
                     "Discord Gateway connection failed; retrying in %ss",
                     delay,
                 )
             self._retry_count += 1
-            # The triggering disconnect occupies the first retry-count slot.
-            if resuming and self._retry_count > _MAX_RESUME_ATTEMPTS:
-                self._clear_session()
             await sleep(delay)
 
     async def _gateway_url(self) -> str:
@@ -1863,7 +1864,8 @@ class DiscordGateway(Gateway, DiscordRestClient):
             limit = gateway.session_start_limit
             if limit.remaining:
                 await self._wait_to_identify()
-                return _gateway_url(str(gateway.url))
+                self._initial_gateway_url = _gateway_url(str(gateway.url))
+                return self._initial_gateway_url
             await sleep(limit.reset_after / 1000)
 
     async def _serve_websocket(self, websocket: WebSocketConnection) -> None:
