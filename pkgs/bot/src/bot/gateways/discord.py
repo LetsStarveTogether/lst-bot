@@ -1368,7 +1368,7 @@ class DiscordRequestGuildMembers(DiscordRequestModel):
 
 
 class DiscordRequestSoundboardSounds(DiscordRequestModel):
-    guild_ids: Annotated[list[Snowflake], Field(min_length=1)]
+    guild_ids: list[Snowflake]
 
 
 class DiscordRequestChannelInfo(DiscordRequestModel):
