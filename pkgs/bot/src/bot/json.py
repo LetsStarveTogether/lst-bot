@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import ConfigDict, JsonValue, TypeAdapter
 from pydantic_core import from_json as _loads
 
-_JSON_ADAPTER = TypeAdapter(JsonValue, config=ConfigDict(allow_inf_nan=False))
+JSON_ADAPTER = TypeAdapter(JsonValue, config=ConfigDict(allow_inf_nan=False))
 
 
 def dumpb(value: object) -> bytes:
@@ -13,4 +13,4 @@ def dumpb(value: object) -> bytes:
 
 
 def loads(value: str | bytes) -> Any:
-    return _JSON_ADAPTER.validate_python(_loads(value, allow_inf_nan=False))
+    return JSON_ADAPTER.validate_python(_loads(value, allow_inf_nan=False))

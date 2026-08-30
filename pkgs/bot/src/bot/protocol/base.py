@@ -14,10 +14,8 @@ from pydantic import (
     model_validator,
 )
 
-_JSON_VALUE_ADAPTER = TypeAdapter(
-    JsonValue,
-    config=ConfigDict(allow_inf_nan=False),
-)
+from bot.json import JSON_ADAPTER
+
 _STRICT_BOOL = TypeAdapter(StrictBool).validate_python
 _STRICT_INT = TypeAdapter(StrictInt).validate_python
 
@@ -47,6 +45,4 @@ class Model(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def finite_json_numbers(cls, value: object, info: ValidationInfo) -> object:
-        return (
-            _JSON_VALUE_ADAPTER.validate_python(value) if info.mode == "json" else value
-        )
+        return JSON_ADAPTER.validate_python(value) if info.mode == "json" else value
