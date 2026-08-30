@@ -134,6 +134,7 @@ _INTERACTION_AUTO_RESPONSES: dict[int, JsonValue] = {
 
 type NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 type PositiveInt = Annotated[StrictInt, Field(gt=0)]
+type DiscordComponentId = Annotated[StrictInt, Field(ge=0, le=2**31 - 1)]
 type DiscordWebsocketUrl = Annotated[
     WebsocketUrl,
     UrlConstraints(allowed_schemes=["wss"]),
@@ -410,7 +411,7 @@ class DiscordGuild(Model):
 
 
 class DiscordInteractionData(Model):
-    id: Snowflake | None = None
+    id: Snowflake | DiscordComponentId | None = None
     name: StrictStr | None = None
     type: NonNegativeInt | None = None
     resolved: dict[StrictStr, JsonValue] | None = None
@@ -459,6 +460,11 @@ class DiscordInteraction(Model):
         ):
             msg = f"Discord interaction type {self.type} has incomplete data"
             raise ValueError(msg)
+        if self.type in {2, 3, 4} and self.data.id is not None:
+            command_id = self.type in {2, 4}
+            if command_id != isinstance(self.data.id, str):
+                msg = f"Discord interaction type {self.type} has invalid data id"
+                raise ValueError(msg)
         return self
 
 

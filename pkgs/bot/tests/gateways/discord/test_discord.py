@@ -276,7 +276,7 @@ def test_interaction_rate_routes_use_canonical_webhook_majors() -> None:
         (
             3,
             {"custom_id": "button"},
-            {"custom_id": "button", "component_type": 2},
+            {"id": 2, "custom_id": "button", "component_type": 2},
         ),
         (
             4,
@@ -328,6 +328,21 @@ def test_interaction_requires_official_fields_and_literals() -> None:
     for invalid in (
         payload | {"context": 3},
         payload | {"authorizing_integration_owners": {"2": "1"}},
+        payload | {"data": {"id": 2, "name": "query", "type": 1}},
+        payload
+        | {
+            "type": 3,
+            "data": {"id": "12", "custom_id": "button", "component_type": 2},
+        },
+        payload
+        | {
+            "type": 3,
+            "data": {
+                "id": 2**31,
+                "custom_id": "button",
+                "component_type": 2,
+            },
+        },
     ):
         with pytest.raises(ValidationError):
             DiscordInteraction.model_validate(invalid)
