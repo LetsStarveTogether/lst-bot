@@ -37,6 +37,7 @@ from bot.gateways.qq_api import (
     QQAudioControlRequest,
     QQFileUploadFields,
     QQGatewayInfo,
+    QQGuildAnnounceRequest,
     QQGuildList,
     QQGuildListParams,
     QQJoinRequestList,
@@ -138,6 +139,31 @@ def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None
     ):
         with pytest.raises(ValidationError, match="at least one change"):
             model.model_validate(payload)
+
+    for payload, error in (
+        ({"guild_id": "guild", "message_id": "message"}, "requires channel_id"),
+        (
+            {
+                "guild_id": "guild",
+                "channel_id": "channel",
+                "message_id": "message",
+                "announces_type": 1,
+            },
+            "member announcement",
+        ),
+        ({"guild_id": "guild"}, "requires type 1 and channels"),
+    ):
+        with pytest.raises(ValidationError, match=error):
+            QQGuildAnnounceRequest.model_validate(payload)
+
+    assert QQGuildAnnounceRequest.model_validate({
+        "guild_id": "guild",
+        "announces_type": 1,
+        "recommend_channels": [{"channel_id": "channel", "introduce": "intro"}],
+    }).model_dump(exclude={"guild_id"}, exclude_none=True) == {
+        "announces_type": 1,
+        "recommend_channels": [{"channel_id": "channel", "introduce": "intro"}],
+    }
 
 
 async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
@@ -414,6 +440,11 @@ def test_event_model_families_map_to_common_events() -> None:
             "group_openid": "group",
             "member_openid": "member",
             "user_openid": "user",
+        },
+        "GROUP_MEMBER_REMOVE": {
+            "timestamp": 1,
+            "group_openid": "group",
+            "member_openid": "member",
         },
         "SUBSCRIBE_MESSAGE_STATUS": {
             "result": [

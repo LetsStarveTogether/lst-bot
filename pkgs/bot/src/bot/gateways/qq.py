@@ -296,7 +296,7 @@ class QQGroupMember(Model):
     timestamp: NonNegativeInt
     group_openid: StrictStr
     member_openid: StrictStr
-    user_openid: StrictStr
+    user_openid: StrictStr | None = None
 
 
 class QQSubscribeResult(Model):
