@@ -62,7 +62,7 @@ from bot.json import dumpb, loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel, WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 from bot.protocol.common import BotSelf, BotStatus, Status, Version
-from bot.protocol.enums import Action, MsgSegmentType
+from bot.protocol.enums import Action
 from bot.protocol.events import (
     ChannelMessageEvent,
     Event,
@@ -71,7 +71,14 @@ from bot.protocol.events import (
     NoticeEvent,
     PrivateMessageEvent,
 )
-from bot.protocol.msg import Msg, MsgInput
+from bot.protocol.msg import (
+    MentionAllSegment,
+    MentionSegment,
+    Msg,
+    MsgInput,
+    ReplySegment,
+    TextSegment,
+)
 
 from .base import (
     Connection,
@@ -1414,15 +1421,13 @@ _DISPATCH_MODELS: dict[str, type[BaseModel]] = {
 
 
 class DiscordConnection(Connection):
-    @staticmethod
     @override
     def _message_action_params(
+        self,
         event: MessageEvent,
         msg: MsgInput,
     ) -> dict[str, ActionParamInput]:
-        params = Connection._message_action_params(  # ruff: ignore[private-member-access]
-            event, msg
-        )
+        params = super()._message_action_params(event, msg)
         channel_id = getattr(event, "channel_id", None)
         if isinstance(channel_id, str) and channel_id:
             params["channel_id"] = channel_id
@@ -2506,32 +2511,28 @@ def _discord_send_body(message: Msg) -> dict[str, JsonValue]:  # ruff: ignore[co
     parse: list[str] = []
     reference: dict[str, JsonValue] | None = None
     for segment in message:
-        if segment.type == MsgSegmentType.TEXT:
-            content.append(cast(object, segment.data).text)  # ty: ignore[unresolved-attribute]
-        elif segment.type == MsgSegmentType.MENTION:
-            user_id = _SNOWFLAKE_ADAPTER.validate_python(
-                cast(object, segment.data).user_id  # ty: ignore[unresolved-attribute]
-            )
+        if isinstance(segment, TextSegment):
+            content.append(segment.data.text)
+        elif isinstance(segment, MentionSegment):
+            user_id = _SNOWFLAKE_ADAPTER.validate_python(segment.data.user_id)
             content.append(f"<@{user_id}>")
             if user_id not in users:
                 users.append(user_id)
-        elif segment.type == MsgSegmentType.MENTION_ALL:
+        elif isinstance(segment, MentionAllSegment):
             content.append("@everyone")
             parse.append("everyone")
-        elif segment.type == MsgSegmentType.REPLY:
+        elif isinstance(segment, ReplySegment):
             if reference is not None:
                 msg = "Discord sends at most one message reference"
                 raise ValueError(msg)
-            message_id = _SNOWFLAKE_ADAPTER.validate_python(
-                cast(object, segment.data).message_id  # ty: ignore[unresolved-attribute]
-            )
+            message_id = _SNOWFLAKE_ADAPTER.validate_python(segment.data.message_id)
             reference = {
                 "message_id": message_id,
                 "fail_if_not_exists": False,
             }
         else:
             msg = f"Discord common messages do not support segment {segment.type!s}"
-            raise ValueError(msg)
+            raise TypeError(msg)
     text = "".join(content)
     if not text:
         msg = "Discord messages require content"

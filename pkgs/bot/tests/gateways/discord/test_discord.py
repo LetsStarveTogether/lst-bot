@@ -1258,7 +1258,7 @@ async def test_sequence_commit_and_public_message_actions() -> None:
     with pytest.raises(ValueError, match=r"unsupported.*tts"):
         await connection.send_msg("ignored", user_id="2", tts=True)
     for segment_type in ("image", "voice", "audio", "video", "file"):
-        with pytest.raises(ValueError, match="common messages do not support"):
+        with pytest.raises(TypeError, match="common messages do not support"):
             await connection.send_msg(
                 {"type": segment_type, "data": {"file_id": "opaque-file"}},
                 user_id="2",

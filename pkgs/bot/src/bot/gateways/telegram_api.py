@@ -32,10 +32,15 @@ from urllib3_future.filepost import encode_multipart_formdata
 
 from bot._tasks import await_cleanup
 from bot.json import dumpb
-from bot.protocol.actions import WireBytes
+from bot.protocol.actions import Sha256String, WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
-from .base import read_http_body, run_while_open, validate_https_base_url
+from .base import (
+    PositiveSeconds,
+    read_http_body,
+    run_while_open,
+    validate_https_base_url,
+)
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
@@ -133,21 +138,14 @@ type TelegramUserID = Annotated[
     StrictInt,
     Field(gt=0, le=_MAX_TELEGRAM_ID),
 ]
-type TelegramTopicID = Annotated[
-    StrictInt,
-    Field(gt=0, le=_MAX_TELEGRAM_ID),
-]
+type TelegramTopicID = TelegramUserID
 type TelegramUpdateOffset = Annotated[
     StrictInt,
     Field(ge=-_MAX_INT32 - 1, le=_MAX_INT32),
 ]
-type TelegramUpdateID = Annotated[StrictInt, Field(gt=0, le=_MAX_INT32)]
 type NonNegativeInt = Annotated[StrictInt, Field(ge=0, le=_MAX_INT32)]
 type PositiveInt = Annotated[StrictInt, Field(gt=0, le=_MAX_INT32)]
-type PositiveSeconds = Annotated[
-    StrictInt | StrictFloat,
-    Field(gt=0, allow_inf_nan=False),
-]
+type TelegramUpdateID = PositiveInt
 type Latitude = Annotated[
     StrictInt | StrictFloat,
     Field(ge=-90, le=90, allow_inf_nan=False),
@@ -192,7 +190,7 @@ class TelegramEphemeralMessageParameters(BaseModel):
 class TelegramDownloadedFile(Model):
     name: Annotated[StrictStr, Field(min_length=1)]
     data: WireBytes = Field(repr=False)
-    sha256: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
+    sha256: Sha256String
 
 
 class TelegramFileTooLargeError(ValueError):

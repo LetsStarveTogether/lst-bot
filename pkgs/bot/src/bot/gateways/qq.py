@@ -61,7 +61,15 @@ from bot.protocol.events import (
     PrivateMessageDeleteNoticeEvent,
     PrivateMessageEvent,
 )
-from bot.protocol.msg import Msg, MsgInput
+from bot.protocol.msg import (
+    MediaSegment,
+    MentionAllSegment,
+    MentionSegment,
+    Msg,
+    MsgInput,
+    ReplySegment,
+    TextSegment,
+)
 
 from . import qq_api
 from .base import (
@@ -525,15 +533,13 @@ class QQHeartbeat(qq_api.QQRequest):
 
 
 class QQConnection(Connection):
-    @staticmethod
     @override
     def _message_action_params(
+        self,
         event: MessageEvent,
         msg: MsgInput,
     ) -> dict[str, ActionParamInput]:
-        params = Connection._message_action_params(  # ruff: ignore[private-member-access] - reuse base helper
-            event, msg
-        )
+        params = super()._message_action_params(event, msg)
         params["msg_id"] = event.message_id
         for key in ("qq_scene", "guild_id", "channel_id"):
             value = getattr(event, key, None)
@@ -1181,26 +1187,21 @@ class QQGateway(Gateway, QQRestClient):
         scene = params.pop("qq_scene", None)
         target = _qq_message_target(detail_type, scene)
         if target not in {"group", "channel"} and any(
-            segment.type == MsgSegmentType.MENTION for segment in message
+            isinstance(segment, MentionSegment) for segment in message
         ):
             msg = "QQ user mentions are only supported in groups and channels"
             raise ValueError(msg)
         if target != "channel" and any(
-            segment.type == MsgSegmentType.MENTION_ALL for segment in message
+            isinstance(segment, MentionAllSegment) for segment in message
         ):
             msg = "QQ mention-all is only supported in channels"
             raise ValueError(msg)
         body = _qq_send_body(message)
-        media = next(
-            (segment for segment in message if segment.type in _MEDIA_FILE_TYPES),
-            None,
-        )
+        media = next((item for item in message if isinstance(item, MediaSegment)), None)
         if (
             media is not None
             and (upload := _MEDIA_UPLOADS.get(target)) is not None
-            and (
-                file_id := cast(object, media.data).file_id  # ty: ignore[unresolved-attribute]
-            )
+            and (file_id := media.data.file_id)
             .casefold()
             .startswith(("http://", "https://"))
         ):
@@ -1371,34 +1372,27 @@ def _qq_send_body(  # ruff: ignore[complex-structure] - protocol conversion is i
     media: str | None = None
     reply: str | None = None
     for segment in message:
-        if segment.type == MsgSegmentType.TEXT:
+        if isinstance(segment, TextSegment):
+            content.append(escape(segment.data.text, quote=False))
+        elif isinstance(segment, MentionSegment):
             content.append(
-                escape(
-                    cast(object, segment.data).text,  # ty: ignore[unresolved-attribute]
-                    quote=False,
-                )
+                f'<qqbot-at-user id="{escape(segment.data.user_id, quote=True)}" />'
             )
-        elif segment.type == MsgSegmentType.MENTION:
-            content.append(
-                '<qqbot-at-user id="'
-                f"{escape(cast(object, segment.data).user_id, quote=True)}"  # ty: ignore[unresolved-attribute]
-                '" />'
-            )
-        elif segment.type == MsgSegmentType.MENTION_ALL:
+        elif isinstance(segment, MentionAllSegment):
             content.append("<qqbot-at-everyone />")
-        elif segment.type in _MEDIA_FILE_TYPES:
+        elif isinstance(segment, MediaSegment):
             if media is not None:
                 msg = "QQ sends at most one media resource per message"
                 raise ValueError(msg)
-            media = cast(object, segment.data).file_id  # ty: ignore[unresolved-attribute]
-        elif segment.type == MsgSegmentType.REPLY:
+            media = segment.data.file_id
+        elif isinstance(segment, ReplySegment):
             if reply is not None:
                 msg = "QQ sends at most one message reference"
                 raise ValueError(msg)
-            reply = cast(object, segment.data).message_id  # ty: ignore[unresolved-attribute]
+            reply = segment.data.message_id
         else:
             msg = f"QQ does not support message segment {segment.type!s}"
-            raise ValueError(msg)
+            raise TypeError(msg)
     text = "".join(content)
     body: dict[str, object] = {
         "msg_type": 7 if media is not None else 0,

@@ -335,8 +335,8 @@ class Connection:
         self._raise_for_failed_action_response(response)
         return response
 
-    @staticmethod
     def _message_action_params(
+        self,
         event: MessageEvent,
         msg: MsgInput,
     ) -> dict[str, ActionParamInput]:

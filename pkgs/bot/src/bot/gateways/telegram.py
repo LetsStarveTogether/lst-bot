@@ -140,15 +140,13 @@ class _TelegramMessageOptions(BaseModel):
 
 
 class TelegramConnection(Connection):
-    @staticmethod
     @override
     def _message_action_params(  # ruff: ignore[complex-structure] - protocol contexts are independent flat checks
+        self,
         event: MessageEvent,
         msg: MsgInput,
     ) -> dict[str, ActionParamInput]:
-        params = Connection._message_action_params(  # ruff: ignore[private-member-access] - shared target mapping
-            event, msg
-        )
+        params = super()._message_action_params(event, msg)
         guest_query_id = getattr(event, "telegram_guest_query_id", None)
         if isinstance(guest_query_id, str):
             params["telegram_guest_query_id"] = guest_query_id
