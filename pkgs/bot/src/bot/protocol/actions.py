@@ -77,13 +77,23 @@ type WireBytes = Annotated[
     PlainSerializer(_dump_base64_bytes, return_type=str, when_used="json"),
 ]
 
-type _ActionParamValue = (
-    dict[str, _ActionParamValue]
-    | list[_ActionParamValue]
-    | JsonValue
-    | WireBytes
-    | SerializeAsAny[BaseModel]
-)
+
+def _dump_param_model(value: object) -> object:
+    return (
+        value.model_dump(
+            mode="json",
+            by_alias=True,
+            polymorphic_serialization=True,
+        )
+        if isinstance(value, BaseModel)
+        else value
+    )
+
+
+type _ActionParamValue = Annotated[
+    dict[str, _ActionParamValue] | list[_ActionParamValue] | JsonValue | WireBytes,
+    BeforeValidator(_dump_param_model),
+]
 
 
 class ActionParamModel(Model):
@@ -92,9 +102,7 @@ class ActionParamModel(Model):
     @model_validator(mode="before")
     @classmethod
     def model_input(cls, value: object) -> object:
-        if isinstance(value, BaseModel):
-            return value.model_dump(mode="json", by_alias=True, serialize_as_any=True)
-        return value
+        return _dump_param_model(value)
 
 
 class ActionResponse(Model):

@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal
+from math import inf, nan
 
 import pytest
 from bot import (
@@ -596,6 +597,10 @@ class VendorParams(BaseModel):
     enabled: bool
 
 
+class VendorNumber(BaseModel):
+    value: float
+
+
 class VendorOperation(BaseModel):
     from_: str = Field(alias="from")
     amount: Decimal
@@ -603,6 +608,10 @@ class VendorOperation(BaseModel):
     @field_serializer("amount", when_used="json")
     def serialize_amount(self, value: Decimal) -> str:
         return f"decimal:{value}"
+
+
+class ExtendedVendorOperation(VendorOperation):
+    note: str
 
 
 class VendorRequest(BaseModel):
@@ -633,10 +642,19 @@ def test_action_call_serializes_python_parameter_values() -> None:
     }
 
 
+@pytest.mark.parametrize("value", [nan, inf, -inf])
+def test_action_params_reject_non_finite_numbers(value: float) -> None:
+    model = VendorNumber(value=value)
+    for params in (model, {"model": model}, {"nested": {"value": value}}):
+        with pytest.raises(ValidationError):
+            ActionCall.model_validate({"action": "vendor.action", "params": params})
+
+
 def test_action_params_recursively_serialize_models_with_aliases() -> None:
-    operation = VendorOperation.model_validate({
+    operation = ExtendedVendorOperation.model_validate({
         "from": "nested",
         "amount": Decimal("1.20"),
+        "note": "subclass",
     })
     top_level = ActionCall.model_validate({
         "action": "vendor.action",
@@ -652,6 +670,7 @@ def test_action_params_recursively_serialize_models_with_aliases() -> None:
     expected = {
         "from": "nested",
         "amount": "decimal:1.20",
+        "note": "subclass",
     }
 
     assert top_level.model_dump(mode="json", by_alias=True) == {
