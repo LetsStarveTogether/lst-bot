@@ -95,10 +95,6 @@ def message_update(update_id: int, text: str = "hello") -> TelegramUpdate:
     })
 
 
-async def ready() -> None:  # ruff: ignore[unused-async] - awaitable test double
-    return None
-
-
 def test_strict_models() -> None:
     payload = message_update(1).payload
     assert payload is not None
@@ -1258,8 +1254,7 @@ async def test_direct_message_reply_requires_its_topic() -> None:
     )
     assert isinstance(direct_event, GroupMessageEvent)
     await connection.execute_message_action(direct_event, "reply")
-    direct_params = pool.requests[-1][2]["json"]
-    assert direct_params == {
+    assert pool.requests[-1][2]["json"] == {
         "chat_id": SUPERGROUP_ID,
         "direct_messages_topic_id": 60,
         "text": "reply",
@@ -1491,7 +1486,7 @@ async def test_poller_respects_flood_wait_and_stops_on_auth_error(
         online_states.append(await online())
         delays.append(delay)
 
-    monkeypatch.setattr(gateway.bot, "wait_until_running", ready)
+    monkeypatch.setattr(gateway.bot, "wait_until_running", AsyncMock())
     monkeypatch.setattr(gateway, "get_updates", get_updates)
     monkeypatch.setattr("bot.gateways.telegram.sleep", record_sleep)
 
@@ -1513,7 +1508,7 @@ async def test_poller_does_not_retry_invalid_update_models(
         _ = offset, poll_timeout
         return [TelegramUpdate.model_validate({"update_id": 1, "poll": True})]
 
-    monkeypatch.setattr(gateway.bot, "wait_until_running", ready)
+    monkeypatch.setattr(gateway.bot, "wait_until_running", AsyncMock())
     monkeypatch.setattr(gateway, "get_updates", invalid_updates)
 
     async with timeout(1):
