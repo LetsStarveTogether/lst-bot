@@ -1611,14 +1611,26 @@ async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
         pool.release.set()
 
 
-async def test_cold_dynamic_routes_share_provisional_bucket() -> None:
+async def test_cold_dynamic_routes_share_provisional_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock()
+
+    @asynccontextmanager
+    async def virtual_timeout(delay: float) -> AsyncIterator[None]:
+        if delay != discord_module._API_TIMEOUT:
+            clock.now += delay
+            raise TimeoutError
+        yield
+
+    monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
+    monkeypatch.setattr(discord_module, "timeout", virtual_timeout)
+
     class BucketPool(Pool):
         def __init__(self) -> None:
             super().__init__()
             self.started = Event()
             self.release = Event()
-            self.first_returned_at: float | None = None
-            self.second_requested_at: float | None = None
 
         async def request(
             self,
@@ -1628,19 +1640,15 @@ async def test_cold_dynamic_routes_share_provisional_bucket() -> None:
         ) -> AsyncHTTPResponse:
             index = len(self.requests)
             self.requests.append((method, url, kwargs))
-            if index:
-                self.second_requested_at = discord_module.get_running_loop().time()
             self.started.set()
             await self.release.wait()
-            if not index:
-                self.first_returned_at = discord_module.get_running_loop().time()
             return response(
                 200,
                 {},
                 headers={
                     "X-RateLimit-Bucket": f"invites-{index}",
                     "X-RateLimit-Remaining": "0",
-                    "X-RateLimit-Reset-After": "0.02",
+                    "X-RateLimit-Reset-After": "2",
                 },
             )
 
@@ -1657,19 +1665,13 @@ async def test_cold_dynamic_routes_share_provisional_bucket() -> None:
         await pool.started.wait()
         tasks.create_task(second_request())
         await second_started.wait()
-        await sleep(0)
         assert len(pool.requests) == 1
         pool.release.set()
 
     assert [url.rsplit("/", 1)[-1] for _, url, _ in pool.requests] == ["alpha", "beta"]
-    assert pool.first_returned_at is not None
-    assert pool.second_requested_at is not None
-    assert pool.second_requested_at - pool.first_returned_at >= 0.015
-    first_bucket = rest._rate_buckets.get(("bucket", "invites-0", ""))
-    second_bucket = rest._rate_buckets.get(("bucket", "invites-1", ""))
-    assert first_bucket is not None
-    assert second_bucket is not None
-    assert first_bucket is not second_bucket
+    first_bucket = rest._rate_buckets["bucket", "invites-0", ""]
+    second_bucket = rest._rate_buckets["bucket", "invites-1", ""]
+    assert (first_bucket.ready_at, second_bucket.ready_at) == pytest.approx((2.0, 4.0))
 
 
 async def test_rest_programming_errors_stay_visible() -> None:

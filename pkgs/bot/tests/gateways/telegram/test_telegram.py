@@ -70,6 +70,14 @@ def make_gateway(pool: object | None = None) -> TelegramGateway:
     )
 
 
+def gateway_connection(
+    pool: object | None = None,
+) -> tuple[TelegramGateway, telegram_module.TelegramConnection]:
+    gateway = make_gateway(pool)
+    gateway._self = BotSelf(platform="telegram", user_id="123")
+    return gateway, gateway.connection_for(gateway._self)
+
+
 def message_update(update_id: int, text: str = "hello") -> TelegramUpdate:
     return TelegramUpdate.model_validate({
         "update_id": update_id,
@@ -451,10 +459,8 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
             telegram_module._message_calls("42", Msg.from_input("reply"), obsolete)
 
     pool = Pool({"ok": True, "result": {"message_id": 1}})
-    gateway = make_gateway(pool)
-    self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_
-    await gateway.connection_for(self_).action(
+    _, connection = gateway_connection(pool)
+    await connection.action(
         "sendPhoto",
         chat_id=42,
         photo="photo",
@@ -1186,15 +1192,9 @@ def test_removed_chat_boost_uses_removal_time() -> None:
     assert event.time == 123
 
 
-async def test_message_reply_contexts_use_their_official_routes() -> None:
-    pool = Pool(
-        *({"ok": True, "result": True} for _ in range(7)),
-    )
-    gateway = make_gateway(pool)
-    self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_
-    connection = gateway.connection_for(self_)
-
+async def test_business_message_reply_uses_business_connection() -> None:
+    pool = Pool({"ok": True, "result": True})
+    gateway, connection = gateway_connection(pool)
     business_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 1,
@@ -1216,6 +1216,10 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         "text": "reply",
     }
 
+
+async def test_direct_message_reply_requires_its_topic() -> None:
+    pool = Pool({"ok": True, "result": True})
+    gateway, connection = gateway_connection(pool)
     direct_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 2,
@@ -1249,6 +1253,10 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
     with pytest.raises(ValueError, match="direct_messages_topic_id"):
         await connection.execute_message_action(missing_topic, "reply")
 
+
+async def test_ephemeral_reply_uses_ephemeral_parameters() -> None:
+    pool = Pool(*({"ok": True, "result": True} for _ in range(2)))
+    gateway, connection = gateway_connection(pool)
     ephemeral_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 3,
@@ -1282,6 +1290,10 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
         assert params["ephemeral_message_parameters"] == {"receiver_user_id": 42}
         assert params["reply_parameters"] == {"ephemeral_message_id": 70}
 
+
+async def test_guest_query_reply_accepts_only_plain_text() -> None:
+    pool = Pool({"ok": True, "result": True})
+    gateway, connection = gateway_connection(pool)
     guest_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 4,
@@ -1327,6 +1339,10 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
             parse_mode="HTML",
         )
 
+
+async def test_delete_message_uses_ordinary_or_ephemeral_route() -> None:
+    pool = Pool(*({"ok": True, "result": True} for _ in range(2)))
+    _, connection = gateway_connection(pool)
     await connection.action(
         Action.DELETE_MESSAGE,
         message_id="12",
@@ -1367,10 +1383,7 @@ async def test_message_reply_contexts_use_their_official_routes() -> None:
 
 async def test_join_request_query_maps_and_native_response_is_routed() -> None:
     pool = Pool({"ok": True, "result": True})
-    gateway = make_gateway(pool)
-    self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_
-    connection = gateway.connection_for(self_)
+    gateway, connection = gateway_connection(pool)
     event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 5,
@@ -1426,10 +1439,7 @@ async def test_webhook_conflict_fails_before_polling() -> None:
 async def test_poller_respects_flood_wait_and_stops_on_auth_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gateway = make_gateway()
-    self_ = BotSelf(platform="telegram", user_id="123")
-    gateway._self = self_
-    connection = gateway.connection_for(self_)
+    gateway, connection = gateway_connection()
     outcomes = iter((
         [],
         TelegramAPIError(

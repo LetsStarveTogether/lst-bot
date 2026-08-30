@@ -498,6 +498,28 @@ def test_event_model_families_map_to_common_events() -> None:
             "version": 1,
         },
     }
+    expected_types: dict[str, type[Event]] = {
+        "FRIEND_ADD": FriendIncreaseNoticeEvent,
+        "FRIEND_DEL": FriendDecreaseNoticeEvent,
+        "C2C_MSG_RECEIVE": NoticeEvent,
+        "GROUP_ADD_ROBOT": GroupMemberIncreaseNoticeEvent,
+        "GROUP_DEL_ROBOT": GroupMemberDecreaseNoticeEvent,
+        "GROUP_MEMBER_ADD": NoticeEvent,
+        "GROUP_MEMBER_REMOVE": NoticeEvent,
+        "GUILD_MEMBER_ADD": GuildMemberIncreaseNoticeEvent,
+        "GUILD_MEMBER_UPDATE": NoticeEvent,
+        "GUILD_MEMBER_REMOVE": GuildMemberDecreaseNoticeEvent,
+        "SUBSCRIBE_MESSAGE_STATUS": NoticeEvent,
+        "GUILD_CREATE": NoticeEvent,
+        "CHANNEL_CREATE": NoticeEvent,
+        "AT_MESSAGE_CREATE": ChannelMessageEvent,
+        "DIRECT_MESSAGE_CREATE": PrivateMessageEvent,
+        "MESSAGE_DELETE": ChannelMessageDeleteNoticeEvent,
+        "PUBLIC_MESSAGE_DELETE": ChannelMessageDeleteNoticeEvent,
+        "DIRECT_MESSAGE_DELETE": PrivateMessageDeleteNoticeEvent,
+        "INTERACTION_CREATE": NoticeEvent,
+    }
+    assert payloads.keys() == expected_types.keys()
     gateway = support.gateway(support.Pool())
     for event_type, payload in payloads.items():
         event = gateway._event_from_dispatch(
@@ -509,34 +531,10 @@ def test_event_model_families_map_to_common_events() -> None:
                 "d": payload,
             })
         )
-        expected_type = {
-            "FRIEND_ADD": FriendIncreaseNoticeEvent,
-            "FRIEND_DEL": FriendDecreaseNoticeEvent,
-            "GROUP_ADD_ROBOT": GroupMemberIncreaseNoticeEvent,
-            "GROUP_DEL_ROBOT": GroupMemberDecreaseNoticeEvent,
-            "GUILD_MEMBER_ADD": GuildMemberIncreaseNoticeEvent,
-            "GUILD_MEMBER_REMOVE": GuildMemberDecreaseNoticeEvent,
-            "MESSAGE_DELETE": ChannelMessageDeleteNoticeEvent,
-            "PUBLIC_MESSAGE_DELETE": ChannelMessageDeleteNoticeEvent,
-            "DIRECT_MESSAGE_DELETE": PrivateMessageDeleteNoticeEvent,
-            "AT_MESSAGE_CREATE": ChannelMessageEvent,
-            "DIRECT_MESSAGE_CREATE": PrivateMessageEvent,
-        }.get(event_type, NoticeEvent)
-        expected_detail = {
-            "FRIEND_ADD": "friend_increase",
-            "FRIEND_DEL": "friend_decrease",
-            "GROUP_ADD_ROBOT": "group_member_increase",
-            "GROUP_DEL_ROBOT": "group_member_decrease",
-            "GUILD_MEMBER_ADD": "guild_member_increase",
-            "GUILD_MEMBER_REMOVE": "guild_member_decrease",
-            "MESSAGE_DELETE": "channel_message_delete",
-            "PUBLIC_MESSAGE_DELETE": "channel_message_delete",
-            "DIRECT_MESSAGE_DELETE": "private_message_delete",
-            "AT_MESSAGE_CREATE": "channel",
-            "DIRECT_MESSAGE_CREATE": "private",
-        }.get(event_type, f"qq.{event_type.lower()}")
-        assert isinstance(event, expected_type), event_type
-        assert event.detail_type == expected_detail, event_type
+        expected_type = expected_types[event_type]
+        assert type(event) is expected_type, event_type
+        if expected_type is NoticeEvent:
+            assert event.detail_type == f"qq.{event_type.lower()}", event_type
         if isinstance(
             event, GroupMemberIncreaseNoticeEvent | GroupMemberDecreaseNoticeEvent
         ):
