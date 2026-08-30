@@ -35,6 +35,7 @@ from robyn import Response
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 from websockets.asyncio.client import connect
+from websockets.asyncio.connection import Connection as NativeWebSocketConnection
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
 from bot._tasks import await_cleanup
@@ -189,14 +190,6 @@ class WebSocketAction:
         )
 
 
-class _NativeWebSocketConnection(Protocol):
-    async def recv(self) -> str | bytes: ...
-
-    async def send(self, message: str) -> None: ...
-
-    async def close(self, code: int = 1000) -> None: ...
-
-
 class WebSocketClosedError(ConnectionError):
     def __init__(self, code: int | None) -> None:
         self.code = code
@@ -205,7 +198,7 @@ class WebSocketClosedError(ConnectionError):
 
 
 class WebsocketsConnection:
-    def __init__(self, websocket: _NativeWebSocketConnection) -> None:
+    def __init__(self, websocket: NativeWebSocketConnection) -> None:
         self.websocket = websocket
 
     async def receive_text(self) -> str:
