@@ -77,6 +77,11 @@ class _QueuedEvent:
     deadline: float | None = None
 
 
+def _cancel_result(item: _QueuedEvent) -> None:
+    if item.result is not None:
+        item.result.cancel()
+
+
 class Bot(EventRouter):
     def __init__(
         self,
@@ -362,8 +367,7 @@ class Bot(EventRouter):
                     item = queue.get_nowait()
                 except QueueEmpty:
                     break
-                if item.result is not None and not item.result.done():
-                    item.result.cancel()
+                _cancel_result(item)
 
         errors = [
             result
@@ -384,8 +388,7 @@ class Bot(EventRouter):
             try:
                 await task
             except CancelledError:
-                if item.result is not None and not item.result.done():
-                    item.result.cancel()
+                _cancel_result(item)
                 if worker.cancelling():
                     raise
             except BaseException as exc:
@@ -396,9 +399,11 @@ class Bot(EventRouter):
                         "queued event dispatch failed: %s",
                         item.event,
                     )
-            else:
-                if item.result is not None and not item.result.done():
-                    item.result.set_result(None)
+            if worker.cancelling():
+                _cancel_result(item)
+                raise CancelledError
+            if item.result is not None and not item.result.done():
+                item.result.set_result(None)
 
     async def _dispatch_queued_event(
         self,

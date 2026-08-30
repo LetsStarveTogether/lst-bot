@@ -7,6 +7,7 @@ from asyncio import (
     create_task,
     sleep,
     timeout,
+    wait,
 )
 from contextvars import ContextVar
 from datetime import timedelta
@@ -332,6 +333,47 @@ async def test_close_cancels_running_and_queued_events() -> None:
             await bot.close()
 
     assert handled == ["running"]
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True], ids=["returns", "raises"])
+async def test_close_stops_worker_when_handler_swallows_cancellation(
+    cleanup_fails: bool,
+) -> None:
+    bot = Bot(max_dispatches=1, dispatch_timeout=None)
+    gateway = RecordingGateway(bot)
+    started = Event()
+    swallowed = Event()
+
+    @bot.on_msg()
+    async def handle() -> None:
+        started.set()
+        try:
+            await Event().wait()
+        except CancelledError:
+            swallowed.set()
+            if cleanup_fails:
+                msg = "cleanup failed"
+                raise BaseExceptionGroup(
+                    msg,
+                    [CancelledError(), RuntimeError()],
+                ) from None
+
+    await bot.start()
+    dispatch = create_task(bot.dispatch(gateway.connection, event("event")))
+    await started.wait()
+    closing = create_task(bot.close())
+    await swallowed.wait()
+    done, _ = await wait((closing,), timeout=1)
+    if closing not in done:
+        for worker in bot._event_workers:  # ruff: ignore[private-member-access] - regression cleanup
+            worker.cancel()
+        await closing
+
+    assert closing in done
+    await closing
+    error = BaseExceptionGroup if cleanup_fails else CancelledError
+    with pytest.raises(error):
+        await dispatch
 
 
 async def test_close_cancels_handlers_before_closing_gateways() -> None:

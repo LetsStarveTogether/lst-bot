@@ -272,12 +272,16 @@ class CronScheduler:
             raise RuntimeError(msg)
         self._closing = True
         self._running = False
-        try:
+
+        async def finish_close() -> None:
             results = await gather(
                 *(job.close() for job in self._jobs),
                 return_exceptions=True,
             )
+            errors = [result for result in results if isinstance(result, BaseException)]
+            _raise_errors("Scheduler shutdown failed", errors)
+
+        try:
+            await await_cleanup(create_task(finish_close(), name="scheduler-close"))
         finally:
             self._closing = False
-        errors = [result for result in results if isinstance(result, BaseException)]
-        _raise_errors("Scheduler shutdown failed", errors)

@@ -219,6 +219,25 @@ async def test_cancelled_job_close_finishes_handler_cleanup() -> None:
         await bot.close()
 
 
+async def test_cancelled_scheduler_close_finishes_job_cleanup() -> None:
+    bot = Bot()
+    sleep = use_scripted_time(bot)
+    bot.scheduler.on_cron("* * * * *")(lambda: None)
+    (job,) = bot.scheduler.jobs
+
+    await bot.start()
+    try:
+        await sleep.next_call()
+        closing = create_task(bot.scheduler.close())
+        get_running_loop().call_soon(closing.cancel)
+        with pytest.raises(CancelledError):
+            await closing
+
+        assert job._runner is None  # ruff: ignore[private-member-access] - regression
+    finally:
+        await bot.close()
+
+
 async def test_scheduler_rejects_restart_during_job_cleanup() -> None:
     bot = Bot()
     sleep = use_scripted_time(bot)
