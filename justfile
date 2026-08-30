@@ -11,8 +11,9 @@ dev:
 format:
     uv run ruff format
 
-lint: format
+lint:
     uv run ruff check --fix
+    uv run ruff format
 
 tc: lint
     uv run ty check

@@ -67,7 +67,7 @@ ignore = [
     'FBT',     # Too strict.
     'too-many-return-statements', # Small resolver functions are branchy by nature.
 ]
-allowed-confusables = ['，', '：', '；', '？', '！', '（', '）']
+allowed-confusables = ['，', '：', '；', '？', '（', '）']
 
 [tool.ruff.lint.per-file-ignores]
 '**/tests/**/*.py' = [
