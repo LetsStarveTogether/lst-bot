@@ -412,7 +412,6 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
         ),
         "Authorization": "Bot token",
         "X-Audit-Log-Reason": "test%20reason",
-        "Content-Type": "application/json",
     }
     multipart = cast(bytes, pool.requests[3][2]["body"])
     assert b'name="files[0]"' in multipart

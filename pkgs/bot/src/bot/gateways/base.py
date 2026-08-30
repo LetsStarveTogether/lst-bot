@@ -559,11 +559,7 @@ class WebSocketActionManager:
 
 def json_response(status: int, payload: BaseModel | JsonValue) -> Response:
     if isinstance(payload, BaseModel):
-        body = payload.model_dump_json(
-            by_alias=True,
-            exclude_none=False,
-            exclude_unset=False,
-        )
+        body = payload.model_dump_json(by_alias=True)
     else:
         body = dumpb(payload)
     return Response(status, {"Content-Type": "application/json"}, body=body)

@@ -871,6 +871,8 @@ class TelegramRestClient:
         request_timeout: float,
     ) -> tuple[TelegramEnvelope, int]:
         url = f"{self.base_url}/bot{self.token.get_secret_value()}/{method}"
+        body = None
+        headers = None
         if files:
             fields: list[tuple[str, str | bytes | tuple[str, str | bytes, str]]] = [
                 (name, value if isinstance(value, str) else dumpb(value).decode())
@@ -886,29 +888,20 @@ class TelegramRestClient:
                 for name, file in files.items()
             )
             body, content_type = encode_multipart_formdata(fields)
-        try:  # ruff: ignore[too-many-statements-in-try-clause] - one timeout owns the full response read
+            headers = {"Content-Type": content_type}
+        try:
             async with timeout(request_timeout):
-                if files:
-                    response = await self.http_pool.request(
-                        "POST",
-                        url,
-                        body=body,
-                        headers={"Content-Type": content_type},
-                        preload_content=False,
-                        redirect=False,
-                        retries=False,
-                        timeout=request_timeout,
-                    )
-                else:
-                    response = await self.http_pool.request(
-                        "POST",
-                        url,
-                        json=params,
-                        preload_content=False,
-                        redirect=False,
-                        retries=False,
-                        timeout=request_timeout,
-                    )
+                response = await self.http_pool.request(
+                    "POST",
+                    url,
+                    body=body,
+                    headers=headers,
+                    json=None if files else params,
+                    preload_content=False,
+                    redirect=False,
+                    retries=False,
+                    timeout=request_timeout,
+                )
                 data = await read_http_body(response)
         except HTTPError, TimeoutError:
             msg = f"Telegram API request failed for {method}"

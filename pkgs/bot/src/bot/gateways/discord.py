@@ -1090,13 +1090,9 @@ class DiscordRestClient:
             body, content_type = encode_multipart_formdata(fields)
             headers["Content-Type"] = content_type
             json = None
-        elif request.json_ is not None:
-            headers["Content-Type"] = "application/json"
-            body = None
-            json = request.json_
         else:
             body = None
-            json = None
+            json = request.json_
         response = await self.http_pool.request(
             request.method,
             url,
