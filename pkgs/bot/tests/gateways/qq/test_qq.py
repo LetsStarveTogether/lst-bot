@@ -12,16 +12,22 @@ from bot import (
     ActionParamInput,
     Bot,
     BotSelf,
+    ChannelMessageDeleteNoticeEvent,
     ChannelMessageEvent,
     Event,
     FriendDecreaseNoticeEvent,
     FriendIncreaseNoticeEvent,
+    GroupMemberDecreaseNoticeEvent,
+    GroupMemberIncreaseNoticeEvent,
     GroupMessageEvent,
     GroupRequestEvent,
+    GuildMemberDecreaseNoticeEvent,
+    GuildMemberIncreaseNoticeEvent,
     Injected,
     MsgInput,
     MsgSegmentType,
     NoticeEvent,
+    PrivateMessageDeleteNoticeEvent,
     PrivateMessageEvent,
 )
 from bot.gateways import qq as qq_gateway_module
@@ -422,15 +428,32 @@ def test_event_model_families_map_to_common_events() -> None:
         "content": "hello",
         "timestamp": "2026-08-17T00:00:00Z",
         "author": {"id": "user"},
+        "attachments": [],
+        "mentions": [],
     }
+    guild_member: dict[str, JsonValue] = {
+        "guild_id": "guild",
+        "joined_at": "2026-08-17T00:00:00Z",
+        "nick": "member",
+        "op_user_id": "operator",
+        "roles": [],
+        "user": {"id": "user"},
+    }
+    message_delete = {"message": legacy_message, "op_user": {"id": "operator"}}
     payloads: dict[str, dict[str, JsonValue]] = {
         "FRIEND_ADD": {
             "timestamp": 1,
             "openid": "user",
+            "scene": 1000,
         },
         "FRIEND_DEL": {"timestamp": 1, "openid": "user"},
         "C2C_MSG_RECEIVE": {"timestamp": 1, "openid": "user"},
         "GROUP_ADD_ROBOT": {
+            "timestamp": 1,
+            "group_openid": "group",
+            "op_member_openid": "member",
+        },
+        "GROUP_DEL_ROBOT": {
             "timestamp": 1,
             "group_openid": "group",
             "op_member_openid": "member",
@@ -446,6 +469,9 @@ def test_event_model_families_map_to_common_events() -> None:
             "group_openid": "group",
             "member_openid": "member",
         },
+        "GUILD_MEMBER_ADD": guild_member,
+        "GUILD_MEMBER_UPDATE": guild_member,
+        "GUILD_MEMBER_REMOVE": guild_member,
         "SUBSCRIBE_MESSAGE_STATUS": {
             "result": [
                 {
@@ -462,6 +488,9 @@ def test_event_model_families_map_to_common_events() -> None:
         "CHANNEL_CREATE": {"id": "channel", "guild_id": "guild"},
         "AT_MESSAGE_CREATE": legacy_message,
         "DIRECT_MESSAGE_CREATE": legacy_message,
+        "MESSAGE_DELETE": message_delete,
+        "PUBLIC_MESSAGE_DELETE": message_delete,
+        "DIRECT_MESSAGE_DELETE": message_delete,
         "INTERACTION_CREATE": {
             "id": "interaction",
             "type": 11,
@@ -483,17 +512,60 @@ def test_event_model_families_map_to_common_events() -> None:
         expected_type = {
             "FRIEND_ADD": FriendIncreaseNoticeEvent,
             "FRIEND_DEL": FriendDecreaseNoticeEvent,
+            "GROUP_ADD_ROBOT": GroupMemberIncreaseNoticeEvent,
+            "GROUP_DEL_ROBOT": GroupMemberDecreaseNoticeEvent,
+            "GUILD_MEMBER_ADD": GuildMemberIncreaseNoticeEvent,
+            "GUILD_MEMBER_REMOVE": GuildMemberDecreaseNoticeEvent,
+            "MESSAGE_DELETE": ChannelMessageDeleteNoticeEvent,
+            "PUBLIC_MESSAGE_DELETE": ChannelMessageDeleteNoticeEvent,
+            "DIRECT_MESSAGE_DELETE": PrivateMessageDeleteNoticeEvent,
             "AT_MESSAGE_CREATE": ChannelMessageEvent,
             "DIRECT_MESSAGE_CREATE": PrivateMessageEvent,
         }.get(event_type, NoticeEvent)
         expected_detail = {
             "FRIEND_ADD": "friend_increase",
             "FRIEND_DEL": "friend_decrease",
+            "GROUP_ADD_ROBOT": "group_member_increase",
+            "GROUP_DEL_ROBOT": "group_member_decrease",
+            "GUILD_MEMBER_ADD": "guild_member_increase",
+            "GUILD_MEMBER_REMOVE": "guild_member_decrease",
+            "MESSAGE_DELETE": "channel_message_delete",
+            "PUBLIC_MESSAGE_DELETE": "channel_message_delete",
+            "DIRECT_MESSAGE_DELETE": "private_message_delete",
             "AT_MESSAGE_CREATE": "channel",
             "DIRECT_MESSAGE_CREATE": "private",
         }.get(event_type, f"qq.{event_type.lower()}")
         assert isinstance(event, expected_type), event_type
         assert event.detail_type == expected_detail, event_type
+        if isinstance(
+            event, GroupMemberIncreaseNoticeEvent | GroupMemberDecreaseNoticeEvent
+        ):
+            assert (event.user_id, event.group_id, event.operator_id) == (
+                "app",
+                "group",
+                "member",
+            )
+            assert event.sub_type == (
+                "invite" if event_type == "GROUP_ADD_ROBOT" else "kick"
+            )
+        if isinstance(
+            event, GuildMemberIncreaseNoticeEvent | GuildMemberDecreaseNoticeEvent
+        ):
+            assert (event.user_id, event.guild_id, event.operator_id) == (
+                "user",
+                "guild",
+                "operator",
+            )
+        if isinstance(event, ChannelMessageDeleteNoticeEvent):
+            assert (
+                event.user_id,
+                event.guild_id,
+                event.channel_id,
+                event.message_id,
+                event.operator_id,
+            ) == ("user", "guild", "channel", "message", "operator")
+        if isinstance(event, PrivateMessageDeleteNoticeEvent):
+            assert (event.user_id, event.message_id) == ("user", "message")
         if isinstance(event, NoticeEvent):
             assert event.model_extra is not None
             assert event.model_extra["qq_event_type"] == event_type
@@ -507,12 +579,35 @@ def test_event_model_families_map_to_common_events() -> None:
             assert event.model_extra["qq_raw"] is False
 
 
-def test_interaction_requires_data_type() -> None:
+def test_authorization_interaction_omits_data_type() -> None:
+    interaction = qq_gateway_module.QQInteraction.model_validate({
+        "id": "interaction",
+        "type": 18,
+        "data": {
+            "resolved": {
+                "authorize_data": {"opt_scene": "setting", "scope": "c2c_push"}
+            }
+        },
+        "version": 1,
+    })
+
+    assert interaction.data.type is None
+
+
+@pytest.mark.parametrize(("outer", "inner"), [(11, None), (11, 12), (18, 11)])
+def test_interaction_data_type_matches_outer_type(
+    outer: int,
+    inner: int | None,
+) -> None:
+    data: dict[str, JsonValue] = {"resolved": {}}
+    if inner is not None:
+        data["type"] = inner
+
     with pytest.raises(ValidationError):
         qq_gateway_module.QQInteraction.model_validate({
             "id": "interaction",
-            "type": 11,
-            "data": {"resolved": {}},
+            "type": outer,
+            "data": data,
             "version": 1,
         })
 

@@ -102,14 +102,14 @@ def test_keyboard_permission_rejects_mismatched_subjects(
 
 def test_keyboard_button_matches_qq_wire_contract() -> None:
     payload = {
-        "render_data": {"label": "签到", "visited_label": "已签到", "style": 1},
+        "render_data": {"label": "签到", "style": 1},
         "action": {"type": 2, "permission": {"type": 2}, "data": "/signin"},
     }
     assert (
         QQKeyboardButton.model_validate(payload).model_dump(exclude_none=True)
         == payload
     )
-    for field in ("label", "visited_label", "style"):
+    for field in ("label", "style"):
         invalid_render = dict(payload["render_data"])
         invalid_render.pop(field)
         with pytest.raises(ValidationError):

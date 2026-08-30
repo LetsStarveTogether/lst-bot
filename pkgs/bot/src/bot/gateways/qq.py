@@ -18,7 +18,7 @@ from importlib.metadata import version
 from logging import getLogger
 from re import compile as compile_regex
 from time import time
-from typing import Annotated, Literal, cast, override
+from typing import Annotated, Literal, Self, cast, override
 
 from pydantic import (
     AfterValidator,
@@ -44,15 +44,21 @@ from bot.protocol.base import Model, StrictIntLiteral
 from bot.protocol.common import BotSelf, BotStatus, Status, Version
 from bot.protocol.enums import Action, MsgSegmentType
 from bot.protocol.events import (
+    ChannelMessageDeleteNoticeEvent,
     ChannelMessageEvent,
     Event,
     FriendDecreaseNoticeEvent,
     FriendIncreaseNoticeEvent,
+    GroupMemberDecreaseNoticeEvent,
+    GroupMemberIncreaseNoticeEvent,
     GroupMessageEvent,
     GroupRequestEvent,
+    GuildMemberDecreaseNoticeEvent,
+    GuildMemberIncreaseNoticeEvent,
     MessageEvent,
     MetaEvent,
     NoticeEvent,
+    PrivateMessageDeleteNoticeEvent,
     PrivateMessageEvent,
 )
 from bot.protocol.msg import Msg, MsgInput
@@ -282,7 +288,10 @@ class QQGroupStatus(Model):
 
 
 class QQFriendAdd(QQC2CStatus):
-    scene: StrictInt | None = None
+    scene: (
+        StrictIntLiteral[Literal[1000, 1001, 1002, 1003, 1004, 2001, 2002, 2003, 2004]]
+        | None
+    ) = None
     scene_param: StrictStr | None = None
     author: QQUser | None = None
     short_code: StrictStr | None = None
@@ -323,6 +332,16 @@ class QQGroupJoinRequest(qq_api.QQJoinRequest):
     verify_info: QQJoinVerification | None = None
 
 
+class QQGuildMemberEvent(qq_api.QQMember):
+    guild_id: QQID
+    op_user_id: QQID
+
+
+class QQMessageDelete(Model):
+    message: QQLegacyChannelMessage
+    op_user: qq_api.QQIdentifiedUser
+
+
 class QQGuildEvent(qq_api.QQGuild):
     op_user_id: StrictStr | None = None
 
@@ -354,7 +373,7 @@ class QQInteractionResolved(Model):
 
 
 class QQInteractionData(Model):
-    type: StrictInt
+    type: StrictIntLiteral[Literal[11, 12, 13, 14, 15, 16]] | None = None
     resolved: QQInteractionResolved
 
 
@@ -373,6 +392,15 @@ class QQInteraction(Model):
     version: StrictInt
     application_id: StrictStr | None = None
 
+    @model_validator(mode="after")
+    def matching_data_type(self) -> Self:
+        if self.type != self.data.type and (
+            self.type not in {18, 19, 20} or self.data.type is not None
+        ):
+            msg = "data.type must match interaction type 11-16 and be omitted otherwise"
+            raise ValueError(msg)
+        return self
+
 
 type QQEventData = (
     QQC2CMessage
@@ -385,6 +413,8 @@ type QQEventData = (
     | QQGroupMember
     | QQSubscribeMessageStatus
     | QQGroupJoinRequest
+    | QQGuildMemberEvent
+    | QQMessageDelete
     | QQGuildEvent
     | QQChannelEvent
     | QQInteraction
@@ -408,6 +438,9 @@ _EVENT_DATA_MODELS: dict[str, type[Model]] = {
     "GROUP_MESSAGE_CREATE": QQGroupMessage,
     "GROUP_MEMBER_ADD": QQGroupMember,
     "GROUP_MEMBER_REMOVE": QQGroupMember,
+    "GUILD_MEMBER_ADD": QQGuildMemberEvent,
+    "GUILD_MEMBER_UPDATE": QQGuildMemberEvent,
+    "GUILD_MEMBER_REMOVE": QQGuildMemberEvent,
     "GUILD_CREATE": QQGuildEvent,
     "GUILD_UPDATE": QQGuildEvent,
     "GUILD_DELETE": QQGuildEvent,
@@ -417,6 +450,9 @@ _EVENT_DATA_MODELS: dict[str, type[Model]] = {
     "AT_MESSAGE_CREATE": QQLegacyChannelMessage,
     "MESSAGE_CREATE": QQLegacyChannelMessage,
     "DIRECT_MESSAGE_CREATE": QQLegacyChannelMessage,
+    "MESSAGE_DELETE": QQMessageDelete,
+    "PUBLIC_MESSAGE_DELETE": QQMessageDelete,
+    "DIRECT_MESSAGE_DELETE": QQMessageDelete,
 }
 
 
@@ -915,6 +951,28 @@ class QQGateway(Gateway, QQRestClient):
                 "qq_data": self._event_data_json(data),
                 "qq_raw": False,
             })
+        if isinstance(data, QQGroupStatus) and dispatch.t in {
+            "GROUP_ADD_ROBOT",
+            "GROUP_DEL_ROBOT",
+        }:
+            increase = dispatch.t == "GROUP_ADD_ROBOT"
+            notice_type = (
+                GroupMemberIncreaseNoticeEvent
+                if increase
+                else GroupMemberDecreaseNoticeEvent
+            )
+            return notice_type.model_validate({
+                "id": self._event_id(dispatch),
+                "time": self._event_time(data),
+                "self": self._self,
+                "sub_type": "invite" if increase else "kick",
+                "user_id": self._self.user_id,
+                "group_id": data.group_openid,
+                "operator_id": data.op_member_openid,
+                "qq_event_type": dispatch.t,
+                "qq_data": self._event_data_json(data),
+                "qq_raw": False,
+            })
         if isinstance(data, QQGroupJoinRequest) and data.auto_approved is None:
             verification = data.verify_info
             comment = ""
@@ -935,6 +993,47 @@ class QQGateway(Gateway, QQRestClient):
                 "qq_event_type": dispatch.t,
                 "qq_data": self._event_data_json(data),
                 "qq_raw": False,
+            })
+        if isinstance(data, QQGuildMemberEvent) and dispatch.t in {
+            "GUILD_MEMBER_ADD",
+            "GUILD_MEMBER_REMOVE",
+        }:
+            notice_type = (
+                GuildMemberIncreaseNoticeEvent
+                if dispatch.t == "GUILD_MEMBER_ADD"
+                else GuildMemberDecreaseNoticeEvent
+            )
+            return notice_type.model_validate({
+                "id": self._event_id(dispatch),
+                "time": self._event_time(data),
+                "self": self._self,
+                "sub_type": "",
+                "user_id": data.user.id,
+                "guild_id": data.guild_id,
+                "operator_id": data.op_user_id,
+                "qq_event_type": dispatch.t,
+                "qq_data": self._event_data_json(data),
+                "qq_raw": False,
+            })
+        if isinstance(data, QQMessageDelete):
+            fields = {
+                "id": self._event_id(dispatch),
+                "time": self._event_time(data),
+                "self": self._self,
+                "sub_type": "",
+                "user_id": data.message.author.id,
+                "message_id": data.message.id,
+                "qq_event_type": dispatch.t,
+                "qq_data": self._event_data_json(data),
+                "qq_raw": False,
+            }
+            if dispatch.t == "DIRECT_MESSAGE_DELETE":
+                return PrivateMessageDeleteNoticeEvent.model_validate(fields)
+            return ChannelMessageDeleteNoticeEvent.model_validate({
+                **fields,
+                "guild_id": data.message.guild_id,
+                "channel_id": data.message.channel_id,
+                "operator_id": data.op_user.id,
             })
         return NoticeEvent(
             id=self._event_id(dispatch),
