@@ -9,7 +9,6 @@ from asyncio import (
 )
 from contextlib import suppress
 from dataclasses import FrozenInstanceError
-from gc import collect
 from gzip import compress
 from io import BytesIO
 from types import SimpleNamespace
@@ -599,27 +598,22 @@ async def test_send_failure_consumes_concurrent_disconnect_exception(
     websocket = ScriptedWebSocket()
     session = manager.register(websocket)
     manager.bind_self(session, self_)
-    contexts: list[dict[str, object]] = []
+    future = get_running_loop().create_future()
 
     def fail_send(_payload: str) -> None:
         manager.unregister(session)
         raise BrokenPipeError
 
     monkeypatch.setattr(websocket, "send_text", AsyncMock(side_effect=fail_send))
-    loop = get_running_loop()
-    previous_handler = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: contexts.append(context))
-    try:
-        with pytest.raises(BrokenPipeError):
-            await manager.request(self_, lambda echo: echo)
-        collect()
-    finally:
-        loop.set_exception_handler(previous_handler)
+    loop = SimpleNamespace(create_future=lambda: future)
+    monkeypatch.setattr(base_module, "get_running_loop", lambda: loop)
+    with (
+        patch.object(future, "exception", wraps=future.exception) as exception,
+        pytest.raises(BrokenPipeError),
+    ):
+        await manager.request(self_, lambda echo: echo)
 
-    assert not any(
-        context.get("message") == "Future exception was never retrieved"
-        for context in contexts
-    )
+    exception.assert_called_once_with()
 
 
 async def test_cancelled_websocket_action_rejects_late_response() -> None:
