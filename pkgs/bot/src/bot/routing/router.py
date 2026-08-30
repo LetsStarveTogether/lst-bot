@@ -83,9 +83,10 @@ class EventRouter:
         cmds = (cmd, *aliases)
 
         def cmd_predicate(
-            event: Injected[MessageEvent],
             context: Injected[InjectionContext],
         ) -> bool:
+            if not isinstance(event := context.event, MessageEvent):
+                return False
             text = event.message.text
             for prefix in context.bot.cmd_prefixes:
                 for item in cmds:

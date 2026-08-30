@@ -1,6 +1,8 @@
+import pytest
 from bot import (
     Bot,
     Cmd,
+    Event,
     EventRouter,
     GroupMessageEvent,
     Injected,
@@ -89,3 +91,30 @@ async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
 
     assert checked == ["!p:now"]
     assert seen == ["!p:now"]
+
+
+async def test_router_cmd_ignores_extension_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bot = Bot()
+    router = EventRouter()
+
+    @router.on_cmd("ping")
+    def ping() -> None:
+        pytest.fail("extension messages cannot be commands")
+
+    bot.add_router(router)
+    gateway = recording_gateway(bot)
+    event = Event.model_validate({
+        "id": "vendor",
+        "self": {"platform": "test", "user_id": "bot"},
+        "time": 1.0,
+        "type": "message",
+        "detail_type": "vendor.message",
+        "sub_type": "",
+    })
+
+    async with bot:
+        await bot.dispatch(gateway.connection, event)
+
+    assert "Dispatch route failed" not in caplog.text
