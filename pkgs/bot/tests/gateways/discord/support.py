@@ -31,10 +31,10 @@ def gateway(pool: Pool | None = None) -> DiscordGateway:
     )
 
 
-def interaction(*, sequence: int = 1) -> DiscordGatewayPayload:
+def interaction() -> DiscordGatewayPayload:
     return DiscordGatewayPayload.model_validate({
         "op": 0,
-        "s": sequence,
+        "s": 1,
         "t": "INTERACTION_CREATE",
         "d": {
             "id": "10",
@@ -75,13 +75,12 @@ def ready_payload(session_id: str = "session") -> dict[str, JsonValue]:
 def message(
     *,
     message_id: str = "10",
-    channel_id: str = "20",
     guild_id: str | None = None,
     content: str = "hello <@3>",
 ) -> dict[str, JsonValue]:
     return {
         "id": message_id,
-        "channel_id": channel_id,
+        "channel_id": "20",
         "author": user(),
         "content": content,
         "timestamp": "2026-08-19T00:00:00Z",

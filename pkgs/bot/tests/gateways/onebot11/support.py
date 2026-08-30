@@ -47,16 +47,9 @@ def group_request_payload() -> dict[str, JsonValue]:
     }
 
 
-def action_response_payload(
-    data: JsonValue,
-    *,
-    echo: str | None = None,
-) -> dict[str, JsonValue]:
-    payload: dict[str, JsonValue] = {
+def action_response_payload(data: JsonValue) -> dict[str, JsonValue]:
+    return {
         "status": "ok",
         "retcode": Retcode.OK,
         "data": data,
     }
-    if echo is not None:
-        payload["echo"] = echo
-    return payload

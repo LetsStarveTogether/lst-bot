@@ -4,7 +4,7 @@ from pydantic import JsonValue
 SELF = BotSelf(platform="qq", user_id="10000")
 
 
-def private_message_payload(message: str = "hello") -> dict[str, JsonValue]:
+def private_message_payload() -> dict[str, JsonValue]:
     return {
         "id": "evt-private",
         "self": SELF.model_dump(mode="json"),
@@ -13,13 +13,13 @@ def private_message_payload(message: str = "hello") -> dict[str, JsonValue]:
         "detail_type": "private",
         "sub_type": "",
         "message_id": "message-1",
-        "message": [{"type": "text", "data": {"text": message}}],
-        "alt_message": message,
+        "message": [{"type": "text", "data": {"text": "hello"}}],
+        "alt_message": "hello",
         "user_id": "42",
     }
 
 
-def connect_payload(*, impl: str = "test") -> dict[str, JsonValue]:
+def connect_payload() -> dict[str, JsonValue]:
     return {
         "id": "evt-connect",
         "time": 1.0,
@@ -27,7 +27,7 @@ def connect_payload(*, impl: str = "test") -> dict[str, JsonValue]:
         "detail_type": "connect",
         "sub_type": "",
         "version": {
-            "impl": impl,
+            "impl": "test",
             "version": "1.0.0",
             "onebot_version": "12",
         },

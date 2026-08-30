@@ -78,7 +78,7 @@ def gateway_connection(
     return gateway, gateway.connection_for(gateway._self)
 
 
-def message_update(update_id: int, text: str = "hello") -> TelegramUpdate:
+def message_update(update_id: int) -> TelegramUpdate:
     return TelegramUpdate.model_validate({
         "update_id": update_id,
         "message": {
@@ -90,7 +90,7 @@ def message_update(update_id: int, text: str = "hello") -> TelegramUpdate:
                 "type": "supergroup",
                 "title": "Group",
             },
-            "text": text,
+            "text": "hello",
         },
     })
 

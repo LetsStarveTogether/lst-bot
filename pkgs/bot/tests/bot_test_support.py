@@ -20,11 +20,10 @@ def private_message_event(
     *,
     user_id: str = "42",
     event_id: str = "evt-1",
-    self_id: str = "bot",
 ) -> PrivateMessageEvent:
     return PrivateMessageEvent.model_validate({
         "id": event_id,
-        "self": {"platform": "test", "user_id": self_id},
+        "self": {"platform": "test", "user_id": "bot"},
         "time": 1.0,
         "sub_type": "",
         "message_id": f"{event_id}-message",
