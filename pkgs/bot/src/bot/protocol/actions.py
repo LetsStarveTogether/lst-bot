@@ -146,18 +146,17 @@ class ActionResponse(Model):
 
 
 def _send_msg_params_tag(value: object) -> MsgTargetTag:
-    try:
-        return MsgTargetTag(_field_value(value, "detail_type"))
-    except ValueError:
-        return MsgTargetTag.EXTENSION
+    detail_type = _field_value(value, "detail_type")
+    if detail_type in MsgTargetTag:
+        return MsgTargetTag(detail_type)
+    return MsgTargetTag.EXTENSION
 
 
 def _upload_file_params_tag(value: object) -> UploadFileTag:
     file_type = _field_value(value, "type")
-    try:
+    if file_type in UploadFileTag:
         return UploadFileTag(file_type)
-    except ValueError:
-        return UploadFileTag.EXTENSION
+    return UploadFileTag.EXTENSION
 
 
 class LatestEventsParams(ActionParamModel):
