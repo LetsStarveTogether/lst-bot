@@ -392,7 +392,10 @@ async def test_gateway_registration_freezes_after_startup_begins() -> None:
     assert late_gateway.closes == 0
 
 
-async def test_failed_close_runs_every_cleanup_and_can_be_retried() -> None:
+@pytest.mark.parametrize("error_type", [RuntimeError, CancelledError])
+async def test_failed_close_runs_every_cleanup_and_can_be_retried(
+    error_type: type[BaseException],
+) -> None:
     calls: list[str] = []
 
     class ClosingGateway(Gateway):
@@ -407,14 +410,14 @@ async def test_failed_close_runs_every_cleanup_and_can_be_retried() -> None:
             if self.fail_once:
                 self.fail_once = False
                 msg = "gateway close failed"
-                raise RuntimeError(msg)
+                raise error_type(msg)
 
     bot = Bot()
     bot.add_gateway(ClosingGateway(bot, "later"))
     bot.add_gateway(ClosingGateway(bot, "flaky", fail_once=True))
 
     await bot.start()
-    with pytest.raises(RuntimeError, match="gateway close failed"):
+    with pytest.raises(error_type, match="gateway close failed"):
         await bot.close()
 
     assert calls == ["flaky", "later"]
@@ -467,7 +470,9 @@ async def test_failed_start_rollback_must_finish_before_retry() -> None:
     assert gateway.closes == 3
 
 
-async def test_cancelled_start_rolls_back_and_can_restart() -> None:
+async def test_cancelled_start_rolls_back_and_can_restart(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     entered = Event()
     calls: list[str] = []
 
@@ -494,11 +499,13 @@ async def test_cancelled_start_rolls_back_and_can_restart() -> None:
     bot.add_gateway(OrderedGateway(bot, "second"))
 
     async with timeout(1):
+        caplog.set_level("ERROR", logger="bot.core.bot")
         start_task = create_task(bot.start())
         await entered.wait()
         start_task.cancel()
         with pytest.raises(CancelledError):
             await start_task
+        assert not caplog.records
 
         expected = [
             "start:first",
@@ -591,8 +598,9 @@ async def test_repeated_close_cancellation_stays_cancelled() -> None:
                 await release[self.index].wait()
 
     bot = Bot()
-    bot.add_gateway(BlockingGateway(bot, 0))
-    bot.add_gateway(BlockingGateway(bot, 1))
+    gateways = [BlockingGateway(bot, 0), BlockingGateway(bot, 1)]
+    for gateway in gateways:
+        bot.add_gateway(gateway)
 
     async with timeout(1):
         await bot.start()
@@ -612,3 +620,4 @@ async def test_repeated_close_cancellation_stays_cancelled() -> None:
             await closing
         assert closing.cancelled()
         await bot.close()
+        assert [gateway.closes for gateway in gateways] == [1, 1]

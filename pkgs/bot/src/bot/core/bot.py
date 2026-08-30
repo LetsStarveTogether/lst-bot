@@ -176,14 +176,7 @@ class Bot(EventRouter):
                 raise RuntimeError(msg)
             if self._running.is_set():
                 return
-            try:
-                await self._start_once()
-            except BaseException:
-                logger.exception(
-                    "bot startup failed: gateways=%s",
-                    len(self._gateways),
-                )
-                raise
+            await self._start_once()
             self._running.set()
 
     async def close(self) -> None:
@@ -268,11 +261,13 @@ class Bot(EventRouter):
         failed: list[_CleanupCallback] = []
         errors: list[BaseException] = []
         for callback in callbacks:
+            task = ensure_future(callback())
             try:
-                await await_cleanup(ensure_future(callback()))
+                await await_cleanup(task)
             except BaseException as exc:
-                failed.append(callback)
                 errors.append(exc)
+                if task.cancelled() or task.exception() is not None:
+                    failed.append(callback)
         return failed, errors
 
     async def wait_until_running(self) -> None:
