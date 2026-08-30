@@ -1,3 +1,5 @@
+from inspect import signature
+
 import pytest
 from bot import (
     Bot,
@@ -11,6 +13,10 @@ from bot import (
     admin_permission,
 )
 from bot_test_support import private_message_event, recording_gateway
+
+
+def test_injection_context_signature_is_introspectable() -> None:
+    assert "bot" in signature(InjectionContext).parameters
 
 
 async def test_falsey_callable_predicate_receives_injection() -> None:
