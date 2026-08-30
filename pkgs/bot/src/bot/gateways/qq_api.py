@@ -2092,7 +2092,6 @@ class QQRestClient:
         self.base_url = validate_https_base_url(base_url, "QQ")
         self.http_pool = http_pool
         self._token: SecretStr | None = None
-        self._token_expires_at = 0.0
         self._token_lock = Lock()
         self._closed_event = Event()
 
@@ -2142,10 +2141,10 @@ class QQRestClient:
             except ValueError as exc:
                 msg = "QQ access-token endpoint returned an invalid response"
                 raise RuntimeError(msg) from exc
-            self._token = token.access_token
             self._token_expires_at = get_running_loop().time() + max(
                 1, token.expires_in - 60
             )
+            self._token = token.access_token
             return token.access_token.get_secret_value()
 
     def invalidate_token(self, expected: str | None = None) -> None:
@@ -2154,7 +2153,6 @@ class QQRestClient:
         ):
             return
         self._token = None
-        self._token_expires_at = 0.0
 
     async def request_qq(
         self,
