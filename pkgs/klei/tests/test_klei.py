@@ -113,9 +113,9 @@ class RecordingPool:
         return response
 
 
-def lobby_row(row_id: str = "row-1") -> dict[str, JsonValue]:
+def lobby_row() -> dict[str, JsonValue]:
     return {
-        "__rowId": row_id,
+        "__rowId": "row-1",
         "host": "host-ku",
         "connected": 3,
         "platform": 1,
@@ -187,18 +187,16 @@ async def test_client_parses_official_lobbies_and_room() -> None:
     )
 
     value = client(pool)
-    lobbies = await value.get_lobby_data()
-    rooms = await value.get_room_data(((lobbies[0].row_id, region),))
+    (lobby,) = await value.get_lobby_data()
+    (room,) = await value.get_room_data(((lobby.row_id, region),))
 
-    assert len(lobbies) == 1
-    assert lobbies[0].model_dump() == {
+    assert lobby.model_dump() == {
         "row_id": "row-1",
         "host": "host-ku",
         "connected": 3,
         "region": region,
     }
-    assert len(rooms) == 1
-    assert set(rooms[0].model_dump()) == {
+    assert set(room.model_dump()) == {
         "name",
         "addr",
         "port",
@@ -331,6 +329,7 @@ async def test_non_success_http_status_consumes_body_before_failing() -> None:
         await client(pool).get_latest_versions()
 
     assert pool.responses[0].body_accessed is True
+    assert pool.responses[0].closed is True
 
 
 async def test_response_body_boundary_closes_connection(
