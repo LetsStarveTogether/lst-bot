@@ -187,11 +187,7 @@ def _websocket_role(value: str | None) -> WebSocketRole | None:
 
 
 def _event_self(data: Mapping[str, JsonValue]) -> BotSelf:
-    self_id = data.get("self_id")
-    if isinstance(self_id, bool) or not isinstance(self_id, int | str):
-        msg = "OneBot 11 event self_id must be an integer or string"
-        raise TypeError(msg)
-    return _qq_self(str(self_id))
+    return _qq_self(_id_string(data.get("self_id")))
 
 
 def _qq_self(user_id: str) -> BotSelf:
@@ -796,9 +792,7 @@ class OneBot11Gateway(Gateway):
     def _mount_http_webhook(self, server: Robyn, ingress: HttpWebhook) -> None:
         async def handle(request: Request) -> Response:
             content_type = header_value(request.headers, "Content-Type")
-            media_type = (
-                content_type.split(";", 1)[0].strip().lower() if content_type else ""
-            )
+            media_type = (content_type or "").partition(";")[0].strip().lower()
             if media_type != "application/json":
                 return empty_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
             if not _signature_matches(
@@ -876,14 +870,11 @@ class OneBot11Gateway(Gateway):
             if self._closed_event.is_set():
                 return
             request = websocket.request
-            if request is None:
-                msg = "OneBot 11 reverse WebSocket handshake is missing"
-                raise ConnectionError(msg)
+            assert request is not None  # ruff: ignore[assert] - authenticated invariant
             role = _websocket_role(header_value(request.headers, "X-Client-Role"))
             self_id = header_value(request.headers, "X-Self-ID")
-            if role is None or self_id is None:
-                msg = "OneBot 11 reverse WebSocket headers are missing"
-                raise ConnectionError(msg)
+            assert role is not None  # ruff: ignore[assert] - authenticated invariant
+            assert self_id is not None  # ruff: ignore[assert] - authenticated invariant
             await self._serve_websocket(
                 WebsocketsConnection(websocket),
                 role,

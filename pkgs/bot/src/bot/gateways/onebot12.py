@@ -377,9 +377,7 @@ class OneBot12Gateway(Gateway):
                 msg = f"OneBot 12 action request failed: HTTP {response.status}"
                 raise RuntimeError(msg)
             content_type = header_value(response.headers, "Content-Type")
-            media_type = (
-                content_type.split(";", 1)[0].strip().lower() if content_type else ""
-            )
+            media_type = (content_type or "").partition(";")[0].strip().lower()
             if media_type != "application/json":
                 msg = (
                     "OneBot 12 action response has unsupported Content-Type: "
@@ -413,9 +411,7 @@ class OneBot12Gateway(Gateway):
             ):
                 return empty_response(HTTPStatus.BAD_REQUEST)
             content_type = header_value(request.headers, "Content-Type")
-            media_type = (
-                content_type.split(";", 1)[0].strip().lower() if content_type else ""
-            )
+            media_type = (content_type or "").partition(";")[0].strip().lower()
             if media_type != "application/json":
                 return empty_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
             try:
@@ -482,9 +478,7 @@ class OneBot12Gateway(Gateway):
             if self._closed_event.is_set():
                 return
             protocol = websocket.subprotocol
-            if protocol is None:
-                msg = "OneBot 12 reverse WebSocket subprotocol was not negotiated"
-                raise ValueError(msg)
+            assert protocol is not None  # ruff: ignore[assert] - negotiated invariant
             await self._serve_websocket(
                 WebsocketsConnection(websocket),
                 expected_impl=protocol.removeprefix("12."),
