@@ -206,7 +206,7 @@ def test_current_telegram_model_boundaries() -> None:
     with pytest.raises(ValidationError):
         TelegramFile.model_validate(file | {"file_size": maximum_id + 1})
 
-    entity = {"type": "date_time", "offset": 0, "length": 1, "unix_time": 1}
+    entity = {"type": "date_time", "offset": 0, "length": 1, "unix_time": 0}
     assert (
         TelegramMessageEntity.model_validate(
             entity | {"date_time_format": "wDT"}
@@ -215,6 +215,8 @@ def test_current_telegram_model_boundaries() -> None:
     )
     with pytest.raises(ValidationError):
         TelegramMessageEntity.model_validate(entity | {"date_time_format": "rw"})
+    with pytest.raises(ValidationError):
+        TelegramMessageEntity.model_validate(entity | {"unix_time": -1})
 
     minimum_int32 = -(2**31)
     maximum_int32 = 2**31 - 1

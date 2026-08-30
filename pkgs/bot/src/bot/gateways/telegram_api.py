@@ -319,7 +319,7 @@ class TelegramMessageEntity(Model):
     user: TelegramUser | None = None
     language: StrictStr | None = None
     custom_emoji_id: StrictStr | None = None
-    unix_time: Int32 | None = None
+    unix_time: NonNegativeInt | None = None
     date_time_format: (
         Annotated[StrictStr, Field(pattern=r"^(?:r|w?[dD]?[tT]?)$")] | None
     ) = None
