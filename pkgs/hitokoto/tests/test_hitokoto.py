@@ -7,10 +7,12 @@ from asyncio import (
     create_task,
     gather,
     get_running_loop,
+    sleep,
     timeout,
 )
 from collections.abc import Mapping
 from contextlib import closing
+from gc import collect
 from json import dumps
 from pathlib import Path
 from time import time
@@ -250,6 +252,36 @@ async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
         version_url,
         f"{BUNDLE_URL}sentences/a.json",
     ]
+
+
+async def test_cancelled_sole_read_consumes_failed_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    version_url = f"{BUNDLE_URL}version.json"
+    loop = get_running_loop()
+    version = loop.create_future()
+    pool = RecordingPool({version_url: version})
+    client = HitokotoClient(http_pool=pool, cache_path=tmp_path / "hitokoto.db")
+    reports: list[dict[str, object]] = []
+    monkeypatch.setattr(loop, "call_exception_handler", reports.append)
+    caller = create_task(client.get_hitokoto())
+    await pool.request_started.wait()
+    refresh = client._refresh_task  # ruff: ignore[private-member-access] - lifecycle regression
+    assert refresh is not None
+    completed = Event()
+    refresh.add_done_callback(lambda _task: completed.set())
+
+    caller.cancel()
+    with pytest.raises(CancelledError):
+        await caller
+    version.set_result(RecordingResponse(503, b"error"))
+    await completed.wait()
+    del caller, refresh, client
+    collect()
+    await sleep(0)
+
+    assert reports == []
 
 
 async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:

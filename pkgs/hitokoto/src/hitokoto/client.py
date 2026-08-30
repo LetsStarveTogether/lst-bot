@@ -1,4 +1,4 @@
-from asyncio import Task, create_task, shield, timeout
+from asyncio import Task, create_task, timeout, wait
 from contextlib import suppress
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
@@ -20,6 +20,11 @@ _HITOKOTO_BUNDLE = TypeAdapter(
     Annotated[list[Hitokoto], Field(min_length=1)],
 )
 logger = getLogger(__name__)
+
+
+def _consume_exception(task: Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 class _BundleSentenceMeta(BaseModel):
@@ -47,14 +52,16 @@ class HitokotoClient:
             self._refresh_task = None
         with suppress(Exception):
             return await read_cached_hitokoto(self.cache_path, fresh=True)
+        task = self._refresh_task
+        if task is None:
+            task = self._refresh_task = create_task(
+                self._refresh_cache(),
+                name="hitokoto-cache-refresh",
+            )
+            task.add_done_callback(_consume_exception)
         try:
-            task = self._refresh_task
-            if task is None:
-                task = self._refresh_task = create_task(
-                    self._refresh_cache(),
-                    name="hitokoto-cache-refresh",
-                )
-            await shield(task)
+            await wait((task,))
+            await task
             return await read_cached_hitokoto(self.cache_path)
         except Exception as error:
             try:
