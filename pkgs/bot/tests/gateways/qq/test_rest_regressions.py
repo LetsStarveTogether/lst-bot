@@ -100,9 +100,10 @@ def test_keyboard_permission_rejects_mismatched_subjects(
         QQKeyboardPermission.model_validate({"type": permission_type, **subjects})
 
 
-def test_keyboard_button_matches_qq_wire_contract() -> None:
+@pytest.mark.parametrize("style", [0, 1, 3, 4])
+def test_keyboard_button_matches_qq_wire_contract(style: int) -> None:
     payload = {
-        "render_data": {"label": "签到", "style": 1},
+        "render_data": {"label": "签到", "style": style},
         "action": {"type": 2, "permission": {"type": 2}, "data": "/signin"},
     }
     assert (
@@ -114,6 +115,10 @@ def test_keyboard_button_matches_qq_wire_contract() -> None:
         invalid_render.pop(field)
         with pytest.raises(ValidationError):
             QQKeyboardButton.model_validate(payload | {"render_data": invalid_render})
+    with pytest.raises(ValidationError):
+        QQKeyboardButton.model_validate(
+            payload | {"render_data": {"label": "签到", "style": 2}},
+        )
 
 
 def test_response_models_accept_current_qq_wire_values() -> None:

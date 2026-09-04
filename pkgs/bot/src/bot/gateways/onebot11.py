@@ -307,19 +307,22 @@ class OneBot11GroupBanNotice(OneBot11NoticeEvent):
     group_id: OneBot11Id
     operator_id: OneBot11Id
     user_id: OneBot11Id
-    duration: Annotated[StrictInt, Field(ge=0)]
+    duration: Annotated[StrictInt64, Field(ge=-1)]
 
 
 class OneBot11NotifyNotice(OneBot11NoticeEvent):
     notice_type: Literal["notify"] = "notify"
     sub_type: Literal["poke", "lucky_king", "honor"]
-    group_id: OneBot11Id
+    group_id: OneBot11Id | None = Field(default=None, exclude_if=is_none)
     user_id: OneBot11Id
     target_id: OneBot11Id | None = None
     honor_type: StrictStr | None = None
 
     @model_validator(mode="after")
     def require_subtype_fields(self) -> Self:
+        if self.sub_type != "poke" and self.group_id is None:
+            msg = f"OneBot 11 notify.{self.sub_type} requires group_id"
+            raise ValueError(msg)
         if self.sub_type in {"poke", "lucky_king"} and self.target_id is None:
             msg = f"OneBot 11 notify.{self.sub_type} requires target_id"
             raise ValueError(msg)
@@ -364,7 +367,6 @@ _NOTICE_EVENT_MODELS: Mapping[str, type[OneBot11NoticeEvent]] = {
     "group_admin": OneBot11GroupAdminNotice,
     "group_ban": OneBot11GroupBanNotice,
     "group_upload": OneBot11GroupUploadNotice,
-    "notify": OneBot11NotifyNotice,
 }
 
 
@@ -379,6 +381,13 @@ def _validate_ob11_event(data: Mapping[str, JsonValue]) -> OneBot11Event:
             if isinstance(notice_type, str)
             else OneBot11NoticeEvent
         )
+        sub_type = data.get("sub_type")
+        if (
+            notice_type == "notify"
+            and isinstance(sub_type, str)
+            and sub_type in {"poke", "lucky_king", "honor"}
+        ):
+            model = OneBot11NotifyNotice
     elif post_type == "request":
         model = (
             OneBot11GroupRequestEvent

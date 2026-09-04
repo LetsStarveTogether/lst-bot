@@ -15,7 +15,7 @@ from bot import (
 )
 from bot.gateways import onebot11 as onebot11_module
 from bot.gateways.onebot11 import decode_event
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from .support import private_msg_payload
 
@@ -96,6 +96,12 @@ def test_event_time_is_int64(time: JsonValue) -> None:
             id="group-unban",
         ),
         pytest.param(
+            "group_ban",
+            {"sub_type": "ban", "operator_id": 7, "duration": -1},
+            "qq.group_ban",
+            id="whole-group-ban",
+        ),
+        pytest.param(
             "notify",
             {"sub_type": "poke", "target_id": 7},
             "qq.notify",
@@ -161,7 +167,7 @@ def test_official_extension_notices_are_validated_and_preserved(
         ),
         pytest.param(
             "group_ban",
-            {"sub_type": "ban", "operator_id": 7, "duration": -1},
+            {"sub_type": "ban", "operator_id": 7, "duration": -2},
             id="group-ban-negative-duration",
         ),
         pytest.param(
@@ -190,6 +196,46 @@ def test_unknown_notice_remains_a_notice_event() -> None:
     assert type(converted) is NoticeEvent
     assert converted.detail_type == "qq.vendor_notice"
     assert extra(converted)["vendor_value"] == 1
+
+
+@pytest.mark.parametrize("sub_type", [[], {}])
+def test_notify_subtype_requires_string(sub_type: JsonValue) -> None:
+    with pytest.raises(ValidationError, match="sub_type"):
+        event(notice_payload("notify", sub_type=sub_type))
+
+
+def test_private_poke_preserves_absent_group_id() -> None:
+    converted = event(
+        notice_payload("notify", sub_type="poke", user_id=42, target_id=7)
+    )
+
+    assert converted.detail_type == "qq.notify"
+    assert converted.sub_type == "poke"
+    assert extra(converted)["target_id"] == "7"
+    assert "group_id" not in extra(converted)
+
+
+@pytest.mark.parametrize("sub_type", ["title", "vendor_notify"])
+def test_unknown_notify_subtype_preserves_extension_fields(sub_type: str) -> None:
+    converted = event(group_notice_payload("notify", sub_type=sub_type, title="test"))
+
+    assert converted.detail_type == "qq.notify"
+    assert converted.sub_type == sub_type
+    assert extra(converted)["title"] == "test"
+
+
+@pytest.mark.parametrize("sub_type", ["lucky_king", "honor"])
+def test_group_notify_requires_group_id(sub_type: str) -> None:
+    with pytest.raises(ValueError, match="requires group_id"):
+        event(
+            notice_payload(
+                "notify",
+                sub_type=sub_type,
+                user_id=42,
+                target_id=7,
+                honor_type="talkative",
+            )
+        )
 
 
 @pytest.mark.parametrize(
