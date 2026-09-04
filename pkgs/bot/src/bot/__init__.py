@@ -54,6 +54,7 @@ from .routing import (
     Cmd,
     EventRouter,
     admin_permission,
+    configured_admin_permission,
 )
 
 __all__ = [
@@ -110,4 +111,5 @@ __all__ = [
     "UserEvent",
     "Version",
     "admin_permission",
+    "configured_admin_permission",
 ]

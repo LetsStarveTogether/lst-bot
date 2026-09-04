@@ -113,11 +113,31 @@ class EventRouter:
         self.routes.sort(key=_ROUTE_PRIORITY_KEY)
 
 
+def _is_anonymous_group_message(event: UserEvent) -> bool:
+    if not isinstance(event, GroupMessageEvent) or event.self_.platform != "qq":
+        return False
+    anonymous = (event.model_extra or {}).get("anonymous")
+    return event.sub_type == "anonymous" or (
+        isinstance(anonymous, dict) and bool(anonymous)
+    )
+
+
+def configured_admin_permission(
+    event: Injected[UserEvent],
+    context: Injected[InjectionContext],
+) -> bool:
+    return not _is_anonymous_group_message(
+        event
+    ) and event.user_id in context.bot.admin_ids.get(event.self_.platform, ())
+
+
 def admin_permission(
     event: Injected[UserEvent],
     context: Injected[InjectionContext],
 ) -> bool:
-    if event.user_id in context.bot.admin_ids.get(event.self_.platform, ()):
+    if _is_anonymous_group_message(event):
+        return False
+    if configured_admin_permission(event, context):
         return True
 
     sender = (event.model_extra or {}).get("sender")

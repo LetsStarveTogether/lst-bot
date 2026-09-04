@@ -11,6 +11,7 @@ from bot import (
     InjectionContext,
     MessageEvent,
     admin_permission,
+    configured_admin_permission,
 )
 from bot_test_support import private_message_event, recording_gateway
 
@@ -67,6 +68,40 @@ def test_admin_permission_rejects_untrusted_sender_roles() -> None:
         GroupMessageEvent.model_validate(payload),
         InjectionContext(bot),
     )
+
+
+@pytest.mark.parametrize(
+    ("platform", "sub_type", "anonymous", "allowed"),
+    [
+        ("qq", "normal", None, True),
+        ("qq", "anonymous", None, False),
+        ("qq", "normal", {"id": "8", "name": "anon", "flag": "f"}, False),
+        ("test", "anonymous", None, True),
+    ],
+)
+def test_anonymous_qq_messages_cannot_claim_admin_identity(
+    platform: str,
+    sub_type: str,
+    anonymous: dict[str, str] | None,
+    allowed: bool,
+) -> None:
+    payload = private_message_event("hello").model_dump(mode="json")
+    payload |= {
+        "self": {"platform": platform, "user_id": "bot"},
+        "detail_type": "group",
+        "sub_type": sub_type,
+        "group_id": "group",
+        "user_id": "80000000",
+        "sender": {"user_id": "80000000", "role": "owner"},
+        "anonymous": anonymous,
+    }
+    event = GroupMessageEvent.model_validate(payload)
+    configured = InjectionContext(Bot(admin_ids={platform: {"80000000"}}))
+
+    assert configured_admin_permission(event, configured) is allowed
+    assert admin_permission(event, configured) is allowed
+    assert admin_permission(event, InjectionContext(Bot())) is allowed
+    assert not configured_admin_permission(event, InjectionContext(Bot()))
 
 
 async def test_router_cmd_aliases_do_not_match_partial_tokens() -> None:
