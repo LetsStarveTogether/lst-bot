@@ -86,7 +86,10 @@ class CronJob:
         tasks = tuple(
             task for task in (self._runner, self._running) if task is not None
         )
-        if current_task() in tasks:
+        owner = CURRENT_SCHEDULER_BOT.get()
+        if current_task() in tasks or (
+            owner is not None and owner[1] in tasks and not owner[1].done()
+        ):
             msg = "Scheduled jobs cannot close themselves"
             raise RuntimeError(msg)
         self._closing = True

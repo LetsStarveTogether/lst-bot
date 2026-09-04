@@ -293,6 +293,8 @@ async def test_cron_handler_cannot_close_its_bot() -> None:
         assert bot.scheduler._running  # ruff: ignore[private-member-access]
         with pytest.raises(RuntimeError, match="cannot close themselves"):
             await bot.scheduler.jobs[0].close()
+        with pytest.raises(RuntimeError, match="cannot close themselves"):
+            await create_task(bot.scheduler.jobs[0].close())
         background = create_task(close_later())
         rejected.set()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import CancelledError, current_task
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import isawaitable, signature
@@ -56,6 +57,8 @@ def inject(func: Callable) -> InjectedCall:
         dependencies.append((name, dependency))
 
     async def call(context: InjectionContext) -> object:
+        if (task := current_task()) is not None and task.cancelling():
+            raise CancelledError
         value = func(**{
             name: context.resolve(dependency) for name, dependency in dependencies
         })

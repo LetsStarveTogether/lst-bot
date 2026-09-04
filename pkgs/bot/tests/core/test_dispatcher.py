@@ -9,15 +9,17 @@ from asyncio import (
     timeout,
     wait,
 )
+from contextlib import suppress
 from contextvars import ContextVar
 from datetime import timedelta
 from typing import override
 
 import pytest
-from bot import Bot, BotSelf, Injected, PrivateMessageEvent
+from bot import ActionResponse, Bot, BotSelf, Connection, Injected, PrivateMessageEvent
 from bot.core.bot import (
     _CURRENT_DISPATCHER,  # ruff: ignore[import-private-name] - lifetime regression
 )
+from bot.protocol.actions import ActionParamModel
 from bot_test_support import RecordingGateway, private_message_event
 
 _REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="missing")
@@ -406,3 +408,55 @@ async def test_close_cancels_handlers_before_closing_gateways() -> None:
             await dispatch
 
     assert order == ["handler cancelled", "gateway closed"]
+
+
+@pytest.mark.parametrize("cancel_at", ["predicate", "handler", "action"])
+async def test_close_stops_dispatch_after_a_callback_swallows_cancellation(
+    cancel_at: str,
+) -> None:
+    bot = Bot(dispatch_timeout=None)
+    started = Event()
+    seen: list[str] = []
+
+    async def step(name: str) -> None:
+        seen.append(name)
+        if name == cancel_at and not started.is_set():
+            started.set()
+            with suppress(CancelledError):
+                await Event().wait()
+
+    class SwallowingGateway(RecordingGateway):
+        @override
+        async def request_action(
+            self,
+            connection: Connection,
+            action: str,
+            params: ActionParamModel,
+        ) -> ActionResponse:
+            _ = connection, action, params
+            await step("action")
+            return ActionResponse.ok()
+
+    gateway = SwallowingGateway(bot)
+
+    async def predicate() -> bool:
+        await step("predicate")
+        return True
+
+    @bot.on_msg(predicate)
+    async def handle() -> list[str]:
+        await step("handler")
+        return ["first", "second"]
+
+    @bot.on_msg()
+    def later() -> None:
+        seen.append("later")
+
+    async with timeout(1), bot:
+        dispatch = create_task(bot.dispatch(gateway.connection, event("event")))
+        await started.wait()
+        await bot.close()
+        with pytest.raises(CancelledError):
+            await dispatch
+
+    assert seen == ["predicate", "handler", "action"][: seen.index(cancel_at) + 1]

@@ -505,6 +505,8 @@ class Bot(EventRouter):
     ) -> None:
         values = value if isinstance(value, list | tuple) else (value,)
         for item in values:
+            if (task := current_task()) is not None and task.cancelling():
+                raise CancelledError
             action = ReturnAction.message(item) if isinstance(item, str | Msg) else item
             if not isinstance(action, ReturnAction | ActionCall):
                 msg = f"Unsupported handler return value: {type(action).__name__}"
