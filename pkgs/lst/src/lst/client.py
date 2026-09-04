@@ -1,11 +1,25 @@
+import os
 from collections.abc import Iterable
 from logging import getLogger
 from pathlib import Path
+from select import PIPE_BUF
+from stat import S_ISFIFO
 from typing import Any
 
 from pystemd.systemd1 import Manager
 
 logger = getLogger(__name__)
+
+
+def validate_room_ids(room_ids: Iterable[str]) -> list[str]:
+    values = list(room_ids)
+    if not values or any(
+        not isinstance(value, str) or not value.isascii() or not value.isdecimal()
+        for value in values
+    ):
+        msg = "room ids must be nonempty ASCII decimal strings"
+        raise ValueError(msg)
+    return list(dict.fromkeys(values))
 
 
 class LstClient:
@@ -22,28 +36,39 @@ class LstClient:
         self.systemd_mode = systemd_mode
         self._systemd_manager = systemd_manager
 
-    def send_console_command(self, room_ids: Iterable[int], command: str) -> None:
-        room_values = tuple(room_ids)
+    def send_console_command(self, room_ids: Iterable[str], command: str) -> None:
+        room_values = validate_room_ids(room_ids)
+        payload = (command if command.endswith("\n") else f"{command}\n").encode()
+        if len(payload) > PIPE_BUF:
+            msg = f"DST console command exceeds {PIPE_BUF} bytes"
+            raise ValueError(msg)
         logger.info(
             "send DST console command: %s (%s)",
-            ",".join(str(room_id) for room_id in room_values),
+            ",".join(room_values),
             command,
         )
-        payload = command if command.endswith("\n") else f"{command}\n"
         for room_id in room_values:
-            console_path = self.data_path / str(room_id) / "console"
+            console_path = self.data_path / room_id / "console"
             logger.debug("write DST console command: %s", console_path)
-            console_path.write_text(payload, encoding="utf-8")
+            descriptor = os.open(console_path, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                if not S_ISFIFO(os.fstat(descriptor).st_mode):
+                    msg = f"DST console is not a FIFO: {console_path}"
+                    raise OSError(msg)
+                # A nonblocking write of at most PIPE_BUF bytes is all-or-nothing.
+                os.write(descriptor, payload)
+            finally:
+                os.close(descriptor)
 
-    def restart_rooms(self, room_ids: Iterable[int]) -> None:
+    def restart_rooms(self, room_ids: Iterable[str]) -> None:
+        room_values = validate_room_ids(room_ids)
         if self._systemd_manager is None:
             manager = Manager()
             manager.load()
             self._systemd_manager = manager.Manager
-        room_values = tuple(room_ids)
         logger.info(
             "restart DST rooms: %s",
-            ",".join(str(room_id) for room_id in room_values),
+            ",".join(room_values),
         )
         for room_id in room_values:
             unit = self.service_template_name + f"@{room_id}.service".encode()

@@ -1,22 +1,16 @@
+from functools import partial
 from logging import getLogger
 from operator import attrgetter
 from re import search
 
-from bot import Bot, Cmd, EventRouter, Injected, UserEvent
+from bot import Cmd, EventRouter, Injected, configured_admin_permission
 from klei import KleiClient, RoomData
-from lst import LstClient
+from lst import LstClient, validate_room_ids
 
 from .settings import Settings
 
 logger = getLogger(__name__)
 router = EventRouter()
-
-
-def _configured_admin(
-    event: Injected[UserEvent],
-    bot: Injected[Bot],
-) -> bool:
-    return event.user_id in bot.admin_ids.get(event.self_.platform, ())
 
 
 def format_lobby_data(data: RoomData) -> str:
@@ -39,15 +33,8 @@ def format_lobby_data(data: RoomData) -> str:
     return f"{mark:3}{player_count:7}{season + day:7}{data.name}"
 
 
-def parse_room_ids(value: str) -> list[int]:
-    try:
-        room_ids = list(dict.fromkeys(map(int, value.split(","))))
-    except ValueError:
-        room_ids = []
-    if not room_ids or min(room_ids) <= 0:
-        msg = "room ids must be comma-separated positive integers"
-        raise ValueError(msg)
-    return room_ids
+def parse_room_ids(value: str) -> list[str]:
+    return validate_room_ids(item.strip() for item in value.split(","))
 
 
 async def get_host_rooms(
@@ -78,57 +65,47 @@ async def rooms(
     return "\n".join(format_lobby_data(room) for room in room_data_list)
 
 
-@router.on_cmd("房间存档", _configured_admin)
-def save_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
+def control_room(
+    operation: str,
+    cmd: Injected[Cmd],
+    lc: Injected[LstClient],
+) -> str:
+    usage = f"用法：{cmd.raw} 000,020,100"
+    command = {
+        "存档": "c_save()",
+        "回档": None,
+        "重启": None,
+        "重置": "c_regenerateworld()",
+    }[operation]
+    room_ids_text = cmd.arg
+    if operation == "回档":
+        usage += " 2"
+        try:
+            room_ids_text, snapshots_text = cmd.arg.rsplit(maxsplit=1)
+            snapshots = int(snapshots_text)
+        except ValueError:
+            return usage
+        if snapshots < 0:
+            return usage
+        command = f"c_rollback({snapshots})"
     try:
-        room_ids = parse_room_ids(cmd.arg)
-    except ValueError:
-        return f"用法：{cmd.raw} 1,2,4"
-
-    lc.send_console_command(room_ids, "c_save()")
-    return f"已存档 {room_ids}"
-
-
-@router.on_cmd("房间回档", _configured_admin)
-def rollback_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
-    usage = f"用法：{cmd.raw} 1,2,4 2"
-    try:
-        room_ids_text, snapshots_text = cmd.arg.split()
         room_ids = parse_room_ids(room_ids_text)
-        snapshots = int(snapshots_text)
     except ValueError:
         return usage
-    if snapshots < 0:
-        return usage
 
-    lc.send_console_command(room_ids, f"c_rollback({snapshots})")
-    return f"已回档 {snapshots} 个存档点 {room_ids}"
-
-
-@router.on_cmd("房间重启", _configured_admin)
-def restart_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
+    targets = ",".join(room_ids)
     try:
-        room_ids = parse_room_ids(cmd.arg)
-    except ValueError:
-        return f"用法：{cmd.raw} 1,2,4"
-
-    try:
-        lc.restart_rooms(room_ids)
+        if command is None:
+            lc.restart_rooms(room_ids)
+        else:
+            lc.send_console_command(room_ids, command)
     except Exception:
-        logger.exception(
-            "restart DST rooms failed: %s",
-            ",".join(map(str, room_ids)),
-        )
-        return f"重启失败：{room_ids}"
-    return f"已重启 {room_ids}"
+        logger.exception("DST room %s failed: %s", operation, targets)
+        return f"{operation}未全部完成：{targets}，请检查房间状态"
+    return f"已发送{operation}请求：{targets}"
 
 
-@router.on_cmd("房间重置", _configured_admin)
-def regenerate_room(cmd: Injected[Cmd], lc: Injected[LstClient]) -> str:
-    try:
-        room_ids = parse_room_ids(cmd.arg)
-    except ValueError:
-        return f"用法：{cmd.raw} 1,2,4"
-
-    lc.send_console_command(room_ids, "c_regenerateworld()")
-    return f"已重置 {room_ids}"
+for operation in ("存档", "回档", "重启", "重置"):
+    router.on_cmd(f"房间{operation}", configured_admin_permission)(
+        partial(control_room, operation),
+    )

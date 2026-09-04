@@ -1,5 +1,4 @@
-from collections.abc import Callable
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 from bot import Bot, BotSelf, Cmd, GroupMessageEvent
@@ -9,14 +8,11 @@ from lst import LstClient
 from support import lobby_data, room_data
 
 from lst_bot.rooms import (
+    control_room,
     format_lobby_data,
     parse_room_ids,
-    regenerate_room,
-    restart_room,
-    rollback_room,
     rooms,
     router,
-    save_room,
 )
 from lst_bot.settings import Settings
 
@@ -24,20 +20,20 @@ from lst_bot.settings import Settings
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("1", [1]),
-        ("1, 3,5", [1, 3, 5]),
-        ("1,3,1,5", [1, 3, 5]),
+        ("1", ["1"]),
+        ("000, 020,100", ["000", "020", "100"]),
+        ("1,3,1,5", ["1", "3", "5"]),
     ],
     ids=("single", "list", "stable-deduplication"),
 )
-def test_parse_room_ids(value: str, expected: list[int]) -> None:
+def test_parse_room_ids(value: str, expected: list[str]) -> None:
     assert parse_room_ids(value) == expected
 
 
 @pytest.mark.parametrize(
     "value",
-    ["  , ", "1-3", "0", "-1", "1,,2"],
-    ids=("empty", "range", "zero", "negative", "empty-item"),
+    ["  , ", "1-3", "../1", "-1", "1,,2"],
+    ids=("empty", "range", "path", "negative", "empty-item"),
 )
 def test_parse_room_ids_rejects_invalid_input(value: str) -> None:
     with pytest.raises(ValueError, match="room id"):
@@ -79,72 +75,65 @@ async def test_rooms_command_uses_settings_and_klei_dependency() -> None:
 
 
 @pytest.mark.parametrize(
-    ("handler", "arg", "method_name", "expected_args", "expected_reply"),
+    ("operation", "arg", "expected_call"),
     [
         (
-            save_room,
-            "1,3,4",
-            "send_console_command",
-            ([1, 3, 4], "c_save()"),
-            "已存档 [1, 3, 4]",
+            "存档",
+            "000,020,100",
+            call.send_console_command(["000", "020", "100"], "c_save()"),
         ),
         (
-            rollback_room,
-            "1,3,4 2",
-            "send_console_command",
-            ([1, 3, 4], "c_rollback(2)"),
-            "已回档 2 个存档点 [1, 3, 4]",
+            "回档",
+            "000, 020, 100 2",
+            call.send_console_command(["000", "020", "100"], "c_rollback(2)"),
         ),
         (
-            restart_room,
-            "1,3,4",
-            "restart_rooms",
-            ([1, 3, 4],),
-            "已重启 [1, 3, 4]",
+            "重启",
+            "000,020,100",
+            call.restart_rooms(["000", "020", "100"]),
         ),
         (
-            regenerate_room,
-            "1,3,4",
-            "send_console_command",
-            ([1, 3, 4], "c_regenerateworld()"),
-            "已重置 [1, 3, 4]",
+            "重置",
+            "000,020,100",
+            call.send_console_command(["000", "020", "100"], "c_regenerateworld()"),
         ),
     ],
     ids=("save", "rollback", "restart", "regenerate"),
 )
 def test_room_commands_dispatch_to_lst(
-    handler: Callable[[Cmd, LstClient], str],
+    operation: str,
     arg: str,
-    method_name: str,
-    expected_args: tuple[object, ...],
-    expected_reply: str,
+    expected_call: object,
 ) -> None:
     client = Mock(spec_set=LstClient)
-    reply = handler(Cmd(raw="", arg=arg), client)
+    reply = control_room(operation, Cmd(raw=f"/房间{operation}", arg=arg), client)
 
-    method = getattr(client, method_name)
-    method.assert_called_once_with(*expected_args)
-    assert reply == expected_reply
+    assert client.method_calls == [expected_call]
+    assert reply == f"已发送{operation}请求：000,020,100"
 
 
-def test_restart_room_hides_internal_error() -> None:
+@pytest.mark.parametrize("operation", ["存档", "回档", "重启", "重置"])
+def test_room_commands_report_failure_without_internal_details(operation: str) -> None:
     client = Mock(spec_set=LstClient)
+    client.send_console_command.side_effect = OSError("internal details")
     client.restart_rooms.side_effect = RuntimeError("internal details")
-    assert restart_room(Cmd(raw="", arg="1"), client) == "重启失败：[1]"
-    client.restart_rooms.assert_called_once_with([1])
+    arg = "020 2" if operation == "回档" else "020"
+    assert control_room(operation, Cmd(raw="", arg=arg), client) == (
+        f"{operation}未全部完成：020，请检查房间状态"
+    )
 
 
 def test_rollback_room_rejects_negative_snapshot_counts() -> None:
     client = Mock(spec_set=LstClient)
 
-    assert rollback_room(Cmd(raw="/房间回档", arg="1 0"), client) == (
-        "已回档 0 个存档点 [1]"
+    assert control_room("回档", Cmd(raw="/房间回档", arg="020 0"), client) == (
+        "已发送回档请求：020"
     )
-    client.send_console_command.assert_called_once_with([1], "c_rollback(0)")
+    client.send_console_command.assert_called_once_with(["020"], "c_rollback(0)")
     client.reset_mock()
 
-    assert rollback_room(Cmd(raw="/房间回档", arg="1 -1"), client) == (
-        "用法：/房间回档 1,2,4 2"
+    assert control_room("回档", Cmd(raw="/房间回档", arg="020 -1"), client) == (
+        "用法：/房间回档 000,020,100 2"
     )
     assert client.method_calls == []
 
@@ -161,7 +150,7 @@ def test_rollback_room_rejects_negative_snapshot_counts() -> None:
 async def test_room_admin_commands_require_configured_admin(message: str) -> None:
     client = Mock(spec_set=LstClient)
     bot = Bot(
-        admin_ids={"test": {"configured-admin"}},
+        admin_ids={"test": {"configured-admin"}, "qq": {"configured-admin"}},
         dependencies={LstClient: client},
     )
     bot.add_router(router)
@@ -182,16 +171,24 @@ async def test_room_admin_commands_require_configured_admin(message: str) -> Non
         user_id="configured-admin",
         event_id="other-platform",
     ).model_copy(update={"self_": BotSelf(platform="other", user_id="bot")})
+    anonymous_admin = GroupMessageEvent.model_validate(
+        group_admin
+        | {
+            "id": "anonymous-admin",
+            "self": {"platform": "qq", "user_id": "bot"},
+            "user_id": "configured-admin",
+            "sub_type": "anonymous",
+            "sender": {"user_id": "configured-admin", "role": "owner"},
+        }
+    )
 
     async with bot:
-        await bot.dispatch(
-            gateway.connection,
+        for event in (
             GroupMessageEvent.model_validate(group_admin),
-        )
-        await bot.dispatch(
-            gateway.connection_for(other_platform.self_),
             other_platform,
-        )
+            anonymous_admin,
+        ):
+            await bot.dispatch(gateway.connection_for(event.self_), event)
         assert client.method_calls == []
         assert gateway.actions == []
 
