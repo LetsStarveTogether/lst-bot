@@ -2,6 +2,8 @@ from asyncio import (
     FIRST_COMPLETED,
     CancelledError,
     Future,
+    Lock,
+    Task,
     create_task,
     gather,
     get_running_loop,
@@ -15,7 +17,7 @@ from dataclasses import dataclass, field
 from hmac import compare_digest
 from logging import getLogger
 from types import TracebackType
-from typing import TYPE_CHECKING, Annotated, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Protocol, Self, override
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -36,6 +38,7 @@ from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
 from websockets.asyncio.client import connect
 from websockets.asyncio.connection import Connection as NativeWebSocketConnection
+from websockets.asyncio.server import Server
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
 from bot._tasks import await_cleanup
@@ -122,7 +125,11 @@ async def run_while_open[T](
     closed_event: AsyncEvent,
     ensure_open: Callable[[AsyncEvent], None],
 ) -> T:
-    operation_task = create_task(operation)
+    async def run() -> T:
+        ensure_open(closed_event)
+        return await operation
+
+    operation_task = create_task(run())
     closed_task = create_task(closed_event.wait())
     try:
         await wait((operation_task, closed_task), return_when=FIRST_COMPLETED)
@@ -133,7 +140,12 @@ async def run_while_open[T](
     finally:
         closed_task.cancel()
         operation_task.cancel()
-        await await_cleanup(gather(closed_task, operation_task, return_exceptions=True))
+        try:
+            await await_cleanup(
+                gather(closed_task, operation_task, return_exceptions=True)
+            )
+        finally:
+            operation.close()
 
 
 class RobynServer(Protocol):
@@ -555,6 +567,104 @@ class WebSocketActionManager:
             (session for session in reversed(self._sessions) if key in session.selfs),
             None,
         )
+
+
+class OneBotGateway(Gateway):
+    def __init__(
+        self,
+        bot: Bot,
+        *,
+        action: HttpAction | WebSocketAction | None,
+        access_token: AccessToken,
+        websocket_connector: WebSocketConnector | None,
+    ) -> None:
+        super().__init__(bot)
+        self.action_backend = action
+        self.access_token = access_token_value(access_token)
+        self._ws_actions = (
+            WebSocketActionManager(action.timeout)
+            if isinstance(action, WebSocketAction)
+            else None
+        )
+        self._websocket_connector = (
+            connect_websocket if websocket_connector is None else websocket_connector
+        )
+        self._forward_tasks: list[Task[None]] = []
+        self._reverse_servers: list[Server] = []
+        self._reverse_tasks: set[Task[None]] = set()
+        self._lifecycle_lock = Lock()
+        self._started = False
+        self._closed_event = AsyncEvent()
+
+    @property
+    def authorization_headers(self) -> dict[str, str] | None:
+        if self.access_token is None:
+            return None
+        return {"Authorization": f"Bearer {self.access_token}"}
+
+    @override
+    async def start(self) -> None:
+        async with self._lifecycle_lock:
+            if self._started:
+                return
+            if self._closed_event.is_set():
+                await await_cleanup(create_task(self._finish_close()))
+            self._closed_event = AsyncEvent()
+            try:
+                await self._start_transports()
+            except BaseException as startup_error:
+                self._closed_event.set()
+                try:
+                    await await_cleanup(create_task(self._finish_close()))
+                except BaseException as cleanup_error:
+                    msg = f"{self} startup and cleanup failed"
+                    raise BaseExceptionGroup(
+                        msg,
+                        [startup_error, cleanup_error],
+                    ) from None
+                raise
+            self._started = True
+
+    async def _start_transports(self) -> None:
+        raise NotImplementedError
+
+    @override
+    async def close(self) -> None:
+        async with self._lifecycle_lock:
+            self._closed_event.set()
+            finishing = create_task(
+                self._finish_close(),
+                name=f"{self}-close",
+            )
+            await await_cleanup(finishing)
+
+    async def _finish_close(self) -> None:
+        self._closed_event.set()
+        try:
+            await self._close_transports()
+        finally:
+            self._started = False
+
+    async def _close_transports(self) -> None:
+        servers = tuple(self._reverse_servers)
+        for server in servers:
+            server.close()
+        tasks = (*self._forward_tasks, *self._reverse_tasks)
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        if self._ws_actions is not None:
+            self._ws_actions.fail_all()
+        await gather(*tasks, return_exceptions=True)
+        await gather(*(server.wait_closed() for server in servers))
+        self._forward_tasks.clear()
+        self._reverse_servers.clear()
+        self._reverse_tasks.clear()
+
+    def _ensure_open(self, closed_event: AsyncEvent) -> None:
+        if closed_event is not self._closed_event or closed_event.is_set():
+            msg = f"OneBot gateway is closed: {self}"
+            raise RuntimeError(msg)
 
 
 def json_response(status: int, payload: BaseModel | JsonValue) -> Response:

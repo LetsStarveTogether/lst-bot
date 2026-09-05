@@ -36,11 +36,14 @@ from bot.gateways.base import (
     token_matches,
     validate_https_base_url,
 )
+from bot.gateways.onebot11 import OneBot11Gateway
+from bot.gateways.onebot12 import OneBot12Gateway
 from bot.json import dumpb, loads
 from bot_test_support import ScriptedWebSocket
 from robyn import Headers
 from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from urllib3_future.exceptions import HTTPError
+from websockets.asyncio.server import Server
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
 
@@ -51,6 +54,50 @@ class MultiValueFields:
 
     def get_all(self, name: str) -> list[str]:
         return self.values.get(name, [])
+
+
+@pytest.mark.parametrize("gateway_type", [OneBot11Gateway, OneBot12Gateway])
+async def test_onebot_startup_finishes_rollback_after_repeated_cancellation(
+    gateway_type: type[OneBot11Gateway | OneBot12Gateway],
+) -> None:
+    gateway = gateway_type(Bot())
+    entered = Event()
+    release = Event()
+    finished = Event()
+    startup_error = RuntimeError("start failed")
+    server = AsyncMock(spec=Server)
+
+    async def wait_closed() -> None:
+        entered.set()
+        await release.wait()
+        finished.set()
+
+    def start_transports() -> None:
+        gateway._reverse_servers.append(server)  # ruff: ignore[private-member-access]
+        raise startup_error
+
+    server.wait_closed.side_effect = wait_closed
+    with patch.object(
+        gateway, "_start_transports", AsyncMock(side_effect=start_transports)
+    ):
+        async with timeout(1):
+            starting = create_task(gateway.start())
+            try:
+                await entered.wait()
+                for _ in range(2):
+                    starting.cancel()
+                    await sleep(0)
+                assert not starting.done()
+            finally:
+                release.set()
+                with pytest.raises(BaseExceptionGroup) as error:
+                    await starting
+
+    assert error.value.exceptions[0] is startup_error
+    assert isinstance(error.value.exceptions[1], CancelledError)
+    assert finished.is_set()
+    server.close.assert_called_once()
+    assert not gateway._reverse_servers  # ruff: ignore[private-member-access]
 
 
 def test_https_base_url_is_strict_and_canonical() -> None:
@@ -264,6 +311,29 @@ async def test_await_cleanup_finishes_after_repeated_cancellation() -> None:
     with pytest.raises(CancelledError):
         await closing
     assert cleanup_task.result() is None
+
+
+async def test_run_while_open_checks_close_before_starting_operation() -> None:
+    closed = Event()
+    sent: list[str] = []
+
+    def ensure_open(event: Event) -> None:
+        if event.is_set():
+            msg = "closed"
+            raise RuntimeError(msg)
+
+    async def operation() -> None:
+        sent.append("sent")
+        await sleep(0)
+
+    coroutine = operation()
+    running = create_task(run_while_open(coroutine, closed, ensure_open))
+    get_running_loop().call_soon(closed.set)
+
+    with pytest.raises(RuntimeError, match="closed"):
+        await running
+    assert sent == []
+    assert coroutine.cr_frame is None
 
 
 async def test_run_while_open_preserves_cleanup_on_repeated_cancel() -> None:

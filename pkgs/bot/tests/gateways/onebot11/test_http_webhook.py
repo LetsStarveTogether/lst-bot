@@ -8,13 +8,14 @@ import pytest
 from bot import (
     ActionCall,
     Bot,
+    BotSelf,
     Connection,
     Injected,
     Msg,
     PrivateMessageEvent,
     ReturnAction,
 )
-from bot.gateways.onebot11 import HttpAction, HttpWebhook, OneBot11Gateway
+from bot.gateways.onebot11 import HttpAction, HttpWebhook, OneBot11Gateway, decode_event
 from bot.json import dumpb, loads
 from bot.protocol.base import Model
 from pydantic import JsonValue
@@ -163,6 +164,85 @@ async def test_group_http_quick_reply_does_not_need_action_backend() -> None:
         "reply": [{"type": "text", "data": {"text": "pong"}}],
         "at_sender": False,
     }
+
+
+@pytest.mark.parametrize("target", ["gateway", "event", "self"])
+async def test_http_quick_reply_is_bound_to_source(target: str) -> None:
+    async with ActionServer() as server:
+        bot = Bot()
+        gateway = OneBot11Gateway(
+            bot,
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
+        other = OneBot11Gateway(
+            bot,
+            action=HttpAction(server.base_url, http_pool=server.http_pool),
+        )
+        bot.add_gateway(gateway)
+        bot.add_gateway(other)
+
+        @bot.on_msg(block=True)
+        async def reply(event: Injected[PrivateMessageEvent]) -> str:
+            selected_gateway = other if target == "gateway" else gateway
+            selected_event = (
+                decode_event({**private_msg_payload(), "user_id": 43})
+                if target == "event"
+                else event
+            )
+            selected_self = (
+                BotSelf(platform="qq", user_id="10001")
+                if target == "self"
+                else event.self_
+            )
+            await selected_gateway.execute_return_action(
+                Connection(selected_gateway, selected_self),
+                selected_event,
+                ReturnAction.message("separate"),
+            )
+            return "source"
+
+        async with bot:
+            response = await gateway.handle_http(private_msg_payload())
+
+    assert response_json(response) == {
+        "reply": [{"type": "text", "data": {"text": "source"}}],
+    }
+    assert [(request.path, request.json) for request in server.requests] == [
+        (
+            "/send_private_msg",
+            {
+                "user_id": 43 if target == "event" else 42,
+                "message": [{"type": "text", "data": {"text": "separate"}}],
+            },
+        ),
+    ]
+
+
+async def test_http_quick_reply_rejects_foreign_connection_and_closed_gateway() -> None:
+    bot = Bot()
+    gateway = OneBot11Gateway(bot)
+    other = OneBot11Gateway(bot)
+    bot.add_gateway(gateway)
+
+    @bot.on_msg(block=True)
+    async def reply(
+        event: Injected[PrivateMessageEvent],
+        connection: Injected[Connection],
+    ) -> None:
+        with pytest.raises(ValueError, match="another gateway"):
+            await gateway.execute_return_action(
+                Connection(other, event.self_), event, ReturnAction.message("foreign")
+            )
+        await gateway.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            await gateway.execute_return_action(
+                connection, event, ReturnAction.message("closed")
+            )
+
+    async with bot:
+        response = await gateway.handle_http(private_msg_payload())
+
+    assert response.status_code == HTTPStatus.NO_CONTENT
 
 
 async def test_http_handler_can_disable_quick_response() -> None:

@@ -1,12 +1,8 @@
 import re
-from asyncio import Event as AsyncEvent
 from asyncio import (
-    Lock,
     QueueFull,
-    Task,
     create_task,
     current_task,
-    gather,
     sleep,
     timeout,
 )
@@ -45,7 +41,6 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Request as WebSocketRequest
 from websockets.http11 import Response as WebSocketResponse
 
-from bot._tasks import await_cleanup
 from bot.core import Bot
 from bot.json import loads
 from bot.protocol.actions import (
@@ -84,20 +79,18 @@ from bot.protocol.returns import ReturnAction
 from .base import (
     AccessToken,
     Connection,
-    Gateway,
     HttpAction,
     NonWhitespaceStr,
+    OneBotGateway,
     PositiveSeconds,
     TcpPort,
     WebSocketAction,
-    WebSocketActionManager,
     WebSocketActionSession,
     WebSocketConnection,
     WebSocketConnector,
     WebsocketsConnection,
     access_token_value,
     bearer_or_query_token,
-    connect_websocket,
     empty_response,
     header_value,
     json_response,
@@ -484,6 +477,8 @@ def _ingress_resource(ingress: Ingress) -> tuple[object, ...]:
 
 @dataclass(slots=True)
 class _QuickOperations:
+    gateway: OneBot11Gateway
+    event: Event
     active: bool = True
     values: list[OneBot11QuickOperation] = field(default_factory=list)
 
@@ -494,7 +489,7 @@ _HTTP_QUICK_OPERATIONS: ContextVar[_QuickOperations | None] = ContextVar(
 )
 
 
-class OneBot11Gateway(Gateway):
+class OneBot11Gateway(OneBotGateway):
     def __init__(
         self,
         bot: Bot,
@@ -504,100 +499,30 @@ class OneBot11Gateway(Gateway):
         access_token: AccessToken = None,
         websocket_connector: WebSocketConnector | None = None,
     ) -> None:
-        super().__init__(bot)
+        super().__init__(
+            bot,
+            action=action,
+            access_token=access_token,
+            websocket_connector=websocket_connector,
+        )
         self.ingress = tuple(ingress)
         resources = [_ingress_resource(item) for item in self.ingress]
         if len(set(resources)) != len(resources):
             msg = "OneBot 11 ingress resources must be unique"
             raise ValueError(msg)
-        self.action_backend = action
-        self.access_token = access_token_value(access_token)
-        self._ws_actions = (
-            WebSocketActionManager(action.timeout)
-            if isinstance(action, WebSocketAction)
-            else None
-        )
-        self._websocket_connector = (
-            connect_websocket if websocket_connector is None else websocket_connector
-        )
-        self._forward_tasks: list[Task[None]] = []
-        self._reverse_servers: list[Server] = []
-        self._reverse_tasks: set[Task[None]] = set()
-        self._lifecycle_lock = Lock()
-        self._started = False
-        self._closed_event = AsyncEvent()
-
-    @property
-    def authorization_headers(self) -> dict[str, str] | None:
-        if self.access_token is None:
-            return None
-        return {"Authorization": f"Bearer {self.access_token}"}
 
     @override
-    async def start(self) -> None:
-        async with self._lifecycle_lock:
-            if self._started:
-                return
-            if self._closed_event.is_set():
-                await self._finish_close()
-            self._closed_event = AsyncEvent()
-            try:
-                for ingress in self.ingress:
-                    if isinstance(ingress, ReverseWebSocket):
-                        self._reverse_servers.append(
-                            await self._start_reverse_websocket(ingress)
-                        )
-                for ingress in self.ingress:
-                    if isinstance(ingress, ForwardWebSocket):
-                        self._forward_tasks.append(
-                            create_task(self._run_forward_websocket(ingress))
-                        )
-            except BaseException as startup_error:
-                try:
-                    await self._finish_close()
-                except BaseException as cleanup_error:
-                    msg = "OneBot 11 startup and cleanup failed"
-                    raise BaseExceptionGroup(
-                        msg,
-                        [startup_error, cleanup_error],
-                    ) from None
-                raise
-            self._started = True
-
-    @override
-    async def close(self) -> None:
-        async with self._lifecycle_lock:
-            self._closed_event.set()
-            finishing = create_task(
-                self._finish_close(),
-                name="onebot11-gateway-close",
-            )
-            await await_cleanup(finishing)
-
-    async def _finish_close(self) -> None:
-        self._closed_event.set()
-        try:
-            await self._close_transports()
-        finally:
-            self._started = False
-
-    async def _close_transports(self) -> None:
-        forward_tasks = tuple(self._forward_tasks)
-        reverse_servers = tuple(self._reverse_servers)
-        for server in reverse_servers:
-            server.close()
-        reverse_tasks = tuple(self._reverse_tasks)
-        transport_tasks = (*forward_tasks, *reverse_tasks)
-        for task in transport_tasks:
-            if not task.done() and not task.cancelling():
-                task.cancel()
-        if self._ws_actions is not None:
-            self._ws_actions.fail_all()
-        await gather(*transport_tasks, return_exceptions=True)
-        await gather(*(server.wait_closed() for server in reverse_servers))
-        self._forward_tasks.clear()
-        self._reverse_servers.clear()
-        self._reverse_tasks.clear()
+    async def _start_transports(self) -> None:
+        for ingress in self.ingress:
+            if isinstance(ingress, ReverseWebSocket):
+                self._reverse_servers.append(
+                    await self._start_reverse_websocket(ingress)
+                )
+        for ingress in self.ingress:
+            if isinstance(ingress, ForwardWebSocket):
+                self._forward_tasks.append(
+                    create_task(self._run_forward_websocket(ingress))
+                )
 
     def mount(self, server: Robyn) -> Robyn:
         if not self._mount_server_once(server):
@@ -630,7 +555,7 @@ class OneBot11Gateway(Gateway):
             return text_response(HTTPStatus.BAD_REQUEST, str(exc))
 
         await self.bot.wait_until_running()
-        collector = _QuickOperations() if quick_response else None
+        collector = _QuickOperations(self, event) if quick_response else None
         with _HTTP_QUICK_OPERATIONS.set(collector):
             try:
                 try:
@@ -653,6 +578,20 @@ class OneBot11Gateway(Gateway):
         event: Event | None,
         action: ReturnAction,
     ) -> BaseModel:
+        self._ensure_open(self._closed_event)
+        if connection.gateway is not self:
+            msg = "OneBot 11 action connection belongs to another gateway"
+            raise ValueError(msg)
+        quick_operations = _HTTP_QUICK_OPERATIONS.get()
+        if quick_operations is not None and not (
+            quick_operations.gateway is self
+            and quick_operations.event is event
+            and event is not None
+            and connection.self_ == event.self_
+            and quick_operations.active
+            and not quick_operations.values
+        ):
+            quick_operations = None
         if action.kind == "message":
             if action.msg is None:
                 msg = "Message return action requires a message"
@@ -660,12 +599,7 @@ class OneBot11Gateway(Gateway):
             if not isinstance(event, MessageEvent):
                 msg = "Message return values require a message event"
                 raise TypeError(msg)
-            quick_operations = _HTTP_QUICK_OPERATIONS.get()
-            if (
-                quick_operations is not None
-                and quick_operations.active
-                and not quick_operations.values
-            ):
+            if quick_operations is not None:
                 operation = OneBot11QuickOperation(
                     reply=_dump_ob11_message(action.msg),
                     at_sender=False if isinstance(event, GroupMessageEvent) else None,
@@ -678,12 +612,7 @@ class OneBot11Gateway(Gateway):
             return await super().execute_return_action(connection, event, action)
 
         operation, action_name, params = _request_response(event, action)
-        quick_operations = _HTTP_QUICK_OPERATIONS.get()
-        if (
-            quick_operations is not None
-            and quick_operations.active
-            and not quick_operations.values
-        ):
+        if quick_operations is not None:
             quick_operations.values.append(operation)
             return operation
 
@@ -728,11 +657,6 @@ class OneBot11Gateway(Gateway):
             raise LookupError(msg)
 
         return adapt_action_response(action, response, connection.self_)
-
-    def _ensure_open(self, closed_event: AsyncEvent) -> None:
-        if closed_event is not self._closed_event or closed_event.is_set():
-            msg = "OneBot 11 gateway is closed"
-            raise RuntimeError(msg)
 
     def _normalize_action(
         self,

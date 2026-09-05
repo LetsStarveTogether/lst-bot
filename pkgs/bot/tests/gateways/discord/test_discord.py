@@ -1072,6 +1072,63 @@ async def test_full_member_rate_limit_cache_expires_and_closes(
     assert not instance._full_member_ready_at
 
 
+@pytest.mark.parametrize("close_gateway", [False, True])
+async def test_gateway_disconnect_interrupts_rate_limited_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    close_gateway: bool,
+) -> None:
+    instance = gateway()
+    websocket = ScriptedWebSocket()
+    ready = Event()
+    disconnected = Event()
+    limited = Event()
+
+    async def read_websocket(_: object) -> None:
+        instance._online = True
+        ready.set()
+        await disconnected.wait()
+
+    async def rate_limit_wait(_: float) -> None:
+        limited.set()
+        await Event().wait()
+
+    monkeypatch.setattr(instance, "_read_websocket", read_websocket)
+    monkeypatch.setattr(discord_module, "sleep", rate_limit_wait)
+    instance._task = create_task(instance._serve_websocket(websocket))
+    await ready.wait()
+    instance._gateway_send_times.extend(
+        [discord_module.get_running_loop().time()] * discord_module._MAX_GATEWAY_EVENTS
+    )
+    command = create_task(
+        instance.connection_for(instance._self).action(
+            "discord.gateway",
+            opcode=4,
+            data={
+                "guild_id": "1",
+                "channel_id": None,
+                "self_mute": False,
+                "self_deaf": False,
+            },
+        )
+    )
+    try:
+        async with timeout(1):
+            await limited.wait()
+            if close_gateway:
+                await instance.close()
+            else:
+                disconnected.set()
+                await instance._task
+            with pytest.raises(ConnectionError, match="connection"):
+                await command
+    finally:
+        command.cancel()
+        await gather(command, return_exceptions=True)
+        await instance.close()
+
+    assert websocket.sent.empty()
+
+
 async def test_reconnect_heartbeat_and_shutdown_close_codes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

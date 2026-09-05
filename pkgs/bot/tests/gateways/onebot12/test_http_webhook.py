@@ -9,6 +9,7 @@ from bot import (
     ActionCall,
     ActionResponse,
     Bot,
+    BotSelf,
     Connection,
     Event,
     EventPayload,
@@ -16,12 +17,12 @@ from bot import (
     PrivateMessageEvent,
 )
 from bot.gateways import Gateway
-from bot.gateways.onebot12 import HttpWebhook, OneBot12Gateway
+from bot.gateways.onebot12 import HttpAction, HttpWebhook, OneBot12Gateway
 from bot.json import dumpb, loads
 from robyn import Robyn
 from robyn.testing import TestClient as RobynTestClient
 
-from tests.gateways.support import ObservableReadinessBot
+from tests.gateways.support import ActionServer, ObservableReadinessBot
 
 from .support import private_message_payload
 
@@ -147,6 +148,44 @@ async def test_http_can_disable_quick_actions() -> None:
         "message": [{"type": "text", "data": {"text": "pong"}}],
         "user_id": "42",
     }
+
+
+async def test_http_quick_actions_stay_with_source_gateway() -> None:
+    async with ActionServer(ActionResponse.ok().model_dump(mode="json")) as server:
+        bot = Bot()
+        gateway = OneBot12Gateway(bot)
+        other = OneBot12Gateway(
+            bot, action=HttpAction(server.base_url, http_pool=server.http_pool)
+        )
+        bot.add_gateway(gateway)
+        bot.add_gateway(other)
+
+        @bot.on_msg(block=True)
+        async def reply(event: Injected[PrivateMessageEvent]) -> None:
+            await Connection(other, event.self_).action("vendor.separate")
+            await Connection(gateway, BotSelf(platform="qq", user_id="10001")).action(
+                "vendor.same_implementation"
+            )
+
+        async with bot:
+            response = await gateway.handle_http(
+                EventPayload.model_validate(private_message_payload())
+            )
+
+    assert loads(response.description) == [
+        {
+            "action": "vendor.same_implementation",
+            "params": {},
+            "self": {"platform": "qq", "user_id": "10001"},
+        }
+    ]
+    assert [request.json for request in server.requests] == [
+        {
+            "action": "vendor.separate",
+            "params": {},
+            "self": {"platform": "qq", "user_id": "10000"},
+        }
+    ]
 
 
 async def test_http_event_waits_for_bot_startup() -> None:

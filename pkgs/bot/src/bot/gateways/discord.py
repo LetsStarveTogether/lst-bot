@@ -90,6 +90,7 @@ from .base import (
     connect_websocket,
     header_value,
     read_http_body,
+    run_while_open,
     validate_https_base_url,
 )
 
@@ -1519,6 +1520,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         self._full_member_ready_at: dict[str, float] = {}
         self._identify_ready_at = 0.0
         self._websocket: WebSocketConnection | None = None
+        self._gateway_closed_event = AsyncEvent()
         self._closing = False
         self._session_id: str | None = None
         self._seq: int | None = None
@@ -1546,6 +1548,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
     async def close(self) -> None:
         async with self._lifecycle_lock:
             self._closing = True
+            self._gateway_closed_event.set()
             finishing = create_task(
                 self._finish_gateway_close(),
                 name="discord-gateway-close",
@@ -1602,7 +1605,11 @@ class DiscordGateway(Gateway, DiscordRestClient):
             if websocket is None or not self._online:
                 msg = "Discord Gateway is not connected"
                 raise ConnectionError(msg)
-            await self._send_gateway(websocket, payload)
+            await run_while_open(
+                self._send_gateway(websocket, payload),
+                self._gateway_closed_event,
+                self._ensure_gateway_open,
+            )
             return DiscordNoContent()
         if action == Action.GET_SUPPORTED_ACTIONS:
             return RootModel[list[StrictStr]]([
@@ -1624,6 +1631,11 @@ class DiscordGateway(Gateway, DiscordRestClient):
         if action == Action.SEND_MESSAGE:
             return await self._send_message(data)
         return await self._common_action(action, data)
+
+    def _ensure_gateway_open(self, closed_event: AsyncEvent) -> None:
+        if closed_event is not self._gateway_closed_event or closed_event.is_set():
+            msg = "Discord Gateway connection closed"
+            raise ConnectionError(msg)
 
     def _validate_gateway_command(self, data: DiscordRequestModel) -> None:
         if not isinstance(data, DiscordRequestGuildMembers):
@@ -1860,6 +1872,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
             self._gateway_send_times.clear()
             self._presence_send_times.clear()
         self._websocket = websocket
+        closed_event = self._gateway_closed_event = AsyncEvent()
         close_code = 1000
         try:
             await self._read_websocket(websocket)
@@ -1879,6 +1892,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
             close_code = 4000
             raise
         finally:
+            closed_event.set()
             self._online = False
             if self._websocket is websocket:
                 self._websocket = None
