@@ -1,5 +1,3 @@
-from ipaddress import IPv4Address
-
 from klei import LobbyData, RoomData
 
 
@@ -17,8 +15,6 @@ def lobby_data(**overrides: object) -> LobbyData:
 def room_data(**overrides: object) -> RoomData:
     values: dict[str, object] = {
         "name": "Room",
-        "addr": IPv4Address("127.0.0.1"),
-        "port": 10999,
         "connected": 2,
         "maxconnections": 6,
         "password": False,

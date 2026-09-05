@@ -182,7 +182,7 @@ async def test_client_parses_official_lobbies_and_room() -> None:
                 lobby_row() | {"season": "mild", "region": "eu-west-1"},
                 {"__rowId": "invalid"},
             ]),
-            room_url: rows_payload([room_row()]),
+            room_url: rows_payload([room_row() | {"port": 0}]),
         }
     )
 
@@ -198,8 +198,6 @@ async def test_client_parses_official_lobbies_and_room() -> None:
     }
     assert set(room.model_dump()) == {
         "name",
-        "addr",
-        "port",
         "connected",
         "maxconnections",
         "password",
@@ -307,7 +305,7 @@ async def test_room_lookup_has_wall_clock_timeout(
 @pytest.mark.parametrize(
     "body",
     [
-        rows_payload([room_row() | {"port": "10999"}]),
+        rows_payload([room_row() | {"connected": "3"}]),
         rows_payload([room_row(), room_row("duplicate")]),
         b'{"Error":{"Code":"E_FAIL_BUSINESS_LOGIC"}}',
     ],
@@ -320,6 +318,15 @@ async def test_client_rejects_invalid_room_response(body: bytes) -> None:
 
     with pytest.RaisesGroup(ValidationError):
         await client(pool).get_room_data((("row-1", region),))
+
+
+@pytest.mark.parametrize("body", [b"{}", b'{"Error":{"Code":"E_FAIL"}}'])
+async def test_client_rejects_invalid_lobby_envelope(body: bytes) -> None:
+    routes = {LOBBY_URL.format(region=region): rows_payload([]) for region in REGIONS}
+    routes[LOBBY_URL.format(region=REGIONS[0])] = body
+
+    with pytest.RaisesGroup(ValidationError):
+        await client(RecordingPool(routes)).get_lobby_data()
 
 
 async def test_non_success_http_status_consumes_body_before_failing() -> None:
@@ -376,7 +383,7 @@ async def test_request_has_wall_clock_timeout(
 
 
 def test_response_envelope_and_consumed_fields_are_validated() -> None:
-    assert KleiDataResponse[LobbyData].model_validate_json("{}").rows == []
+    assert KleiDataResponse[LobbyData].model_validate_json('{"GET":[]}').rows == []
 
     internal = LobbyData.model_validate_json(
         jsonlib.dumps(lobby_row() | {"platform": True}),
@@ -408,11 +415,6 @@ def test_response_envelope_and_consumed_fields_are_validated() -> None:
 
     for changes in (
         {"name": 1},
-        {"__addr": True},
-        {"__addr": 2130706433},
-        {"port": 0},
-        {"port": 65536},
-        {"port": "10999"},
         {"maxconnections": -1},
         {"maxconnections": "6"},
         {"connected": 7},

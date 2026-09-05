@@ -2,7 +2,6 @@ import re
 from collections.abc import Mapping
 from datetime import date
 from enum import StrEnum
-from ipaddress import IPv4Address
 from typing import Annotated, Self
 
 from pydantic import (
@@ -23,7 +22,6 @@ type Region = Annotated[
     Field(strict=True, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)+$"),
 ]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
-Port = Annotated[int, Field(strict=True, ge=1, le=65535)]
 
 
 class VersionType(StrEnum):
@@ -72,7 +70,7 @@ def _parse_versions(value: str) -> list[Version]:
 
 
 class KleiDataResponse[T](BaseModel):
-    rows: list[T] = Field(default_factory=list, alias="GET")
+    rows: list[T] = Field(alias="GET")
 
 
 class LobbyData(BaseModel):
@@ -100,8 +98,6 @@ class RoomData(BaseModel):
     model_config = ConfigDict(strict=True)
 
     name: str
-    addr: Annotated[IPv4Address, Field(alias="__addr")]
-    port: Port
     connected: NonNegativeInt
     maxconnections: NonNegativeInt
     password: bool
