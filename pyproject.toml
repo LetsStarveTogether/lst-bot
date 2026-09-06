@@ -24,19 +24,19 @@ lst-bot = "lst_bot.main:main"
 
 [dependency-groups]
 dev = [
-    "prek>=0.5.0",
+    "prek>=0.5.2",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.16.5",
-    "ty>=0.0.75",
+    "ruff>=0.16.6",
+    "ty>=0.0.78",
 ]
 
 [build-system]
-requires = ['uv_build>=0.12.7,<0.13']
+requires = ['uv_build>=0.12.10,<0.13']
 build-backend = 'uv_build'
 
 [tool.uv]
-required-version = '>=0.12.7,<0.13'
+required-version = '>=0.12.10,<0.13'
 
 [tool.uv.workspace]
 members = [
@@ -51,7 +51,7 @@ lst = { workspace = true }
 
 [tool.ruff]
 preview = true
-required-version = '>=0.16.5'
+required-version = '>=0.16.6'
 
 [tool.ruff.lint]
 select = ['ALL']

@@ -5,9 +5,9 @@ description = "Local DST room control client for lst-bot."
 license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
-    "pystemd>=0.13.2",
+    "pystemd>=0.15.3",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.5,<0.13"]
+requires = ["uv_build>=0.12.10,<0.13"]
 build-backend = "uv_build"
