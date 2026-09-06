@@ -17,14 +17,19 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Setup uv and Python
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@main
         with:
           python-version: "3.14"
+
+      - name: Install systemd development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libsystemd-dev
 
       - name: Run checks
         run: |
