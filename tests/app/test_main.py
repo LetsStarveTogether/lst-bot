@@ -1,32 +1,31 @@
+from asyncio import CancelledError, Event, Task, create_task, gather
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from logging import DEBUG, ERROR, INFO, getLogger
+from logging import DEBUG, ERROR, INFO, WARNING, getLogger
+from pathlib import Path
 from typing import Never
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 import pytest
-from bot import BotSelf
+from bot import Bot, BotSelf
 from bot.gateways.discord import DiscordGateway
 from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.telegram import TelegramGateway
 from hitokoto import HitokotoClient
-from httpx import AsyncClient as MCPHttpClient
-from httpx import Timeout as MCPTimeout
-from httpx2 import AsyncClient
-from httpx2 import Timeout as ModelTimeout
+from httpx2 import AsyncByteStream, AsyncClient, MockTransport, Response, Timeout
 from klei import KleiClient
 from lst import LstClient
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
-from urllib3_future import AsyncPoolManager
 
-from lst_bot.agent import REQUEST_TIMEOUT, build_question_agent
+from lst_bot.agent import REQUEST_TIMEOUT
 from lst_bot.main import build_bot, main, run
 from lst_bot.settings import Settings
 
 
-async def test_run_closes_model_client_when_agent_build_fails(
+async def test_run_closes_http_client_when_agent_build_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clients: list[AsyncClient] = []
@@ -47,35 +46,69 @@ async def test_run_closes_model_client_when_agent_build_fails(
     assert clients[0].is_closed
     create_client.assert_called_once_with(
         proxy=None,
-        timeout=ModelTimeout(REQUEST_TIMEOUT, connect=5),
-        trust_env=False,
-    )
-
-
-@pytest.mark.parametrize(
-    ("proxy", "expected_proxy"),
-    [(None, None), ("http://proxy.example", "http://proxy.example/")],
-)
-async def test_mcp_client_uses_hardened_http_config(
-    monkeypatch: pytest.MonkeyPatch,
-    proxy: str | None,
-    expected_proxy: str | None,
-) -> None:
-    create_client = Mock(return_value=Mock(spec=MCPHttpClient))
-    monkeypatch.setattr("lst_bot.agent.MCPHttpClient", create_client)
-    async with AsyncClient(trust_env=False) as model_client:
-        build_question_agent(
-            Settings(_env_file=None, http_proxy=proxy),
-            http_client=model_client,
-        )
-
-    create_client.assert_called_once_with(
-        headers={"X-Dosu-API-Key": "test"},
-        proxy=expected_proxy,
-        timeout=MCPTimeout(REQUEST_TIMEOUT, connect=5),
+        timeout=Timeout(REQUEST_TIMEOUT, connect=5),
+        http2=True,
         trust_env=False,
         follow_redirects=False,
     )
+
+
+async def test_run_drains_detached_refresh_before_closing_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requested = Event()
+    waiter: list[Task] = []
+    client_closed_during_refresh_cleanup: list[bool] = []
+
+    class HangingStream(AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            requested.set()
+            await Event().wait()
+            yield b""
+
+        async def aclose(self) -> None:
+            client_closed_during_refresh_cleanup.append(http_client.is_closed)
+
+    http_client = AsyncClient(
+        transport=MockTransport(lambda _: Response(200, stream=HangingStream())),
+        trust_env=False,
+    )
+
+    def build(
+        _settings: Settings,
+        *,
+        hitokoto_client: HitokotoClient,
+        **_: object,
+    ) -> Bot:
+        waiter.append(create_task(hitokoto_client.get_hitokoto()))
+        return Bot()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("lst_bot.main.AsyncClient", lambda **_: http_client)
+    monkeypatch.setattr("lst_bot.main.build_bot", build)
+    monkeypatch.setattr(
+        "lst_bot.main.build_question_agent",
+        lambda *_args, **_kwargs: Agent(TestModel()),
+    )
+
+    running = create_task(run(Settings(_env_file=None)))
+    try:
+        await requested.wait()
+        waiter[0].cancel()
+        with pytest.raises(CancelledError):
+            await waiter[0]
+        assert not client_closed_during_refresh_cleanup
+        running.cancel()
+        with pytest.raises(CancelledError):
+            await running
+        assert client_closed_during_refresh_cleanup == [False]
+        assert http_client.is_closed
+    finally:
+        running.cancel()
+        for task in waiter:
+            task.cancel()
+        await gather(running, *waiter, return_exceptions=True)
 
 
 @pytest.mark.parametrize(("level", "expected"), [(DEBUG, INFO), (ERROR, ERROR)])
@@ -85,8 +118,7 @@ def test_main_never_lowers_dependency_log_level(
     expected: int,
 ) -> None:
     loggers = {
-        name: Mock()
-        for name in ("httpcore", "urllib3_future", "websockets", "mcp", "fastmcp")
+        name: Mock() for name in ("httpx2", "httpcore2", "websockets", "mcp", "fastmcp")
     }
     monkeypatch.setattr("lst_bot.main.Settings", lambda: Mock(log_level=level))
     monkeypatch.setattr("lst_bot.main.logging.basicConfig", Mock())
@@ -99,8 +131,10 @@ def test_main_never_lowers_dependency_log_level(
 
     main()
 
-    for logger in loggers.values():
-        logger.setLevel.assert_called_once_with(expected)
+    for name, logger in loggers.items():
+        logger.setLevel.assert_called_once_with(
+            max(expected, WARNING) if name == "httpx2" else expected
+        )
 
 
 def test_build_bot_registers_runtime_settings() -> None:
@@ -118,12 +152,14 @@ def test_build_bot_registers_runtime_settings() -> None:
         discord_bot_token=SecretStr("discord.test"),
         report_group_id="20000",
     )
-    http_pool = AsyncPoolManager()
+    http_client = AsyncClient(trust_env=False)
+    hitokoto_client = HitokotoClient(http_client=http_client)
     question_agent = Agent(TestModel())
 
     bot = build_bot(
         settings,
-        http_pool=http_pool,
+        http_client=http_client,
+        hitokoto_client=hitokoto_client,
         question_agent=question_agent,
     )
 
@@ -147,12 +183,15 @@ def test_build_bot_registers_runtime_settings() -> None:
     hitokoto = bot.dependencies[HitokotoClient]
     klei = bot.dependencies[KleiClient]
     assert isinstance(hitokoto, HitokotoClient)
+    assert hitokoto is hitokoto_client
     assert isinstance(klei, KleiClient)
     telegram = bot.resolve_gateway(TelegramGateway)
     discord = bot.resolve_gateway(DiscordGateway)
     bot.resolve_gateway(OneBot11Gateway)
-    assert telegram.http_pool is discord.http_pool
-    assert telegram.http_pool is hitokoto.http_pool is klei.http_pool is http_pool
+    assert telegram.http_client is discord.http_client
+    assert (
+        telegram.http_client is hitokoto.http_client is klei.http_client is http_client
+    )
     assert discord.intents == settings.discord_intents
     (report_job,) = bot.scheduler.jobs
     assert report_job.gateway_type is OneBot11Gateway
@@ -161,9 +200,11 @@ def test_build_bot_registers_runtime_settings() -> None:
 
 def test_build_bot_skips_unconfigured_gateways_and_report() -> None:
     settings = Settings(_env_file=None)
+    http_client = AsyncClient(trust_env=False)
     bot = build_bot(
         settings,
-        http_pool=AsyncPoolManager(),
+        http_client=http_client,
+        hitokoto_client=HitokotoClient(http_client=http_client),
         question_agent=Agent(TestModel()),
     )
 

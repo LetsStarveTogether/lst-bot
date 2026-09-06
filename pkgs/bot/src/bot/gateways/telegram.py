@@ -15,6 +15,7 @@ from logging import getLogger
 from time import time
 from typing import Self, cast, override
 
+from httpx2 import AsyncClient
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -26,7 +27,6 @@ from pydantic import (
     TypeAdapter,
     model_validator,
 )
-from urllib3_future import AsyncPoolManager
 
 from bot._tasks import await_cleanup
 from bot.core import Bot
@@ -196,7 +196,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
         bot: Bot,
         *,
         token: SecretStr | str,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         base_url: str = TELEGRAM_API_BASE_URL,
         poll_timeout: int = 30,
     ) -> None:
@@ -205,7 +205,7 @@ class TelegramGateway(Gateway, TelegramRestClient):
             self,
             token,
             base_url=base_url,
-            http_pool=http_pool,
+            http_client=http_client,
         )
         self.poll_timeout = _NON_NEGATIVE_INT_ADAPTER.validate_python(poll_timeout)
         self._lifecycle_lock = Lock()

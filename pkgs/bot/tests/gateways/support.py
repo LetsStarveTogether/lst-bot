@@ -1,15 +1,22 @@
 from asyncio import Event, to_thread
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from io import BytesIO
 from threading import Thread
 from typing import Self, cast, override
 
 from bot import Bot
 from bot.json import dumpb, loads
+from httpx2 import (
+    AsyncByteStream,
+    AsyncClient,
+    ByteStream,
+    MockTransport,
+    Request,
+    Response,
+)
 from pydantic import JsonValue
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
 _DEFAULT_ACTION_RESPONSE: JsonValue = {
     "status": "ok",
@@ -35,56 +42,46 @@ def response(
     *,
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
-) -> AsyncHTTPResponse:
+) -> Response:
     content = (b"" if payload is None else dumpb(payload)) if body is None else body
-    return AsyncHTTPResponse(
-        body=BytesIO(content),
-        status=status,
+    return Response(
+        status,
+        stream=ByteStream(content),
         headers=({"Content-Type": "application/json"} if headers is None else headers),
-        preload_content=False,
     )
 
 
-class HangingBodyResponse(AsyncHTTPResponse):
+class HangingBodyStream(AsyncByteStream):
     def __init__(self) -> None:
-        super().__init__(status=HTTPStatus.OK)
         self.cancelled = Event()
         self.close_called = Event()
-        self.decode_content: bool | None = None
 
-    async def read(
-        self,
-        amt: int | None = None,
-        decode_content: bool | None = None,
-        cache_content: bool = False,
-    ) -> bytes:
-        _ = amt, cache_content
-        self.decode_content = decode_content
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         try:
             await Event().wait()
-            return b""
+            yield b""
         finally:
             self.cancelled.set()
 
-    async def close(self) -> None:
+    async def aclose(self) -> None:
         self.close_called.set()
 
 
-class Pool:
-    def __init__(self, *items: JsonValue | AsyncHTTPResponse) -> None:
+class HttpMock:
+    def __init__(self, *items: JsonValue | Response) -> None:
         self.responses = [
-            item if isinstance(item, AsyncHTTPResponse) else response(200, item)
+            item if isinstance(item, Response) else response(200, item)
             for item in items
         ]
-        self.requests: list[tuple[str, str, dict[str, object]]] = []
+        self.requests: list[Request] = []
+        self.http_client = AsyncClient(
+            # Resolve the handler at dispatch time so tests can replace it.
+            transport=MockTransport(lambda request: self.handle(request)),  # ruff: ignore[unnecessary-lambda]
+            trust_env=False,
+        )
 
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs: object,
-    ) -> AsyncHTTPResponse:
-        self.requests.append((method, url, kwargs))
+    async def handle(self, request: Request) -> Response:
+        self.requests.append(request)
         return self.responses.pop(0)
 
 
@@ -107,7 +104,7 @@ class ActionServer:
         self.status = status
         self.content_type = content_type
         self.requests: list[RecordedRequest] = []
-        self.http_pool = AsyncPoolManager()
+        self.http_client = AsyncClient(trust_env=False)
         self._server: ThreadingHTTPServer
         self._thread: Thread
 
@@ -162,4 +159,4 @@ class ActionServer:
         await to_thread(self._server.shutdown)
         self._server.server_close()
         self._thread.join()
-        await self.http_pool.clear()
+        await self.http_client.aclose()

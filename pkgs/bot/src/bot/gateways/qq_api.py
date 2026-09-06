@@ -13,6 +13,7 @@ from typing import Annotated, Literal, Self
 from unicodedata import east_asian_width
 from urllib.parse import quote, urlencode
 
+from httpx2 import AsyncClient, Response
 from pydantic import (
     AfterValidator,
     AliasChoices,
@@ -32,8 +33,6 @@ from pydantic import (
     WebsocketUrl,
     model_validator,
 )
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
-from urllib3_future.filepost import encode_multipart_formdata
 
 from bot.json import dumpb, loads
 from bot.protocol.actions import WireBytes
@@ -2080,7 +2079,7 @@ class QQRestClient:
         app_id: str,
         client_secret: SecretStr | str,
         *,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         base_url: str = QQ_API_BASE_URL,
     ) -> None:
         credential = QQAccessTokenRequest.model_validate({
@@ -2094,7 +2093,7 @@ class QQRestClient:
         self.app_id = credential.app_id
         self.client_secret = SecretStr(credential.client_secret)
         self.base_url = validate_https_base_url(base_url, "QQ")
-        self.http_pool = http_pool
+        self.http_client = http_client
         self._token: SecretStr | None = None
         self._token_lock = Lock()
         self._closed_event = Event()
@@ -2126,16 +2125,16 @@ class QQRestClient:
             response, data = await self._request(
                 HTTPMethod.POST,
                 f"{self.base_url}/app/getAppAccessToken",
-                headers={"Content-Type": "application/json"},
+                headers={},
                 json=payload.model_dump(mode="json"),
             )
             self._ensure_open(closed_event)
-            response_payload = self._parse_payload(data, response.status)
-            if response.status != HTTPStatus.OK or self._has_business_error(
+            response_payload = self._parse_payload(data, response.status_code)
+            if response.status_code != HTTPStatus.OK or self._has_business_error(
                 response_payload
             ):
                 raise self._api_error(
-                    response.status,
+                    response.status_code,
                     response.headers,
                     response_payload,
                     error_type=QQAccessTokenError,
@@ -2194,14 +2193,14 @@ class QQRestClient:
             closed_event,
             file_image=getattr(request, "file_image", None),
         )
-        if response.status in {HTTPStatus.CREATED, HTTPStatus.ACCEPTED}:
+        if response.status_code in {HTTPStatus.CREATED, HTTPStatus.ACCEPTED}:
             return self._async_result(
-                response.status,
+                response.status_code,
                 response.headers,
                 response_payload,
                 qq_action,
             )
-        if response.status == HTTPStatus.NO_CONTENT or (
+        if response.status_code == HTTPStatus.NO_CONTENT or (
             response_payload is None and route.response is QQNoContent
         ):
             return QQNoContent()
@@ -2220,7 +2219,7 @@ class QQRestClient:
         closed_event: Event,
         *,
         file_image: bytes | None,
-    ) -> tuple[AsyncHTTPResponse, JsonValue]:
+    ) -> tuple[Response, JsonValue]:
         token: str | None = None
         retried_token = False
         retried_system_error = False
@@ -2230,7 +2229,6 @@ class QQRestClient:
             self._ensure_open(closed_event)
             headers = {
                 "Authorization": f"QQBot {token}",
-                "Content-Type": "application/json",
                 "X-Union-Appid": self.app_id,
             }
             if action is QQAction.ACK_INTERACTION:
@@ -2243,14 +2241,14 @@ class QQRestClient:
                 file_image=file_image,
             )
             self._ensure_open(closed_event)
-            response_payload = self._parse_payload(data, response.status)
-            if response.status in {
+            response_payload = self._parse_payload(data, response.status_code)
+            if response.status_code in {
                 HTTPStatus.OK,
                 HTTPStatus.CREATED,
                 HTTPStatus.ACCEPTED,
                 HTTPStatus.NO_CONTENT,
             } and (
-                response.status != HTTPStatus.OK
+                response.status_code != HTTPStatus.OK
                 or not self._has_business_error(response_payload)
             ):
                 return response, response_payload
@@ -2258,7 +2256,7 @@ class QQRestClient:
                 str(response_payload.get(name)) == "11244"
                 for name in ("err_code", "code")
             )
-            if response.status == HTTPStatus.UNAUTHORIZED or token_expired:
+            if response.status_code == HTTPStatus.UNAUTHORIZED or token_expired:
                 self.invalidate_token(token)
                 if not retried_token:
                     token = None
@@ -2271,7 +2269,7 @@ class QQRestClient:
                 retried_system_error = True
                 continue
             raise self._api_error(
-                response.status,
+                response.status_code,
                 response.headers,
                 response_payload,
             )
@@ -2298,32 +2296,26 @@ class QQRestClient:
         headers: Mapping[str, str],
         json: dict[str, JsonValue] | None,
         file_image: bytes | None = None,
-    ) -> tuple[AsyncHTTPResponse, bytes]:
-        body: bytes | None = None
+    ) -> tuple[Response, bytes]:
+        data: dict[str, str] | None = None
+        files: dict[str, tuple[str, bytes, str]] | None = None
         if file_image is not None:
-            fields: list[tuple[str, str | tuple[str, bytes, str]]] = [
-                (
-                    name,
-                    value if isinstance(value, str) else dumpb(value).decode(),
-                )
+            data = {
+                name: value if isinstance(value, str) else dumpb(value).decode()
                 for name, value in (json or {}).items()
-            ]
-            fields.append((
-                "file_image",
-                ("image", file_image, "application/octet-stream"),
-            ))
-            body, content_type = encode_multipart_formdata(fields)
-            headers = {**headers, "Content-Type": content_type}
-        response = await self.http_pool.request(
+            }
+            files = {"file_image": ("image", file_image, "application/octet-stream")}
+        outgoing = self.http_client.build_request(
             method,
             url,
             headers=headers,
-            body=body,
+            data=data,
+            files=files,
             json=json if file_image is None else None,
-            preload_content=False,
-            redirect=False,
-            retries=False,
             timeout=_HTTP_TIMEOUT,
+        )
+        response = await self.http_client.send(
+            outgoing, stream=True, follow_redirects=False
         )
         return response, await read_http_body(response)
 

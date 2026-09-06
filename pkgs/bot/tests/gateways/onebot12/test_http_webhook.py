@@ -155,7 +155,7 @@ async def test_http_quick_actions_stay_with_source_gateway() -> None:
         bot = Bot()
         gateway = OneBot12Gateway(bot)
         other = OneBot12Gateway(
-            bot, action=HttpAction(server.base_url, http_pool=server.http_pool)
+            bot, action=HttpAction(server.base_url, http_client=server.http_client)
         )
         bot.add_gateway(gateway)
         bot.add_gateway(other)

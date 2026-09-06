@@ -63,8 +63,8 @@ from bot.gateways.qq_api import (
 from bot.json import dumpb, loads
 from bot.protocol.actions import ActionParamModel
 from bot_test_support import ScriptedWebSocket
+from httpx2 import Request, Response
 from pydantic import JsonValue, TypeAdapter, ValidationError
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 
@@ -183,13 +183,13 @@ def test_request_models_reject_invalid_discriminators_and_cross_fields() -> None
 
 
 async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": "7200"},
         [{"id": "guild", "name": "Guild"}],
         {"id": "sent", "timestamp": "2026-08-17T00:00:00Z"},
         _response(204),
     )
-    client = support.client(pool)
+    client = support.client(mock)
 
     guilds = await client.request_qq(
         QQAction.LIST_BOT_GUILDS,
@@ -213,7 +213,7 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
     assert guilds.model_dump(exclude_none=True) == [{"id": "guild", "name": "Guild"}]
     assert isinstance(sent, QQSentMessage)
     assert isinstance(deleted, QQNoContent)
-    assert [request[:2] for request in pool.requests] == [
+    assert [(request.method, str(request.url)) for request in mock.requests] == [
         (HTTPMethod.POST, "https://qq.example/app/getAppAccessToken"),
         (
             HTTPMethod.GET,
@@ -225,28 +225,21 @@ async def test_rest_routes_cache_token_and_preserve_wire_boundaries() -> None:
             "https://qq.example/guilds/guild/announces/all",
         ),
     ]
-    assert pool.requests[0][2]["json"] == {
+    assert loads(mock.requests[0].content) == {
         "appId": "app",
         "clientSecret": "secret",
     }
-    assert pool.requests[1][2]["json"] is None
-    assert pool.requests[2][2]["json"] == {
+    assert not mock.requests[1].content
+    assert loads(mock.requests[2].content) == {
         "content": "hello",
         "msg_id": "source-message",
         "msg_type": 0,
     }
-    assert pool.requests[3][2]["json"] is None
-    for _, _, kwargs in pool.requests:
-        assert kwargs["retries"] is False
-        assert kwargs["preload_content"] is False
-        assert kwargs["redirect"] is False
-    for _, _, kwargs in pool.requests[1:]:
-        assert kwargs["headers"] == {
-            "Authorization": "QQBot token",
-            "Content-Type": "application/json",
-            "X-Union-Appid": "app",
-        }
-        assert kwargs["timeout"] == pytest.approx(30.0)
+    assert not mock.requests[3].content
+    for request in mock.requests[1:]:
+        assert request.headers["Authorization"] == "QQBot token"
+        assert request.headers["X-Union-Appid"] == "app"
+        assert request.extensions["timeout"]["read"] == pytest.approx(30.0)
 
 
 async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
@@ -311,7 +304,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
         {"op": 1},
         {"op": 11},
     )
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
         {"url": "wss://qq.example"},
@@ -326,7 +319,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
         app_id="app",
         client_secret=support.CREDENTIAL,
         base_url="https://qq.example",
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
         websocket_connector=connect,
     )
     bot.add_gateway(gateway)
@@ -389,7 +382,7 @@ async def test_websocket_identifies_dispatches_heartbeats_and_resumes(
 async def test_repeated_v2_messages_are_dispatched_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    instance = support.gateway(support.Pool())
+    instance = support.gateway(support.HttpMock())
     events: list[Event] = []
     monkeypatch.setattr(instance, "enqueue_event", events.append)
 
@@ -422,14 +415,14 @@ async def test_gateway_lifecycle_actually_restarts() -> None:
         ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
         ScriptedWebSocket({"op": 10, "d": {"heartbeat_interval": 60_000}}),
     ]
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
     )
     connector = AsyncMock(side_effect=websockets)
-    gateway = support.gateway(pool, websocket_connector=connector)
+    gateway = support.gateway(mock, websocket_connector=connector)
     bot = gateway.bot
     bot.add_gateway(gateway)
 
@@ -542,7 +535,7 @@ def test_event_model_families_map_to_common_events() -> None:
         "INTERACTION_CREATE": NoticeEvent,
     }
     assert payloads.keys() == expected_types.keys()
-    gateway = support.gateway(support.Pool())
+    gateway = support.gateway(support.HttpMock())
     for event_type, payload in payloads.items():
         event = gateway._event_from_dispatch(
             QQDispatch.model_validate({
@@ -660,11 +653,11 @@ async def test_common_reply_sends_the_incoming_message_id(
     reply: MsgInput,
     expected: dict[str, object],
 ) -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = support.gateway(pool, online=True)
+    gateway = support.gateway(mock, online=True)
     event = PrivateMessageEvent.model_validate({
         "id": "event",
         "self": {"platform": "qq", "user_id": "app"},
@@ -683,19 +676,19 @@ async def test_common_reply_sends_the_incoming_message_id(
     )
 
     assert isinstance(response, QQSentMessage)
-    assert pool.requests[1][:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.POST,
         "https://qq.example/v2/users/user/messages",
     )
-    assert pool.requests[1][2]["json"] == expected
+    assert loads(mock.requests[1].content) == expected
 
 
 async def test_direct_message_reply_preserves_the_dm_target() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = support.gateway(pool, online=True)
+    gateway = support.gateway(mock, online=True)
     event = gateway._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",
@@ -716,18 +709,18 @@ async def test_direct_message_reply_preserves_the_dm_target() -> None:
 
     await gateway.connection_for(event.self_).execute_message_action(event, "pong")
 
-    assert pool.requests[1][:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.POST,
         "https://qq.example/dms/guild/messages",
     )
 
 
 async def test_message_actions_require_an_online_gateway() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"file_uuid": "file", "file_info": "uploaded", "ttl": 60},
     )
-    gateway = support.gateway(pool)
+    gateway = support.gateway(mock)
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
 
     with pytest.raises(ConnectionError, match="not connected"):
@@ -743,7 +736,7 @@ async def test_message_actions_require_an_online_gateway() -> None:
     for action in (QQAction.UPLOAD_C2C_FILE, QQAction.UPLOAD_GROUP_FILE):
         with pytest.raises(ConnectionError, match="not connected"):
             await connection.action(action, srv_send_msg=True)
-    assert not pool.requests
+    assert not mock.requests
 
     await connection.action(
         QQAction.UPLOAD_C2C_FILE,
@@ -752,13 +745,13 @@ async def test_message_actions_require_an_online_gateway() -> None:
         url="https://qq.example/image",
         srv_send_msg=False,
     )
-    assert len(pool.requests) == 2
+    assert len(mock.requests) == 2
 
 
 async def test_actions_reject_wrong_or_foreign_bot_connections() -> None:
-    gateway = support.gateway(support.Pool())
+    gateway = support.gateway(support.HttpMock())
     wrong_self = gateway.connection_for(BotSelf(platform="qq", user_id="wrong"))
-    foreign = support.gateway(support.Pool()).connection_for(
+    foreign = support.gateway(support.HttpMock()).connection_for(
         BotSelf(platform="qq", user_id="app")
     )
 
@@ -812,21 +805,21 @@ async def test_common_send_message_maps_all_qq_scenes(
     target: dict[str, str],
     path: str,
 ) -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    connection = support.gateway(pool, online=True).connection_for(
+    connection = support.gateway(mock, online=True).connection_for(
         BotSelf(platform="qq", user_id="app")
     )
 
     await connection.action(Action.SEND_MESSAGE, **target, message="hello")
 
-    assert pool.requests[1][:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.POST,
         f"https://qq.example{path}",
     )
-    assert pool.requests[1][2]["json"] == {
+    assert loads(mock.requests[1].content) == {
         "content": "hello",
         **({"msg_type": 0} if path.startswith("/v2/") else {}),
     }
@@ -850,11 +843,11 @@ async def test_common_media_message_preserves_caption(
     target: dict[str, str],
     path: str,
 ) -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    connection = support.gateway(pool, online=True).connection_for(
+    connection = support.gateway(mock, online=True).connection_for(
         BotSelf(platform="qq", user_id="app")
     )
 
@@ -867,11 +860,11 @@ async def test_common_media_message_preserves_caption(
         ],
     )
 
-    assert pool.requests[1][:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.POST,
         f"https://qq.example{path}",
     )
-    assert pool.requests[1][2]["json"] == {
+    assert loads(mock.requests[1].content) == {
         "content": "caption",
         "media": {"file_info": "uploaded-image"},
         "msg_type": 7,
@@ -907,12 +900,12 @@ async def test_common_media_reply_uploads_inbound_attachment_url(
     resource_path: str,
 ) -> None:
     attachment_url = "//qq.example/image.png"
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"file_uuid": "file", "file_info": "uploaded-image", "ttl": 60},
         {"id": "sent", "timestamp": "2026-08-17T00:00:01Z"},
     )
-    gateway = support.gateway(pool, online=True)
+    gateway = support.gateway(mock, online=True)
     event = gateway._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",
@@ -936,16 +929,16 @@ async def test_common_media_reply_uploads_inbound_attachment_url(
         event.message,
     )
 
-    assert [request[1] for request in pool.requests[1:]] == [
+    assert [str(request.url) for request in mock.requests[1:]] == [
         f"https://qq.example{resource_path}/files",
         f"https://qq.example{resource_path}/messages",
     ]
-    assert pool.requests[1][2]["json"] == {
+    assert loads(mock.requests[1].content) == {
         "file_type": 1,
         "srv_send_msg": False,
         "url": f"https:{attachment_url}",
     }
-    assert pool.requests[2][2]["json"] == {
+    assert loads(mock.requests[2].content) == {
         "media": {"file_info": "uploaded-image"},
         "msg_id": "incoming-message",
         "msg_seq": 1,
@@ -993,7 +986,7 @@ async def test_common_actions_translate_onebot_parameters(
     params: dict[str, ActionParamInput],
     expected: dict[str, object],
 ) -> None:
-    gateway = support.gateway(support.Pool())
+    gateway = support.gateway(support.HttpMock())
     request = AsyncMock(return_value=QQNoContent())
     monkeypatch.setattr(gateway, "request_qq", request)
 
@@ -1006,8 +999,8 @@ async def test_common_actions_translate_onebot_parameters(
 
 
 async def test_channel_rejects_non_image_media() -> None:
-    pool = support.Pool()
-    gateway = support.gateway(pool, online=True)
+    mock = support.HttpMock()
+    gateway = support.gateway(mock, online=True)
 
     with pytest.raises(ValueError, match="only support image"):
         await gateway.connection_for(BotSelf(platform="qq", user_id="app")).action(
@@ -1019,7 +1012,7 @@ async def test_channel_rejects_non_image_media() -> None:
             message=[{"type": "voice", "data": {"file_id": "voice"}}],
         )
 
-    assert not pool.requests
+    assert not mock.requests
 
 
 async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
@@ -1030,7 +1023,7 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
         ConnectionClosedError(Close(4014, "fatal"), None),
     )
     fatal = WebsocketsConnection(fatal_native)
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {"url": "wss://qq.example"},
     )
@@ -1041,7 +1034,7 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
         bot,
         app_id="app",
         client_secret=support.CREDENTIAL,
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
         websocket_connector=connect,
     )
 
@@ -1062,7 +1055,7 @@ async def test_clean_close_reconnects_and_fatal_close_clears_session() -> None:
 
 
 async def test_group_pagination_uses_query_parameters_and_parses_items() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {
             "list": [
@@ -1093,7 +1086,7 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
         },
         {"strategies": []},
     )
-    client = support.client(pool)
+    client = support.client(mock)
 
     requests = await client.request_qq(
         QQAction.LIST_GROUP_JOIN_REQUESTS,
@@ -1115,7 +1108,7 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
     assert isinstance(strategies, QQStrategyList)
     assert strategies.strategies[0].group_ids == ["10****499"]
     assert isinstance(empty_strategy_page, QQStrategyList)
-    assert [request[:2] for request in pool.requests[1:]] == [
+    assert [(request.method, str(request.url)) for request in mock.requests[1:]] == [
         (
             HTTPMethod.GET,
             "https://qq.example/v2/groups/group/join_request_list?cursor=join-cursor&limit=10",
@@ -1129,11 +1122,11 @@ async def test_group_pagination_uses_query_parameters_and_parses_items() -> None
             "https://qq.example/v2/groups/join_approval_strategy",
         ),
     ]
-    assert [request[2]["json"] for request in pool.requests[1:]] == [None, None, None]
+    assert all(not request.content for request in mock.requests[1:])
 
 
 async def test_rest_reports_business_and_token_errors() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {
             "code": 0,
@@ -1142,7 +1135,7 @@ async def test_rest_reports_business_and_token_errors() -> None:
             "trace_id": "body-trace",
         },
     )
-    client = support.client(pool)
+    client = support.client(mock)
 
     with pytest.raises(QQAPIError) as business_error:
         await client.request_qq(
@@ -1158,7 +1151,7 @@ async def test_rest_reports_business_and_token_errors() -> None:
     ) == (200, 10004, "body-trace")
 
     token_client = support.client(
-        support.Pool({"code": 100007, "message": "appid invalid"})
+        support.HttpMock({"code": 100007, "message": "appid invalid"})
     )
     with pytest.raises(QQAccessTokenError) as token_error:
         await token_client.access_token()
@@ -1174,7 +1167,9 @@ async def test_gateway_retries_only_retryable_token_errors(
     code: int,
     retries: int,
 ) -> None:
-    gateway = support.gateway(support.Pool({"code": code, "message": "token error"}))
+    gateway = support.gateway(
+        support.HttpMock({"code": code, "message": "token error"})
+    )
     pause = AsyncMock(
         side_effect=lambda _: setattr(gateway, "_closing", True),
     )
@@ -1187,7 +1182,7 @@ async def test_gateway_retries_only_retryable_token_errors(
 
 
 async def test_rest_maps_created_accepted_and_empty_successes() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         _response(
             201,
@@ -1201,7 +1196,7 @@ async def test_rest_maps_created_accepted_and_empty_successes() -> None:
         ),
         _response(204),
     )
-    client = support.client(pool)
+    client = support.client(mock)
 
     results = [
         await client.request_qq(
@@ -1241,48 +1236,44 @@ async def test_rest_refreshes_an_expired_token_at_most_once(
     status: int,
     payload: JsonValue,
 ) -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "stale", "expires_in": 7200},
         _response(status, payload),
         {"access_token": "fresh", "expires_in": 7200},
         [],
     )
-    client = support.client(pool)
+    client = support.client(mock)
 
     assert isinstance(
         await client.request_qq(QQAction.LIST_BOT_GUILDS),
         QQGuildList,
     )
 
-    assert [
-        cast(dict[str, str], pool.requests[index][2]["headers"])["Authorization"]
-        for index in (1, 3)
-    ] == [
+    assert [mock.requests[index].headers["Authorization"] for index in (1, 3)] == [
         "QQBot stale",
         "QQBot fresh",
     ]
     client.invalidate_token("stale")
     assert await client.access_token() == "fresh"
-    assert len(pool.requests) == 4
+    assert len(mock.requests) == 4
 
 
 async def test_access_token_is_single_flight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = support.Pool()
+    mock = support.HttpMock()
     started = AsyncEvent()
     joined = AsyncEvent()
     release = AsyncEvent()
 
-    async def request_token(*args: object, **kwargs: object) -> AsyncHTTPResponse:
-        _ = args, kwargs
+    async def request_token(_: Request) -> Response:
         started.set()
         await release.wait()
         return _response(200, {"access_token": "shared", "expires_in": 7200})
 
     request = AsyncMock(side_effect=request_token)
-    monkeypatch.setattr(pool, "request", request)
-    client = support.client(pool)
+    monkeypatch.setattr(mock, "handle", request)
+    client = support.client(mock)
 
     async def join_request() -> str:
         joined.set()
@@ -1300,11 +1291,11 @@ async def test_access_token_is_single_flight(
 
 
 async def test_group_join_request_maps_and_native_approval_is_routed() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {},
     )
-    gateway = support.gateway(pool)
+    gateway = support.gateway(mock)
     dispatch = QQDispatch.model_validate({
         "id": "event",
         "op": 0,
@@ -1344,11 +1335,11 @@ async def test_group_join_request_maps_and_native_approval_is_routed() -> None:
     )
 
     assert isinstance(response, QQNoContent)
-    assert pool.requests[1][:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.POST,
         "https://qq.example/v2/groups/group/approval_join_request/member",
     )
-    assert pool.requests[1][2]["json"] == {
+    assert loads(mock.requests[1].content) == {
         "join_request_id": "request",
         "op": "decline",
         "reject_reason": "declined",
@@ -1383,11 +1374,11 @@ async def test_group_join_request_maps_and_native_approval_is_routed() -> None:
 
 
 async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> None:
-    pool = support.Pool(
+    mock = support.HttpMock(
         {"access_token": "token", "expires_in": 7200},
         {},
     )
-    gateway = support.gateway(pool)
+    gateway = support.gateway(mock)
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="app"))
 
     supported = (await connection.action(Action.GET_SUPPORTED_ACTIONS)).model_dump()
@@ -1403,22 +1394,22 @@ async def test_recall_is_qq_specific_and_closed_connections_are_rejected() -> No
     )
 
     assert isinstance(response, QQNoContent)
-    assert pool.requests[1][:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.DELETE,
         "https://qq.example/dms/guild/messages/message?hidetip=true",
     )
-    assert pool.requests[1][2]["json"] is None
+    assert not mock.requests[1].content
 
     await gateway.close()
     with pytest.raises(RuntimeError, match="closed"):
         await connection.action(QQAction.GET_GATEWAY)
-    assert len(pool.requests) == 2
+    assert len(mock.requests) == 2
 
 
 async def test_websocket_hello_timeout_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gateway = support.gateway(support.Pool())
+    gateway = support.gateway(support.HttpMock())
     stalled = ScriptedWebSocket()
     monkeypatch.setattr(qq_gateway_module, "_HELLO_TIMEOUT", 0)
 
@@ -1443,7 +1434,7 @@ async def test_websocket_invalid_session_follows_resume_flag(
 
     async with timeout(1):
         with pytest.raises(ConnectionError) as caught:
-            await support.gateway(support.Pool())._serve_websocket(
+            await support.gateway(support.HttpMock())._serve_websocket(
                 websocket,
                 "token",
             )
@@ -1459,7 +1450,7 @@ async def test_websocket_invalid_session_requires_a_boolean() -> None:
     )
 
     with pytest.raises(ValidationError, match="valid boolean"):
-        await support.gateway(support.Pool())._serve_websocket(
+        await support.gateway(support.HttpMock())._serve_websocket(
             websocket,
             "token",
         )
@@ -1488,7 +1479,7 @@ async def test_websocket_close_code_recovery_policy(
     native.recv.side_effect = closed
 
     with pytest.raises(ConnectionError) as caught:
-        await support.gateway(support.Pool())._serve_websocket(
+        await support.gateway(support.HttpMock())._serve_websocket(
             WebsocketsConnection(native),
             "token",
         )
@@ -1509,7 +1500,7 @@ async def test_websocket_rejects_a_missed_heartbeat_ack() -> None:
 
     with pytest.raises(ConnectionError) as caught:
         async with timeout(1):
-            await support.gateway(support.Pool())._serve_websocket(
+            await support.gateway(support.HttpMock())._serve_websocket(
                 websocket,
                 "token",
             )
@@ -1640,7 +1631,7 @@ def test_boundary_models_and_message_conversion_follow_qq_wire_types() -> None:
         link="https://qq.example",
     )
 
-    gateway = support.gateway(support.Pool())
+    gateway = support.gateway(support.HttpMock())
     voice = gateway._event_from_dispatch(
         QQDispatch.model_validate({
             "id": "event",

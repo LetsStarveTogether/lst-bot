@@ -1,17 +1,17 @@
 from asyncio import Event as AsyncEvent
 from asyncio import create_task, timeout
 from http import HTTPStatus
-from typing import cast
+from typing import cast, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from bot import Action, ActionResponse, ApiStatus, Bot, Msg
 from bot.gateways.onebot12 import HttpAction, OneBot12Gateway, ReverseWebSocket
 from bot.protocol.actions import ActionParamModel
+from httpx2 import AsyncClient, Request, Response
 from pydantic import ValidationError
-from urllib3_future import AsyncPoolManager
 
-from tests.gateways.support import ActionServer, HangingBodyResponse, response
+from tests.gateways.support import ActionServer, HangingBodyStream, HttpMock
 
 from .support import SELF
 
@@ -33,7 +33,7 @@ async def test_http_action_preserves_wire_envelope_defaults_and_null() -> None:
         bot = Bot()
         gateway = OneBot12Gateway(
             bot,
-            action=HttpAction(url, http_pool=server.http_pool),
+            action=HttpAction(url, http_client=server.http_client),
             access_token=AUTH,
         )
         bot.add_gateway(gateway)
@@ -108,7 +108,7 @@ async def test_http_action_rejects_transport_contract_violations(
             bot,
             action=HttpAction(
                 f"{server.base_url}/action?source=test",
-                http_pool=server.http_pool,
+                http_client=server.http_client,
             ),
         )
         bot.add_gateway(gateway)
@@ -137,7 +137,7 @@ async def test_http_action_rejects_invalid_response(
             Bot(),
             action=HttpAction(
                 f"{server.base_url}/action",
-                http_pool=server.http_pool,
+                http_client=server.http_client,
             ),
         )
         async with gateway:
@@ -181,34 +181,34 @@ async def test_start_retries_failed_cleanup() -> None:
 
 
 async def test_http_action_timeout_includes_response_body() -> None:
-    hanging = HangingBodyResponse()
-    hanging.headers["Content-Type"] = "application/json"
-    pool = AsyncMock(spec=AsyncPoolManager)
-    pool.request.return_value = hanging
+    hanging = HangingBodyStream()
+    http = HttpMock(
+        Response(200, stream=hanging, headers={"Content-Type": "application/json"})
+    )
     bot = Bot()
     gateway = OneBot12Gateway(
         bot,
         action=HttpAction(
             "http://onebot.example/action",
             timeout=0.01,
-            http_pool=cast(AsyncPoolManager, pool),
+            http_client=http.http_client,
         ),
     )
     bot.add_gateway(gateway)
 
-    async with timeout(1):
-        async with bot:
-            with pytest.raises(TimeoutError):
-                await gateway.connection_for(SELF).action("get_version")
+    async with timeout(1), http.http_client, bot:
+        with pytest.raises(TimeoutError):
+            await gateway.connection_for(SELF).action("get_version")
 
-    pool.request.assert_awaited_once()
-    kwargs = pool.request.await_args.kwargs
-    assert kwargs["preload_content"] is False
-    assert kwargs["redirect"] is False
-    assert kwargs["retries"] is False
+    assert len(http.requests) == 1
+    assert http.requests[0].extensions["timeout"] == {
+        "connect": 0.01,
+        "read": 0.01,
+        "write": 0.01,
+        "pool": 0.01,
+    }
     assert hanging.cancelled.is_set()
     assert hanging.close_called.is_set()
-    assert hanging.decode_content is True
 
 
 async def test_closed_gateway_rejects_actions() -> None:
@@ -217,7 +217,7 @@ async def test_closed_gateway_rejects_actions() -> None:
         bot,
         action=HttpAction(
             "http://127.0.0.1:1/action",
-            http_pool=cast(AsyncPoolManager, AsyncMock(spec=AsyncPoolManager)),
+            http_client=AsyncMock(spec=AsyncClient),
         ),
     )
     bot.add_gateway(gateway)
@@ -231,36 +231,38 @@ async def test_closed_gateway_rejects_actions() -> None:
 
 
 async def test_http_action_cannot_cross_close_and_restart() -> None:
-    class BlockingPool:
+    class BlockingHTTP(HttpMock):
         def __init__(self) -> None:
+            super().__init__(ACTION_RESPONSE)
             self.started = AsyncEvent()
             self.release = AsyncEvent()
 
-        async def request(self, *_: object, **__: object) -> object:
+        @override
+        async def handle(self, request: Request) -> Response:
             self.started.set()
             await self.release.wait()
-            return response(200, ACTION_RESPONSE)
+            return await super().handle(request)
 
-    pool = BlockingPool()
+    http = BlockingHTTP()
     gateway = OneBot12Gateway(
         Bot(),
         action=HttpAction(
             "http://onebot.example/action",
-            http_pool=cast(AsyncPoolManager, pool),
+            http_client=http.http_client,
         ),
     )
     connection = gateway.connection_for(SELF)
-    async with timeout(1):
+    async with timeout(1), http.http_client:
         await gateway.start()
         action = create_task(connection.action("vendor_action"))
         try:
-            await pool.started.wait()
+            await http.started.wait()
             await gateway.close()
             await gateway.start()
-            pool.release.set()
+            http.release.set()
             with pytest.raises(RuntimeError, match="gateway is closed"):
                 await action
         finally:
-            pool.release.set()
+            http.release.set()
             async with timeout(1):
                 await gateway.close()

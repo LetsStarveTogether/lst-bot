@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from typing import Annotated, Literal, Never, Self
 from urllib.parse import quote
 
+from httpx2 import AsyncClient, HTTPError, Response
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -26,9 +27,6 @@ from pydantic import (
     TypeAdapter,
     model_validator,
 )
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
-from urllib3_future.filepost import encode_multipart_formdata
 
 from bot._tasks import await_cleanup
 from bot.json import dumpb
@@ -36,6 +34,7 @@ from bot.protocol.actions import Sha256String, WireBytes
 from bot.protocol.base import Model, StrictBoolLiteral, StrictIntLiteral
 
 from .base import (
+    HTTPResponseTooLargeError,
     PositiveSeconds,
     read_http_body,
     run_while_open,
@@ -660,7 +659,7 @@ class TelegramRestClient:
         self,
         token: SecretStr | str,
         *,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         base_url: str = TELEGRAM_API_BASE_URL,
         request_timeout: float = 30.0,
         max_rate_limit_retries: int = 2,
@@ -686,7 +685,7 @@ class TelegramRestClient:
         max_retry_after = _NON_NEGATIVE_INT_ADAPTER.validate_python(max_retry_after)
         self.token = SecretStr(value)
         self.base_url = validate_https_base_url(base_url, "Telegram")
-        self.http_pool = http_pool
+        self.http_client = http_client
         self.request_timeout = float(request_timeout)
         self.max_rate_limit_retries = max_rate_limit_retries
         self.max_retry_after = max_retry_after
@@ -843,7 +842,7 @@ class TelegramRestClient:
         self._ensure_open(closed_event)
         data, checksum = await run_while_open(
             _download_response(
-                self.http_pool,
+                self.http_client,
                 url,
                 max_bytes=max_bytes,
                 request_timeout=self.request_timeout,
@@ -871,36 +870,31 @@ class TelegramRestClient:
         request_timeout: float,
     ) -> tuple[TelegramEnvelope, int]:
         url = f"{self.base_url}/bot{self.token.get_secret_value()}/{method}"
-        body = None
-        headers = None
+        form: dict[str, str] | None = None
+        uploads: dict[str, tuple[str, bytes, str]] | None = None
         if files:
-            fields: list[tuple[str, str | bytes | tuple[str, str | bytes, str]]] = [
-                (name, value if isinstance(value, str) else dumpb(value).decode())
+            form = {
+                name: value if isinstance(value, str) else dumpb(value).decode()
                 for name, value in params.items()
-            ]
-            fields.extend(
-                (
-                    name,
-                    (name, file, "application/octet-stream")
-                    if isinstance(file, bytes)
-                    else (file.filename, file.data, file.content_type),
-                )
+            }
+            uploads = {
+                name: (name, file, "application/octet-stream")
+                if isinstance(file, bytes)
+                else (file.filename, file.data, file.content_type)
                 for name, file in files.items()
-            )
-            body, content_type = encode_multipart_formdata(fields)
-            headers = {"Content-Type": content_type}
+            }
         try:
             async with timeout(request_timeout):
-                response = await self.http_pool.request(
+                outgoing = self.http_client.build_request(
                     "POST",
                     url,
-                    body=body,
-                    headers=headers,
+                    data=form,
+                    files=uploads,
                     json=None if files else params,
-                    preload_content=False,
-                    redirect=False,
-                    retries=False,
                     timeout=request_timeout,
+                )
+                response = await self.http_client.send(
+                    outgoing, stream=True, follow_redirects=False
                 )
                 data = await read_http_body(response)
         except HTTPError, TimeoutError:
@@ -910,10 +904,10 @@ class TelegramRestClient:
             envelope = TelegramEnvelope.model_validate_json(data)
         except ValueError:
             msg = f"Telegram API returned an invalid response for {method}"
-            if response.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
                 raise ConnectionError(msg) from None
             raise RuntimeError(msg) from None
-        return envelope, response.status
+        return envelope, response.status_code
 
 
 def _download_path(value: str) -> str:
@@ -930,24 +924,23 @@ def _download_path(value: str) -> str:
 
 
 async def _download_response(
-    http_pool: AsyncPoolManager,
+    http_client: AsyncClient,
     url: str,
     *,
     max_bytes: int,
     request_timeout: float,
 ) -> tuple[bytes, str]:
-    response: AsyncHTTPResponse | None = None
+    response: Response | None = None
     try:
         async with timeout(request_timeout):
-            response = await http_pool.request(
+            outgoing = http_client.build_request(
                 "GET",
                 url,
                 headers={"Accept-Encoding": "identity"},
-                decode_content=False,
-                redirect=False,
-                retries=False,
                 timeout=request_timeout,
-                preload_content=False,
+            )
+            response = await http_client.send(
+                outgoing, stream=True, follow_redirects=False
             )
             _validate_download_response(response, max_bytes)
             return await _read_download(response, max_bytes)
@@ -955,20 +948,20 @@ async def _download_response(
         msg = "Telegram file download failed"
         raise ConnectionError(msg) from None
     finally:
-        if response is not None:
+        if response is not None and not response.is_closed:
 
             async def close() -> None:
                 with suppress(Exception):
-                    await response.close()
+                    await response.aclose()
 
             await await_cleanup(create_task(close()))
 
 
 def _validate_download_response(
-    response: AsyncHTTPResponse,
+    response: Response,
     max_bytes: int,
 ) -> None:
-    if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
+    if not HTTPStatus.OK <= response.status_code < HTTPStatus.MULTIPLE_CHOICES:
         msg = "Telegram file download failed"
         raise ConnectionError(msg)
     content_length = response.headers.get("Content-Length")
@@ -986,11 +979,12 @@ def _validate_download_response(
 
 
 async def _read_download(
-    response: AsyncHTTPResponse,
+    response: Response,
     max_bytes: int,
 ) -> tuple[bytes, str]:
-    data = await response.read(max_bytes + 1, decode_content=False)
-    if len(data) > max_bytes:
+    try:
+        data = await read_http_body(response, max_bytes, raw=True)
+    except HTTPResponseTooLargeError:
         _raise_file_too_large(max_bytes)
     return data, sha256(data).hexdigest()
 

@@ -20,6 +20,7 @@ from re import compile as compile_regex
 from time import time
 from typing import Annotated, Literal, Self, cast, override
 
+from httpx2 import AsyncClient
 from pydantic import (
     AfterValidator,
     AwareDatetime,
@@ -35,7 +36,6 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
-from urllib3_future import AsyncPoolManager
 
 from bot._tasks import await_cleanup
 from bot.core import Bot
@@ -574,7 +574,7 @@ class QQGateway(Gateway, QQRestClient):
         *,
         app_id: str,
         client_secret: SecretStr | str,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         intents: QQIntent = QQIntent.GROUP_AND_C2C,
         shard: tuple[int, int] = (0, 1),
         base_url: str = QQ_API_BASE_URL,
@@ -586,7 +586,7 @@ class QQGateway(Gateway, QQRestClient):
             app_id,
             client_secret,
             base_url=base_url,
-            http_pool=http_pool,
+            http_client=http_client,
         )
         self.intents = TypeAdapter(StrictIntLiteral[QQIntent]).validate_python(intents)
         self.shard = TypeAdapter(Shard).validate_python(shard)

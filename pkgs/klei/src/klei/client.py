@@ -1,17 +1,25 @@
-from asyncio import Semaphore, TaskGroup, timeout
+from asyncio import (
+    CancelledError,
+    Semaphore,
+    TaskGroup,
+    create_task,
+    gather,
+    timeout,
+    wait,
+)
 from collections.abc import Iterable
-from http import HTTPMethod, HTTPStatus
+from contextlib import aclosing, suppress
+from http import HTTPMethod
 from itertools import batched
 from typing import Annotated
 
+from httpx2 import AsyncClient, RequestError
 from pydantic import (
     Field,
     OnErrorOmit,
     SecretStr,
     TypeAdapter,
 )
-from urllib3_future import AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 
 from .models import (
     KleiDataResponse,
@@ -43,10 +51,10 @@ class KleiClient:
         self,
         access_token: SecretStr,
         *,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
     ) -> None:
         self.access_token = access_token
-        self.http_pool = http_pool
+        self.http_client = http_client
         self._room_slots = Semaphore(_ROOM_CONCURRENCY)
 
     async def get_latest_versions(self) -> list[Version]:
@@ -122,25 +130,52 @@ class KleiClient:
         *,
         json: object | None = None,
     ) -> bytes:
-        response = await self.http_pool.request(
+        async with self.http_client.stream(
             method,
             url,
             json=json,
-            preload_content=False,
-            redirect=False,
-            retries=False,
-        )
-        try:
-            body = await response.read(
-                _MAX_HTTP_BODY_BYTES + 1,
-                decode_content=True,
-            )
-            if len(body) > _MAX_HTTP_BODY_BYTES:
-                msg = f"Klei response body exceeds {_MAX_HTTP_BODY_BYTES} bytes"
-                raise HTTPError(msg)
-        finally:
-            await response.close()
-        if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
-            msg = f"Klei request failed: HTTP {response.status} {method} {url}"
-            raise HTTPError(msg)
-        return body
+            follow_redirects=False,
+            timeout=_HTTP_TIMEOUT_SECONDS,
+        ) as response:
+
+            async def read() -> bytes:
+                body = bytearray()
+                async with aclosing(
+                    response.aiter_bytes(chunk_size=64 * 1024)
+                ) as chunks:
+                    async for chunk in chunks:
+                        if len(body) + len(chunk) > _MAX_HTTP_BODY_BYTES:
+                            msg = (
+                                "Klei response body exceeds "
+                                f"{_MAX_HTTP_BODY_BYTES} bytes"
+                            )
+                            raise RequestError(msg, request=response.request)
+                        body.extend(chunk)
+                return bytes(body)
+
+            reading = create_task(read())
+
+            async def cleanup() -> None:
+                await gather(reading, return_exceptions=True)
+                with suppress(Exception):
+                    await response.aclose()
+
+            try:
+                await wait((reading,))
+                body = reading.result()
+            finally:
+                # Let an in-flight close finish; cancel the body reader at most once.
+                if not reading.done() and not response.is_closed:
+                    reading.cancel()
+                cleaning = create_task(cleanup())
+                cancelled = None
+                while not cleaning.done():
+                    try:
+                        await wait((cleaning,))
+                    except CancelledError as error:
+                        cancelled = error
+                cleaning.result()
+                if cancelled is not None:
+                    raise cancelled
+            response.raise_for_status()
+            return body

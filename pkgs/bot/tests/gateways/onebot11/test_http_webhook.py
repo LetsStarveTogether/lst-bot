@@ -104,7 +104,7 @@ async def test_http_quick_reply_uses_first_operation_and_sends_the_rest() -> Non
         bot = Bot()
         gateway = OneBot11Gateway(
             bot,
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         bot.add_gateway(gateway)
 
@@ -172,11 +172,11 @@ async def test_http_quick_reply_is_bound_to_source(target: str) -> None:
         bot = Bot()
         gateway = OneBot11Gateway(
             bot,
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         other = OneBot11Gateway(
             bot,
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         bot.add_gateway(gateway)
         bot.add_gateway(other)
@@ -250,7 +250,7 @@ async def test_http_handler_can_disable_quick_response() -> None:
         bot = Bot()
         gateway = OneBot11Gateway(
             bot,
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         bot.add_gateway(gateway)
 
@@ -279,7 +279,7 @@ async def test_http_quick_operation_context_expires_with_response() -> None:
         bot = Bot()
         gateway = OneBot11Gateway(
             bot,
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         bot.add_gateway(gateway)
 

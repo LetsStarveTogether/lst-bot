@@ -1,5 +1,3 @@
-from typing import cast
-
 from bot import Bot
 from bot.gateways.discord import (
     DiscordGateway,
@@ -7,27 +5,26 @@ from bot.gateways.discord import (
     DiscordRestClient,
 )
 from pydantic import JsonValue
-from urllib3_future import AsyncPoolManager
 
-from tests.gateways.support import Pool
+from tests.gateways.support import HttpMock
 
 CREDENTIAL = "token"
 
 
-def client(pool: Pool) -> DiscordRestClient:
+def client(mock: HttpMock) -> DiscordRestClient:
     return DiscordRestClient(
         CREDENTIAL,
         base_url="https://discord.example/api/v10",
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
     )
 
 
-def gateway(pool: Pool | None = None) -> DiscordGateway:
+def gateway(mock: HttpMock | None = None) -> DiscordGateway:
     return DiscordGateway(
         Bot(),
         token=CREDENTIAL,
         base_url="https://discord.example/api/v10",
-        http_pool=cast(AsyncPoolManager, pool if pool is not None else Pool()),
+        http_client=(mock if mock is not None else HttpMock()).http_client,
     )
 
 

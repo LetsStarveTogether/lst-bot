@@ -1,27 +1,24 @@
-from typing import cast
-
 from bot import Bot
 from bot.gateways.base import WebSocketConnector
 from bot.gateways.qq import QQGateway
 from bot.gateways.qq_api import QQRestClient
-from urllib3_future import AsyncPoolManager
 
-from tests.gateways.support import Pool
+from tests.gateways.support import HttpMock
 
 CREDENTIAL = "secret"
 
 
-def client(pool: object) -> QQRestClient:
+def client(mock: HttpMock) -> QQRestClient:
     return QQRestClient(
         "app",
         CREDENTIAL,
         base_url="https://qq.example",
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
     )
 
 
 def gateway(
-    pool: Pool | None = None,
+    mock: HttpMock | None = None,
     *,
     online: bool = False,
     websocket_connector: WebSocketConnector | None = None,
@@ -31,7 +28,7 @@ def gateway(
         app_id="app",
         client_secret=CREDENTIAL,
         base_url="https://qq.example",
-        http_pool=cast(AsyncPoolManager, pool if pool is not None else Pool()),
+        http_client=(mock if mock is not None else HttpMock()).http_client,
         websocket_connector=websocket_connector,
     )
     gateway._online = online  # ruff: ignore[private-member-access]

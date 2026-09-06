@@ -4,19 +4,20 @@ from asyncio import (
     CancelledError,
     Event,
     Future,
+    Task,
     create_task,
     gather,
     get_running_loop,
     sleep,
     timeout,
 )
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from contextlib import closing
 from gc import collect
-from json import dumps
+from gzip import compress
 from pathlib import Path
 from time import time
-from typing import Any, override
+from typing import override
 
 import hitokoto.cache as cache_module
 import hitokoto.client as client_module
@@ -29,67 +30,61 @@ from hitokoto.cache import (
     read_cached_hitokoto,
     write_cache,
 )
+from httpx2 import (
+    AsyncByteStream,
+    AsyncClient,
+    HTTPError,
+    MockTransport,
+    Request,
+    Response,
+)
 from pydantic import ValidationError
-from urllib3_future import AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 
 BUNDLE_URL = "https://sentences-bundle.hitokoto.cn/"
 
 
-class RecordingPool(AsyncPoolManager):
+class MockAPI:
     def __init__(self, routes: Mapping[str, object]) -> None:
         self.routes = routes
-        self.calls: list[dict[str, object]] = []
-        self.request_options: list[dict[str, object]] = []
-        self.request_started = Event()
+        self.requests: list[Request] = []
+        self.started = Event()
+        self.http_client = AsyncClient(
+            transport=MockTransport(self), trust_env=False, follow_redirects=True
+        )
 
-    @override
-    async def request(
-        self,
-        method: str,
-        url: str,
-        body: Any = None,
-        fields: Any = None,
-        headers: Mapping[str, str] | None = None,
-        json: Any = None,
-        **urlopen_kw: Any,
-    ) -> Any:
-        _ = body, fields, headers, json
-        call: dict[str, object] = {"method": method, "url": url}
-        self.calls.append(call)
-        self.request_options.append(urlopen_kw)
-        self.request_started.set()
-        result = self.routes[url]
+    async def __call__(self, request: Request) -> Response:
+        self.requests.append(request)
+        self.started.set()
+        result = self.routes[str(request.url)]
         if result is None:
             return await get_running_loop().create_future()
         if isinstance(result, Future):
             result = await result
-        if isinstance(result, RecordingResponse):
+        if isinstance(result, Response):
             return result
-        payload = result if isinstance(result, bytes) else dumps(result).encode()
-        return RecordingResponse(200, payload)
+        return (
+            Response(200, content=result)
+            if isinstance(result, bytes)
+            else Response(200, json=result)
+        )
 
 
-class RecordingResponse:
-    def __init__(self, status: int, body: bytes | None = None) -> None:
-        self.status = status
+class BodyStream(AsyncByteStream):
+    def __init__(self, body: bytes | None = None) -> None:
         self.body = body
-        self.body_accessed = False
+        self.accessed = False
         self.closed = False
-        self.read_calls: list[tuple[int | None, bool | None]] = []
 
-    async def read(
-        self,
-        amount: int | None = None,
-        decode_content: bool | None = None,
-    ) -> bytes:
-        self.body_accessed = True
-        self.read_calls.append((amount, decode_content))
+    @override
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.accessed = True
         if self.body is None:
-            return await get_running_loop().create_future()
-        return self.body if amount is None else self.body[:amount]
+            await get_running_loop().create_future()
+        else:
+            yield self.body
 
-    async def close(self) -> None:
+    @override
+    async def aclose(self) -> None:
         self.closed = True
 
 
@@ -155,18 +150,23 @@ def test_hitokoto_format_preserves_text_and_partial_attributions() -> None:
     assert "\u3000甲\n\u3000乙" in str(multiline)
 
 
-async def test_client_consumes_error_body_before_failing(tmp_path: Path) -> None:
-    response = RecordingResponse(500, b"error")
-    pool = RecordingPool({f"{BUNDLE_URL}version.json": response})
+@pytest.mark.parametrize("status", [201, 302, 500])
+async def test_client_consumes_error_body_before_failing(
+    tmp_path: Path, status: int
+) -> None:
+    body = BodyStream(b"error")
+    response = Response(status, headers={"Location": BUNDLE_URL}, stream=body)
+    api = MockAPI({f"{BUNDLE_URL}version.json": response})
 
-    with pytest.raises(HTTPError, match="HTTP 500"):
+    with pytest.raises(HTTPError, match=f"HTTP {status}"):
         await HitokotoClient(
-            http_pool=pool,
+            http_client=api.http_client,
             cache_path=tmp_path / "hitokoto.db",
         ).get_hitokoto()
 
-    assert response.body_accessed is True
-    assert response.closed is True
+    assert body.accessed
+    assert body.closed
+    assert response.is_closed
 
 
 @pytest.mark.parametrize(
@@ -183,9 +183,10 @@ async def test_client_limits_decoded_response_body(
     monkeypatch.setattr(client_module, "_MAX_HTTP_BODY_BYTES", limit)
     body = b"x" * body_size
     url = f"{BUNDLE_URL}body"
-    response = RecordingResponse(200, body)
-    pool = RecordingPool({url: response})
-    client = HitokotoClient(http_pool=pool)
+    stream = BodyStream(compress(body))
+    response = Response(200, headers={"Content-Encoding": "gzip"}, stream=stream)
+    api = MockAPI({url: response})
+    client = HitokotoClient(http_client=api.http_client)
     get = client._get  # ruff: ignore[private-member-access] - focused HTTP boundary
 
     if oversized:
@@ -194,36 +195,41 @@ async def test_client_limits_decoded_response_body(
     else:
         assert await get(url) == body
 
-    assert response.read_calls == [(limit + 1, True)]
-    assert response.closed is True
-    assert pool.request_options == [
-        {"preload_content": False, "redirect": False, "retries": False}
-    ]
+    assert stream.accessed
+    assert stream.closed
+    assert response.is_closed
+    assert api.requests[0].extensions["timeout"] == dict.fromkeys(
+        ("connect", "read", "write", "pool"), client_module.HTTP_TIMEOUT_SECONDS
+    )
 
 
 @pytest.mark.parametrize(
-    "route",
-    [None, RecordingResponse(200)],
-    ids=["request", "body"],
+    "stage",
+    ["request", "body"],
 )
 async def test_client_applies_wall_clock_timeout_to_all_io(
     monkeypatch: pytest.MonkeyPatch,
-    route: object,
+    stage: str,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(client_module, "HTTP_TIMEOUT_SECONDS", 0.001)
-    pool = RecordingPool({f"{BUNDLE_URL}version.json": route})
+    body = BodyStream()
+    response = Response(200, stream=body)
+    api = MockAPI({
+        f"{BUNDLE_URL}version.json": None if stage == "request" else response
+    })
 
     async with timeout(1):
         with pytest.raises(TimeoutError):
             await HitokotoClient(
-                http_pool=pool,
+                http_client=api.http_client,
                 cache_path=tmp_path / "hitokoto.db",
             ).get_hitokoto()
 
-    if isinstance(route, RecordingResponse):
-        assert route.body_accessed is True
-        assert route.closed is True
+    if stage == "body":
+        assert body.accessed
+        assert body.closed
+        assert response.is_closed
 
 
 async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
@@ -232,14 +238,14 @@ async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
     version_url = f"{BUNDLE_URL}version.json"
     version = get_running_loop().create_future()
     routes[version_url] = version
-    pool = RecordingPool(routes)
+    api = MockAPI(routes)
     client = HitokotoClient(
-        http_pool=pool,
+        http_client=api.http_client,
         cache_path=cache_path,
     )
     cancelled = create_task(client.get_hitokoto())
     surviving = create_task(client.get_hitokoto())
-    await pool.request_started.wait()
+    await api.started.wait()
 
     cancelled.cancel()
     with pytest.raises(CancelledError):
@@ -248,7 +254,7 @@ async def test_concurrent_reads_download_cache_once(tmp_path: Path) -> None:
     result = await surviving
 
     assert result.hitokoto == "cached hello"
-    assert [call["url"] for call in pool.calls] == [
+    assert [str(request.url) for request in api.requests] == [
         version_url,
         f"{BUNDLE_URL}sentences/a.json",
     ]
@@ -261,12 +267,14 @@ async def test_cancelled_sole_read_consumes_failed_refresh(
     version_url = f"{BUNDLE_URL}version.json"
     loop = get_running_loop()
     version = loop.create_future()
-    pool = RecordingPool({version_url: version})
-    client = HitokotoClient(http_pool=pool, cache_path=tmp_path / "hitokoto.db")
+    api = MockAPI({version_url: version})
+    client = HitokotoClient(
+        http_client=api.http_client, cache_path=tmp_path / "hitokoto.db"
+    )
     reports: list[dict[str, object]] = []
     monkeypatch.setattr(loop, "call_exception_handler", reports.append)
     caller = create_task(client.get_hitokoto())
-    await pool.request_started.wait()
+    await api.started.wait()
     refresh = client._refresh_task  # ruff: ignore[private-member-access] - lifecycle regression
     assert refresh is not None
     completed = Event()
@@ -275,13 +283,100 @@ async def test_cancelled_sole_read_consumes_failed_refresh(
     caller.cancel()
     with pytest.raises(CancelledError):
         await caller
-    version.set_result(RecordingResponse(503, b"error"))
+    version.set_result(Response(503, content=b"error"))
     await completed.wait()
     del caller, refresh, client
     collect()
     await sleep(0)
 
     assert reports == []
+
+
+@pytest.mark.parametrize("cancel_caller", [False, True])
+async def test_context_exit_cancels_and_waits_for_shared_refresh(
+    tmp_path: Path,
+    cancel_caller: bool,
+) -> None:
+    body = BodyStream()
+    response = Response(200, stream=body)
+    api = MockAPI({f"{BUNDLE_URL}version.json": response})
+    client = HitokotoClient(
+        http_client=api.http_client, cache_path=tmp_path / "hitokoto.db"
+    )
+    callers: list[Task[Hitokoto]] = []
+
+    async def use_client() -> None:
+        async with client:
+            caller = create_task(client.get_hitokoto())
+            callers.append(caller)
+            await api.started.wait()
+            if cancel_caller:
+                caller.cancel()
+                with pytest.raises(CancelledError):
+                    await caller
+            raise CancelledError
+
+    async with timeout(1):
+        with pytest.raises(CancelledError):
+            await use_client()
+        with pytest.raises(CancelledError):
+            await callers[0]
+        await client.close()
+
+    assert response.is_closed
+    assert body.closed
+    assert not (tmp_path / "hitokoto.db").exists()
+
+
+@pytest.mark.parametrize("already_cancelling", [False, True])
+@pytest.mark.parametrize("stage", ["body", "close"])
+async def test_close_drains_response_even_when_repeatedly_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    already_cancelling: bool,
+    stage: str,
+) -> None:
+    body = BodyStream(b"{}" if stage == "close" else None)
+    response = Response(200, stream=body)
+    api = MockAPI({f"{BUNDLE_URL}version.json": response})
+    client = HitokotoClient(
+        http_client=api.http_client, cache_path=tmp_path / "hitokoto.db"
+    )
+    close_started = Event()
+    release_close = Event()
+
+    async def close_response() -> None:
+        close_started.set()
+        await release_close.wait()
+        body.closed = True
+
+    monkeypatch.setattr(body, "aclose", close_response)
+    async with timeout(1):
+        caller = create_task(client.get_hitokoto())
+        await api.started.wait()
+        if stage == "close":
+            await close_started.wait()
+        if already_cancelling:
+            refresh = client._refresh_task  # ruff: ignore[private-member-access] - cancellation lifecycle
+            assert refresh is not None
+            refresh.cancel()
+            await close_started.wait()
+        closer = create_task(client.close())
+        await close_started.wait()
+        await sleep(0)
+        try:
+            for _ in range(2):
+                closer.cancel()
+                await sleep(0)
+                await sleep(0)
+                assert not closer.done()
+        finally:
+            release_close.set()
+            results = await gather(caller, closer, return_exceptions=True)
+
+    assert all(isinstance(result, CancelledError) for result in results)
+    assert response.is_closed
+    assert body.closed
 
 
 async def test_concurrent_atomic_cache_writes(tmp_path: Path) -> None:
@@ -319,12 +414,14 @@ async def test_invalid_mtime_refreshes_cache(
     await write_cache(cache_path, bundle("old"))
     timestamp = time() + offset_seconds
     os.utime(cache_path, (timestamp, timestamp))
-    pool = RecordingPool(bundle_routes("refreshed"))
+    api = MockAPI(bundle_routes("refreshed"))
 
-    result = await HitokotoClient(http_pool=pool, cache_path=cache_path).get_hitokoto()
+    result = await HitokotoClient(
+        http_client=api.http_client, cache_path=cache_path
+    ).get_hitokoto()
 
     assert result.hitokoto == "refreshed"
-    assert len(pool.calls) == 2
+    assert len(api.requests) == 2
 
 
 async def test_selected_corrupt_cache_row_is_refreshed(
@@ -343,14 +440,14 @@ async def test_selected_corrupt_cache_row_is_refreshed(
         return db
 
     monkeypatch.setattr(cache_module, "_open_read_only", open_selecting_corrupt_row)
-    pool = RecordingPool(bundle_routes("recovered"))
+    api = MockAPI(bundle_routes("recovered"))
     client = HitokotoClient(
-        http_pool=pool,
+        http_client=api.http_client,
         cache_path=cache_path,
     )
 
     assert (await client.get_hitokoto()).hitokoto == "recovered"
-    assert len(pool.calls) == 2
+    assert len(api.requests) == 2
 
 
 async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
@@ -358,32 +455,36 @@ async def test_stale_cache_survives_refresh_failure(tmp_path: Path) -> None:
     await write_cache(cache_path, bundle("stale"))
     timestamp = time() - 73 * 60 * 60
     os.utime(cache_path, (timestamp, timestamp))
-    pool = RecordingPool({
-        f"{BUNDLE_URL}version.json": RecordingResponse(503, b"error"),
+    api = MockAPI({
+        f"{BUNDLE_URL}version.json": Response(503, content=b"error"),
     })
     client = HitokotoClient(
-        http_pool=pool,
+        http_client=api.http_client,
         cache_path=cache_path,
     )
 
     results = await gather(*(client.get_hitokoto() for _ in range(8)))
 
     assert {result.hitokoto for result in results} == {"stale"}
-    assert pool.calls == [{"method": "GET", "url": f"{BUNDLE_URL}version.json"}]
+    assert [(request.method, str(request.url)) for request in api.requests] == [
+        ("GET", f"{BUNDLE_URL}version.json")
+    ]
 
 
 async def test_failed_refresh_can_retry(tmp_path: Path) -> None:
     version_url = f"{BUNDLE_URL}version.json"
-    routes: dict[str, object] = {version_url: RecordingResponse(503, b"error")}
-    pool = RecordingPool(routes)
-    client = HitokotoClient(http_pool=pool, cache_path=tmp_path / "hitokoto.db")
+    routes: dict[str, object] = {version_url: Response(503, content=b"error")}
+    api = MockAPI(routes)
+    client = HitokotoClient(
+        http_client=api.http_client, cache_path=tmp_path / "hitokoto.db"
+    )
 
     with pytest.raises(HTTPError):
         await client.get_hitokoto()
     routes.update(bundle_routes("retried"))
 
     assert (await client.get_hitokoto()).hitokoto == "retried"
-    assert [call["url"] for call in pool.calls] == [
+    assert [str(request.url) for request in api.requests] == [
         version_url,
         version_url,
         f"{BUNDLE_URL}sentences/a.json",
@@ -394,7 +495,7 @@ async def test_bundle_requires_a_sentence(tmp_path: Path) -> None:
     routes = bundle_routes()
     routes[f"{BUNDLE_URL}sentences/a.json"] = []
     client = HitokotoClient(
-        http_pool=RecordingPool(routes),
+        http_client=MockAPI(routes).http_client,
         cache_path=tmp_path / "hitokoto.db",
     )
 
@@ -415,7 +516,7 @@ async def test_bundle_manifest_rejects_unofficial_parts_before_fetching(
     tmp_path: Path,
 ) -> None:
     version_url = f"{BUNDLE_URL}version.json"
-    pool = RecordingPool({
+    api = MockAPI({
         version_url: {
             "protocol_version": "1.0.0",
             "sentences": sentences,
@@ -424,11 +525,13 @@ async def test_bundle_manifest_rejects_unofficial_parts_before_fetching(
 
     with pytest.raises(ValidationError):
         await HitokotoClient(
-            http_pool=pool,
+            http_client=api.http_client,
             cache_path=tmp_path / "hitokoto.db",
         ).get_hitokoto()
 
-    assert pool.calls == [{"method": "GET", "url": version_url}]
+    assert [(request.method, str(request.url)) for request in api.requests] == [
+        ("GET", version_url)
+    ]
 
 
 async def test_bundle_allows_an_empty_part_when_another_has_sentences(
@@ -444,15 +547,15 @@ async def test_bundle_allows_an_empty_part_when_another_has_sentences(
         ],
     }
     routes[f"{BUNDLE_URL}sentences/b.json"] = []
-    pool = RecordingPool(routes)
+    api = MockAPI(routes)
     client = HitokotoClient(
-        http_pool=pool,
+        http_client=api.http_client,
         cache_path=tmp_path / "hitokoto.db",
     )
     result = await client.get_hitokoto()
 
     assert result.hitokoto == "cached hello"
-    assert [call["url"] for call in pool.calls] == [
+    assert [str(request.url) for request in api.requests] == [
         f"{BUNDLE_URL}version.json",
         sentence_url,
         f"{BUNDLE_URL}sentences/b.json",

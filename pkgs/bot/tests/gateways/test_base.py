@@ -1,17 +1,19 @@
 from asyncio import (
     CancelledError,
     Event,
+    Task,
     create_task,
     gather,
     get_running_loop,
     sleep,
     timeout,
 )
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import suppress
 from dataclasses import FrozenInstanceError
 from gzip import compress
-from io import BytesIO
 from types import SimpleNamespace
+from typing import override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -40,12 +42,14 @@ from bot.gateways.onebot11 import OneBot11Gateway
 from bot.gateways.onebot12 import OneBot12Gateway
 from bot.json import dumpb, loads
 from bot_test_support import ScriptedWebSocket
+from httpx2 import AsyncByteStream, AsyncClient, ByteStream, HTTPError, Response
+from httpx2 import Headers as HTTPHeaders
 from robyn import Headers
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 from websockets.asyncio.server import Server
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
+
+from tests.gateways.support import HttpMock
 
 
 class MultiValueFields:
@@ -54,6 +58,25 @@ class MultiValueFields:
 
     def get_all(self, name: str) -> list[str]:
         return self.values.get(name, [])
+
+
+class DelayedCloseStream(AsyncByteStream):
+    def __init__(self) -> None:
+        self.read_started = False
+        self.close_started = Event()
+        self.release_close = Event()
+        self.closed = Event()
+
+    @override
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.read_started = True
+        yield b"body"
+
+    @override
+    async def aclose(self) -> None:
+        self.close_started.set()
+        await self.release_close.wait()
+        self.closed.set()
 
 
 @pytest.mark.parametrize("gateway_type", [OneBot11Gateway, OneBot12Gateway])
@@ -117,11 +140,33 @@ def test_https_base_url_is_strict_and_canonical() -> None:
             validate_https_base_url(invalid, "Test")
 
 
+@pytest.mark.parametrize("gateway_type", [OneBot11Gateway, OneBot12Gateway])
+async def test_onebot_http_actions_never_follow_client_redirect_defaults(
+    gateway_type: type[OneBot11Gateway | OneBot12Gateway],
+) -> None:
+    http = HttpMock(Response(307, headers={"Location": "https://other.example/action"}))
+    http.http_client.follow_redirects = True
+    credential = "test-token"
+    gateway = gateway_type(
+        Bot(),
+        action=HttpAction("https://onebot.example", http_client=http.http_client),
+        access_token=credential,
+    )
+    async with http.http_client, gateway:
+        with pytest.raises(RuntimeError, match="HTTP 307"):
+            await gateway.connection_for(BotSelf(platform="qq", user_id="1")).action(
+                "vendor.action"
+            )
+
+    assert len(http.requests) == 1
+    assert http.requests[0].url.host == "onebot.example"
+
+
 def test_http_action_base_url_is_strict_and_canonical() -> None:
     assert (
         HttpAction(
             "http://onebot.example/action?source=test",
-            http_pool=AsyncMock(spec=AsyncPoolManager),
+            http_client=AsyncMock(spec=AsyncClient),
         ).base_url
         == "http://onebot.example/action?source=test"
     )
@@ -136,7 +181,7 @@ def test_http_action_base_url_is_strict_and_canonical() -> None:
         "http://",
     ):
         with pytest.raises(ValueError, match=r"absolute HTTP\(S\) URL"):
-            HttpAction(invalid, http_pool=AsyncMock(spec=AsyncPoolManager))
+            HttpAction(invalid, http_client=AsyncMock(spec=AsyncClient))
 
 
 def test_json_codec_is_compact_utf8_and_strict() -> None:
@@ -235,29 +280,85 @@ def test_header_value_rejects_repeated_headers() -> None:
     headers.append("X-Self-ID", "first")
     headers.append("X-Self-ID", "second")
 
-    assert header_value(headers, "X-Self-ID") is None
+    for source in (
+        headers,
+        HTTPHeaders([("X-Self-ID", "first"), ("x-self-id", "second")]),
+    ):
+        assert header_value(source, "X-Self-ID") is None
 
 
 @pytest.mark.parametrize("size", [4, 5])
 async def test_http_body_limit_applies_after_decompression(size: int) -> None:
     encoded = compress(b"x" * size)
-    response = AsyncHTTPResponse(
-        body=BytesIO(encoded),
+    response = Response(
+        200,
+        stream=ByteStream(encoded),
         headers={
             "Content-Encoding": "gzip",
             "Content-Length": str(len(encoded)),
         },
-        preload_content=False,
     )
 
-    with patch.object(response, "read", wraps=response.read) as read:
-        if size == 4:
-            assert await read_http_body(response, max_bytes=4) == b"xxxx"
-        else:
-            with pytest.raises(HTTPError, match="4-byte limit"):
-                await read_http_body(response, max_bytes=4)
-        read.assert_awaited_once_with(5, decode_content=True)
-    assert response.closed
+    if size == 4:
+        assert await read_http_body(response, max_bytes=4) == b"xxxx"
+    else:
+        with pytest.raises(HTTPError, match="4-byte limit"):
+            await read_http_body(response, max_bytes=4)
+    assert response.is_closed
+
+
+async def test_raw_http_body_preserves_content_encoding() -> None:
+    encoded = compress(b"payload")
+    response = Response(
+        200, stream=ByteStream(encoded), headers={"Content-Encoding": "gzip"}
+    )
+
+    assert await read_http_body(response, raw=True, max_bytes=len(encoded)) == encoded
+    assert response.is_closed
+
+
+async def test_http_body_eof_cleanup_survives_repeated_cancel() -> None:
+    stream = DelayedCloseStream()
+    response = Response(200, stream=stream)
+    async with timeout(1):
+        reading = create_task(read_http_body(response))
+        try:
+            await stream.close_started.wait()
+            for _ in range(2):
+                reading.cancel()
+                await sleep(0)
+            assert not reading.done()
+        finally:
+            stream.release_close.set()
+            with pytest.raises(CancelledError):
+                await reading
+
+    assert stream.closed.is_set()
+    assert response.is_closed
+
+
+async def test_http_body_closes_response_when_reader_cancelled_before_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduled: list[Task] = []
+    stream = DelayedCloseStream()
+    stream.release_close.set()
+    response = Response(200, stream=stream)
+
+    def cancel_first(coroutine: Coroutine) -> Task:
+        task = create_task(coroutine)
+        if not scheduled:
+            task.cancel()
+        scheduled.append(task)
+        return task
+
+    monkeypatch.setattr(base_module, "create_task", cancel_first)
+    with pytest.raises(CancelledError):
+        await read_http_body(response)
+
+    assert not stream.read_started
+    assert stream.closed.is_set()
+    assert response.is_closed
 
 
 def test_token_matches_supports_unicode_credentials() -> None:
@@ -450,7 +551,7 @@ def test_http_action_uses_the_same_timeout_boundary() -> None:
         HttpAction(
             "https://onebot.example",
             timeout=0,
-            http_pool=AsyncMock(spec=AsyncPoolManager),
+            http_client=AsyncMock(spec=AsyncClient),
         )
 
 

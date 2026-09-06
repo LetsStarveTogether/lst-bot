@@ -1,6 +1,6 @@
 from asyncio import Event, create_task, timeout
 from http import HTTPStatus
-from typing import cast
+from typing import override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,10 +27,10 @@ from bot.gateways.onebot11 import (
     decode_action_response,
 )
 from bot.protocol.actions import ActionParamModel
+from httpx2 import AsyncClient, Request, Response
 from pydantic import JsonValue, RootModel, ValidationError
-from urllib3_future import AsyncPoolManager
 
-from tests.gateways.support import ActionServer, HangingBodyResponse, response
+from tests.gateways.support import ActionServer, HangingBodyStream, HttpMock
 
 from .support import action_response_payload
 
@@ -54,7 +54,7 @@ async def test_http_action_uses_real_transport_and_onebot11_wire_shape() -> None
             Bot(),
             action=HttpAction(
                 f"{server.base_url}/base?trace=1",
-                http_pool=server.http_pool,
+                http_client=server.http_client,
             ),
             access_token=credential,
         )
@@ -103,7 +103,7 @@ async def test_raw_actions_preserve_name_null_and_message_array() -> None:
     async with ActionServer(action_response_payload({})) as server:
         gateway = OneBot11Gateway(
             Bot(),
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
         async with gateway:
@@ -168,7 +168,7 @@ async def test_http_action_checks_status_before_decoding_body(
     async with ActionServer("not-json", status=status) as server:
         gateway = OneBot11Gateway(
             Bot(),
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
         async with gateway:
@@ -200,32 +200,31 @@ async def test_startup_and_cleanup_failures_are_grouped() -> None:
 
 
 async def test_http_action_timeout_covers_response_body() -> None:
-    hanging = HangingBodyResponse()
-    pool = AsyncMock(spec=AsyncPoolManager)
-    pool.request.return_value = hanging
+    hanging = HangingBodyStream()
+    http = HttpMock(Response(200, stream=hanging))
     gateway = OneBot11Gateway(
         Bot(),
         action=HttpAction(
             "http://onebot.example",
             timeout=0.01,
-            http_pool=cast(AsyncPoolManager, pool),
+            http_client=http.http_client,
         ),
     )
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
 
-    async with timeout(1):
-        async with gateway:
-            with pytest.raises(TimeoutError):
-                await connection.action("vendor_action")
+    async with timeout(1), http.http_client, gateway:
+        with pytest.raises(TimeoutError):
+            await connection.action("vendor_action")
 
     assert hanging.cancelled.is_set()
     assert hanging.close_called.is_set()
-    assert hanging.decode_content is True
-    pool.request.assert_awaited_once()
-    kwargs = pool.request.await_args.kwargs
-    assert kwargs["preload_content"] is False
-    assert kwargs["redirect"] is False
-    assert kwargs["retries"] is False
+    assert len(http.requests) == 1
+    assert http.requests[0].extensions["timeout"] == {
+        "connect": 0.01,
+        "read": 0.01,
+        "write": 0.01,
+        "pool": 0.01,
+    }
 
 
 async def test_closed_gateway_rejects_new_http_actions() -> None:
@@ -233,7 +232,7 @@ async def test_closed_gateway_rejects_new_http_actions() -> None:
         Bot(),
         action=HttpAction(
             "http://127.0.0.1:1",
-            http_pool=cast(AsyncPoolManager, AsyncMock(spec=AsyncPoolManager)),
+            http_client=AsyncMock(spec=AsyncClient),
         ),
     )
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
@@ -244,37 +243,39 @@ async def test_closed_gateway_rejects_new_http_actions() -> None:
 
 
 async def test_http_action_cannot_cross_close_and_restart() -> None:
-    class BlockingPool:
+    class BlockingHTTP(HttpMock):
         def __init__(self) -> None:
+            super().__init__({"status": "ok", "retcode": 0, "data": {}})
             self.started = Event()
             self.release = Event()
 
-        async def request(self, *_: object, **__: object) -> object:
+        @override
+        async def handle(self, request: Request) -> Response:
             self.started.set()
             await self.release.wait()
-            return response(200, {"status": "ok", "retcode": 0, "data": {}})
+            return await super().handle(request)
 
-    pool = BlockingPool()
+    http = BlockingHTTP()
     gateway = OneBot11Gateway(
         Bot(),
         action=HttpAction(
             "http://onebot.example",
-            http_pool=cast(AsyncPoolManager, pool),
+            http_client=http.http_client,
         ),
     )
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
-    async with timeout(1):
+    async with timeout(1), http.http_client:
         await gateway.start()
         action = create_task(connection.action("vendor_action"))
         try:
-            await pool.started.wait()
+            await http.started.wait()
             await gateway.close()
             await gateway.start()
-            pool.release.set()
+            http.release.set()
             with pytest.raises(RuntimeError, match="gateway is closed"):
                 await action
         finally:
-            pool.release.set()
+            http.release.set()
             async with timeout(1):
                 await gateway.close()
 
@@ -514,7 +515,7 @@ async def test_message_return_uses_group_action() -> None:
     async with ActionServer() as server:
         gateway = OneBot11Gateway(
             Bot(),
-            action=HttpAction(server.base_url, http_pool=server.http_pool),
+            action=HttpAction(server.base_url, http_client=server.http_client),
         )
         connection = gateway.connection_for(event.self_)
         async with gateway:
@@ -546,13 +547,7 @@ async def test_message_return_uses_group_action() -> None:
 
 
 async def test_onebot11_does_not_support_internal_channel_send() -> None:
-    gateway = OneBot11Gateway(
-        Bot(),
-        action=HttpAction(
-            "http://127.0.0.1:1",
-            http_pool=cast(AsyncPoolManager, AsyncMock(spec=AsyncPoolManager)),
-        ),
-    )
+    gateway = OneBot11Gateway(Bot())
     connection = gateway.connection_for(BotSelf(platform="qq", user_id="10000"))
 
     async with gateway:

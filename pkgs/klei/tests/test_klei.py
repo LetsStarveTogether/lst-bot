@@ -1,12 +1,20 @@
+import gzip
 import json as jsonlib
-from asyncio import Event, create_task, sleep, timeout
-from collections.abc import Iterator, Mapping
+from asyncio import CancelledError, Event, create_task, gather, sleep, timeout
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, cast
 
 import klei.client as client_module
 import pytest
+from httpx2 import (
+    AsyncByteStream,
+    AsyncClient,
+    HTTPError,
+    MockTransport,
+    Request,
+    Response,
+)
 from klei import (
     KleiClient,
     LobbyData,
@@ -15,8 +23,6 @@ from klei import (
 )
 from klei.models import KleiDataResponse, Region
 from pydantic import JsonValue, SecretStr, ValidationError
-from urllib3_future import AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 
 VERSION_URL = "https://kleiforums.com/game-updates/dst/"
 LOBBY_URL = "https://lobby-v2-cdn.klei.com/{region}-Steam.json.gz"
@@ -55,60 +61,56 @@ class Reply:
     status: int = 200
     release: Event | None = None
     body_release: Event | None = None
+    headers: Mapping[str, str] | None = None
 
 
-class Response:
-    def __init__(self, body: bytes, status: int, body_release: Event | None) -> None:
-        self.status = status
+class BodyStream(AsyncByteStream):
+    def __init__(
+        self,
+        body: bytes,
+        body_release: Event | None,
+        *,
+        release_close: Event | None = None,
+    ) -> None:
         self._body = body
         self._body_release = body_release
+        self.body_started = Event()
+        self.close_started = Event()
+        self.release_close = release_close
         self.body_accessed = False
-        self.read_args: tuple[int | None, bool | None] | None = None
         self.closed = False
 
-    async def read(
-        self,
-        amt: int | None = None,
-        decode_content: bool | None = None,
-    ) -> bytes:
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         self.body_accessed = True
-        self.read_args = (amt, decode_content)
+        self.body_started.set()
         if self._body_release is not None:
             await self._body_release.wait()
-        return self._body if amt is None else self._body[:amt]
+        yield self._body
 
-    async def close(self) -> None:
+    async def aclose(self) -> None:
+        self.close_started.set()
+        if self.release_close is not None:
+            await self.release_close.wait()
         self.closed = True
 
 
-class RecordingPool:
+class RecordingTransport(MockTransport):
     def __init__(self, routes: Mapping[str, bytes | Reply]) -> None:
+        super().__init__(self.respond)
         self.routes = routes
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[Request] = []
         self.responses: list[Response] = []
+        self.streams: list[BodyStream] = []
 
-    async def request(
-        self,
-        method: str,
-        url: str,
-        **kwargs: Any,
-    ) -> Any:
-        call: dict[str, object] = {
-            "method": method,
-            "url": url,
-            "preload_content": kwargs.get("preload_content"),
-            "redirect": kwargs.get("redirect"),
-            "retries": kwargs.get("retries"),
-        }
-        if (json := kwargs.get("json")) is not None:
-            call["json"] = json
-        self.calls.append(call)
-
-        result = self.routes[url]
+    async def respond(self, request: Request) -> Response:
+        self.calls.append(request)
+        result = self.routes[str(request.url)]
         reply = result if isinstance(result, Reply) else Reply(result)
         if reply.release is not None:
             await reply.release.wait()
-        response = Response(reply.body, reply.status, reply.body_release)
+        stream = BodyStream(reply.body, reply.body_release)
+        response = Response(reply.status, headers=reply.headers, stream=stream)
+        self.streams.append(stream)
         self.responses.append(response)
         return response
 
@@ -142,32 +144,36 @@ def rows_payload(rows: list[JsonValue]) -> bytes:
     return jsonlib.dumps({"GET": rows}).encode()
 
 
-def client(pool: RecordingPool) -> KleiClient:
+def client(transport: RecordingTransport) -> KleiClient:
     return KleiClient(
         access_token=SecretStr("test-token"),
-        http_pool=cast("AsyncPoolManager", pool),
+        http_client=AsyncClient(
+            transport=transport,
+            trust_env=False,
+            follow_redirects=True,
+        ),
     )
 
 
 async def test_client_reads_only_consumed_version_fields() -> None:
-    pool = RecordingPool({VERSION_URL: VERSION_HTML.encode()})
+    transport = RecordingTransport({VERSION_URL: VERSION_HTML.encode()})
 
-    versions = await client(pool).get_latest_versions()
+    versions = await client(transport).get_latest_versions()
 
     versions_by_number = {version.number: version for version in versions}
     assert set(versions_by_number) == {736805, 736959}
     assert versions_by_number[736959].type is VersionType.RELEASE
     assert versions_by_number[736959].date == date(2026, 6, 11)
     assert set(versions_by_number[736959].model_dump()) == {"number", "type", "date"}
-    assert pool.calls == [
-        {
-            "method": "GET",
-            "url": VERSION_URL,
-            "preload_content": False,
-            "redirect": False,
-            "retries": False,
-        }
-    ]
+    (request,) = transport.calls
+    assert request.method == "GET"
+    assert str(request.url) == VERSION_URL
+    assert request.extensions["timeout"] == {
+        "connect": 30.0,
+        "read": 30.0,
+        "write": 30.0,
+        "pool": 30.0,
+    }
 
 
 async def test_client_parses_official_lobbies_and_room() -> None:
@@ -175,7 +181,7 @@ async def test_client_parses_official_lobbies_and_room() -> None:
     lobby_url = LOBBY_URL.format(region=region)
     room_url = ROOM_URL.format(region=region)
     routes = {LOBBY_URL.format(region=item): rows_payload([]) for item in REGIONS}
-    pool = RecordingPool(
+    transport = RecordingTransport(
         routes
         | {
             lobby_url: rows_payload([
@@ -186,7 +192,7 @@ async def test_client_parses_official_lobbies_and_room() -> None:
         }
     )
 
-    value = client(pool)
+    value = client(transport)
     (lobby,) = await value.get_lobby_data()
     (room,) = await value.get_room_data(((lobby.row_id, region),))
 
@@ -205,15 +211,15 @@ async def test_client_parses_official_lobbies_and_room() -> None:
         "season",
         "data",
     }
-    assert [call["url"] for call in pool.calls[:4]] == [
+    assert [str(call.url) for call in transport.calls[:4]] == [
         LOBBY_URL.format(region=item) for item in REGIONS
     ]
-    assert pool.calls[-1]["json"] == {
+    assert transport.calls[-1].method == "POST"
+    assert jsonlib.loads(transport.calls[-1].content) == {
         "__gameId": "DontStarveTogether",
         "__token": "test-token",
         "query": {"__rowId": "row-1"},
     }
-    assert pool.calls[-1]["redirect"] is False
 
 
 async def test_room_lookup_bounds_shared_requests(
@@ -221,7 +227,7 @@ async def test_room_lookup_bounds_shared_requests(
 ) -> None:
     batch_size = 2
     monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", batch_size)
-    value = client(RecordingPool({}))
+    value = client(RecordingTransport({}))
     release = Event()
     requests_started = Event()
     active_requests = 0
@@ -260,7 +266,7 @@ async def test_room_lookup_streams_unique_refs_in_first_seen_order(
 ) -> None:
     monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", 2)
     east, europe = REGIONS[:2]
-    pool = RecordingPool({
+    transport = RecordingTransport({
         ROOM_URL.format(region=east): rows_payload([room_row("east")]),
         ROOM_URL.format(region=europe): rows_payload([room_row("europe")]),
     })
@@ -268,14 +274,14 @@ async def test_room_lookup_streams_unique_refs_in_first_seen_order(
     def rooms() -> Iterator[tuple[str, Region]]:
         yield "row-1", east
         yield "row-1", east
-        assert len(pool.calls) == 1
+        assert len(transport.calls) == 1
         yield "row-1", europe
         yield "row-1", east
 
-    results = await client(pool).get_room_data(rooms())
+    results = await client(transport).get_room_data(rooms())
 
     assert [result.name for result in results] == ["east", "europe"]
-    assert [call["url"] for call in pool.calls] == [
+    assert [str(call.url) for call in transport.calls] == [
         ROOM_URL.format(region=east),
         ROOM_URL.format(region=europe),
     ]
@@ -286,7 +292,7 @@ async def test_room_lookup_has_wall_clock_timeout(
 ) -> None:
     monkeypatch.setattr(client_module, "_ROOM_CONCURRENCY", 1)
     monkeypatch.setattr(client_module, "_HTTP_TIMEOUT_SECONDS", 0.01)
-    value = client(RecordingPool({}))
+    value = client(RecordingTransport({}))
     calls = 0
 
     async def request(*_args: object, **_kwargs: object) -> bytes:
@@ -312,12 +318,12 @@ async def test_room_lookup_has_wall_clock_timeout(
 )
 async def test_client_rejects_invalid_room_response(body: bytes) -> None:
     region = "us-east-1"
-    pool = RecordingPool({
+    transport = RecordingTransport({
         ROOM_URL.format(region=region): body,
     })
 
     with pytest.RaisesGroup(ValidationError):
-        await client(pool).get_room_data((("row-1", region),))
+        await client(transport).get_room_data((("row-1", region),))
 
 
 @pytest.mark.parametrize("body", [b"{}", b'{"Error":{"Code":"E_FAIL"}}'])
@@ -326,37 +332,64 @@ async def test_client_rejects_invalid_lobby_envelope(body: bytes) -> None:
     routes[LOBBY_URL.format(region=REGIONS[0])] = body
 
     with pytest.RaisesGroup(ValidationError):
-        await client(RecordingPool(routes)).get_lobby_data()
+        await client(RecordingTransport(routes)).get_lobby_data()
 
 
 async def test_non_success_http_status_consumes_body_before_failing() -> None:
-    pool = RecordingPool({VERSION_URL: Reply(VERSION_HTML.encode(), status=500)})
+    transport = RecordingTransport({
+        VERSION_URL: Reply(VERSION_HTML.encode(), status=500)
+    })
 
-    with pytest.raises(HTTPError, match="HTTP 500"):
-        await client(pool).get_latest_versions()
+    with pytest.raises(HTTPError, match="500 Internal Server Error"):
+        await client(transport).get_latest_versions()
 
-    assert pool.responses[0].body_accessed is True
-    assert pool.responses[0].closed is True
+    assert transport.streams[0].body_accessed
+    assert transport.streams[0].closed
+    assert transport.responses[0].is_closed
 
 
+async def test_client_does_not_follow_redirects() -> None:
+    transport = RecordingTransport({
+        VERSION_URL: Reply(
+            b"redirect", status=302, headers={"location": "https://example.com/"}
+        )
+    })
+
+    with pytest.raises(HTTPError, match="302 Found"):
+        await client(transport).get_latest_versions()
+
+    assert [str(call.url) for call in transport.calls] == [VERSION_URL]
+    assert transport.streams[0].body_accessed
+    assert transport.streams[0].closed
+
+
+@pytest.mark.parametrize("compressed", [False, True])
 async def test_response_body_boundary_closes_connection(
+    compressed: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     body = VERSION_HTML.encode()
     monkeypatch.setattr(client_module, "_MAX_HTTP_BODY_BYTES", len(body))
-    accepted = RecordingPool({VERSION_URL: body})
-    rejected = RecordingPool({VERSION_URL: body + b"x"})
+    headers = {"content-encoding": "gzip"} if compressed else {}
+    accepted = RecordingTransport({
+        VERSION_URL: Reply(gzip.compress(body) if compressed else body, headers=headers)
+    })
+    rejected_body = body + b"x"
+    rejected = RecordingTransport({
+        VERSION_URL: Reply(
+            gzip.compress(rejected_body) if compressed else rejected_body,
+            headers=headers,
+        )
+    })
 
     await client(accepted).get_latest_versions()
     with pytest.raises(HTTPError, match="response body exceeds"):
         await client(rejected).get_latest_versions()
 
-    for pool in (accepted, rejected):
-        assert pool.responses[0].read_args == (len(body) + 1, True)
-        assert pool.responses[0].closed is True
-        assert pool.calls[0]["preload_content"] is False
-        assert pool.calls[0]["redirect"] is False
-        assert pool.calls[0]["retries"] is False
+    for transport in (accepted, rejected):
+        assert transport.streams[0].body_accessed
+        assert transport.streams[0].closed
+        assert transport.responses[0].is_closed
 
 
 @pytest.mark.parametrize("stage", ["request", "body"])
@@ -366,7 +399,7 @@ async def test_request_has_wall_clock_timeout(
 ) -> None:
     monkeypatch.setattr(client_module, "_HTTP_TIMEOUT_SECONDS", 0.01)
     blocked = Event()
-    pool = RecordingPool({
+    transport = RecordingTransport({
         VERSION_URL: Reply(
             VERSION_HTML.encode(),
             release=blocked if stage == "request" else None,
@@ -376,10 +409,49 @@ async def test_request_has_wall_clock_timeout(
 
     async with timeout(1):
         with pytest.raises(TimeoutError):
-            await client(pool).get_latest_versions()
+            await client(transport).get_latest_versions()
     if stage == "body":
-        assert pool.responses[0].body_accessed
-        assert pool.responses[0].closed
+        assert transport.streams[0].body_accessed
+        assert transport.streams[0].closed
+        assert transport.responses[0].is_closed
+
+
+@pytest.mark.parametrize("stage", ["body", "close"])
+async def test_repeated_cancellation_waits_for_response_close(stage: str) -> None:
+    release_body = Event()
+    release_close = Event()
+    stream = BodyStream(
+        VERSION_HTML.encode(),
+        release_body if stage == "body" else None,
+        release_close=release_close,
+    )
+    async with AsyncClient(
+        transport=MockTransport(lambda _: Response(200, stream=stream)),
+        trust_env=False,
+    ) as http_client:
+        value = KleiClient(SecretStr("test-token"), http_client=http_client)
+        task = create_task(value.get_latest_versions())
+        try:
+            async with timeout(1):
+                started = (
+                    stream.body_started if stage == "body" else stream.close_started
+                )
+                await started.wait()
+                task.cancel()
+                await stream.close_started.wait()
+                for _ in range(2):
+                    task.cancel()
+                    await sleep(0)
+                    assert not task.done()
+                release_close.set()
+                with pytest.raises(CancelledError):
+                    await task
+                assert stream.closed
+        finally:
+            release_body.set()
+            release_close.set()
+            task.cancel()
+            await gather(task, return_exceptions=True)
 
 
 def test_response_envelope_and_consumed_fields_are_validated() -> None:

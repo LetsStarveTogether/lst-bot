@@ -1,18 +1,18 @@
-from asyncio import Task, create_task, timeout, wait
-from contextlib import suppress
+from asyncio import CancelledError, Task, create_task, gather, timeout, wait
+from contextlib import aclosing, suppress
 from http import HTTPMethod, HTTPStatus
 from logging import getLogger
 from pathlib import Path
-from typing import Annotated, Literal
+from types import TracebackType
+from typing import Annotated, Literal, Self
 
+from httpx2 import AsyncClient, HTTPStatusError, RequestError
 from pydantic import BaseModel, Field, TypeAdapter
-from urllib3_future import AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 
 from .cache import read_cached_hitokoto, write_cache
 from .models import Hitokoto
 
-HTTP_TIMEOUT_SECONDS = 30.0
+HTTP_TIMEOUT_SECONDS = 120.0
 _BUNDLE_URL = "https://sentences-bundle.hitokoto.cn/"
 _MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
 _HITOKOTO_SENTENCES = TypeAdapter(list[Hitokoto])
@@ -40,12 +40,40 @@ class HitokotoClient:
     def __init__(
         self,
         *,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         cache_path: str | Path = Path(".cache/hitokoto.db"),
     ) -> None:
-        self.http_pool = http_pool
+        self.http_client = http_client
         self.cache_path = Path(cache_path)
         self._refresh_task: Task[None] | None = None
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        task = self._refresh_task
+        if task is None:
+            return
+        if not task.cancelling():
+            task.cancel()
+        cancellation = None
+        # Finish closing the response before propagating shutdown cancellation.
+        while not task.done():
+            try:
+                await wait((task,))
+            except CancelledError as error:
+                cancellation = error
+        self._refresh_task = None
+        if cancellation is not None:
+            raise cancellation
 
     async def get_hitokoto(self) -> Hitokoto:
         if self._refresh_task is not None and self._refresh_task.done():
@@ -79,9 +107,7 @@ class HitokotoClient:
                     sentence
                     for item in version.sentences
                     for sentence in _HITOKOTO_SENTENCES.validate_json(
-                        await self._get(
-                            f"{_BUNDLE_URL}{item.path.removeprefix('./').lstrip('/')}"
-                        )
+                        await self._get(f"{_BUNDLE_URL}{item.path.removeprefix('./')}")
                     )
                 ])
                 await write_cache(self.cache_path, sentences)
@@ -101,24 +127,53 @@ class HitokotoClient:
         self,
         url: str,
     ) -> bytes:
-        response = await self.http_pool.request(
+        async with self.http_client.stream(
             HTTPMethod.GET,
             url,
-            preload_content=False,
-            redirect=False,
-            retries=False,
-        )
-        try:
-            body = await response.read(
-                _MAX_HTTP_BODY_BYTES + 1,
-                decode_content=True,
-            )
-        finally:
-            await response.close()
-        if len(body) > _MAX_HTTP_BODY_BYTES:
-            msg = f"Hitokoto response exceeds {_MAX_HTTP_BODY_BYTES} bytes"
-            raise HTTPError(msg)
-        if response.status != HTTPStatus.OK:
-            msg = f"Hitokoto request failed: HTTP {response.status}"
-            raise HTTPError(msg)
-        return body
+            follow_redirects=False,
+            timeout=HTTP_TIMEOUT_SECONDS,
+        ) as response:
+
+            async def read() -> bytes:
+                body = bytearray()
+                async with aclosing(
+                    response.aiter_bytes(chunk_size=64 * 1024)
+                ) as chunks:
+                    async for chunk in chunks:
+                        if len(body) + len(chunk) > _MAX_HTTP_BODY_BYTES:
+                            msg = (
+                                "Hitokoto response exceeds "
+                                f"{_MAX_HTTP_BODY_BYTES} bytes"
+                            )
+                            raise RequestError(msg, request=response.request)
+                        body.extend(chunk)
+                return bytes(body)
+
+            reading = create_task(read())
+
+            async def cleanup() -> None:
+                await gather(reading, return_exceptions=True)
+                with suppress(Exception):
+                    await response.aclose()
+
+            try:
+                await wait((reading,))
+                body = reading.result()
+            finally:
+                # Let an in-flight close finish; cancel the body reader at most once.
+                if not reading.done() and not response.is_closed:
+                    reading.cancel()
+                cleaning = create_task(cleanup())
+                cancelled = None
+                while not cleaning.done():
+                    try:
+                        await wait((cleaning,))
+                    except CancelledError as error:
+                        cancelled = error
+                cleaning.result()
+                if cancelled is not None:
+                    raise cancelled
+            if response.status_code != HTTPStatus.OK:
+                msg = f"Hitokoto request failed: HTTP {response.status_code}"
+                raise HTTPStatusError(msg, request=response.request, response=response)
+            return body

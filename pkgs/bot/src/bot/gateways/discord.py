@@ -32,6 +32,7 @@ from time import time
 from typing import Annotated, Literal, Self, cast, override
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
+from httpx2 import AsyncClient, HTTPError, Response
 from pydantic import (
     AfterValidator,
     AwareDatetime,
@@ -52,9 +53,6 @@ from pydantic import (
     WebsocketUrl,
     model_validator,
 )
-from urllib3.filepost import encode_multipart_formdata
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 from websockets.exceptions import InvalidHandshake
 
 from bot._tasks import await_cleanup
@@ -142,9 +140,6 @@ type DiscordWebsocketUrl = Annotated[
 ]
 type DiscordQueryScalar = StrictStr | StrictInt | StrictBool
 type DiscordQueryValue = DiscordQueryScalar | list[DiscordQueryScalar]
-type MultipartFieldValue = (
-    str | bytes | tuple[str, str | bytes] | tuple[str, str | bytes, str]
-)
 
 
 def _snowflake(value: str) -> str:
@@ -710,7 +705,7 @@ class DiscordRestClient:
         self,
         token: SecretStr | str,
         *,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         base_url: str = DISCORD_API_BASE_URL,
     ) -> None:
         token_value = (
@@ -725,7 +720,7 @@ class DiscordRestClient:
             raise ValueError(msg)
         self.token = SecretStr(token_value)
         self.base_url = validate_https_base_url(base_url, "Discord")
-        self.http_pool = http_pool
+        self.http_client = http_client
         self._rest_lifecycle_lock = Lock()
         self._route_buckets: dict[tuple[str, str], str] = {}
         self._rate_buckets: defaultdict[tuple[str, str, str], _DiscordRateBucket] = (
@@ -838,16 +833,16 @@ class DiscordRestClient:
                         msg = "Discord API transport failed"
                         raise ConnectionError(msg) from None
                     payload = (
-                        self._parse_payload(data, response.status)
+                        self._parse_payload(data, response.status_code)
                         if request.response_type == "json"
                         or not HTTPStatus.OK
-                        <= response.status
+                        <= response.status_code
                         < HTTPStatus.MULTIPLE_CHOICES
                         else None
                     )
                     retry_after = (
                         self._retry_after(payload, response)
-                        if response.status == HTTPStatus.TOO_MANY_REQUESTS
+                        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS
                         else None
                     )
                     bound_bucket = self._bind_rate_bucket(
@@ -864,25 +859,25 @@ class DiscordRestClient:
                         bound_bucket=bound_bucket,
                         lane=lane,
                     )
-                    if response.status == HTTPStatus.UNAUTHORIZED and request.auth:
+                    if response.status_code == HTTPStatus.UNAUTHORIZED and request.auth:
                         self._unauthorized = True
                     break
-            if response.status == HTTPStatus.TOO_MANY_REQUESTS:
+            if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
                 if retry_after is not None and attempt < _MAX_REST_ATTEMPTS - 1:
                     continue
-                raise self._api_error(response.status, payload)
-            if response.status == HTTPStatus.BAD_GATEWAY:
+                raise self._api_error(response.status_code, payload)
+            if response.status_code == HTTPStatus.BAD_GATEWAY:
                 if attempt < _MAX_REST_ATTEMPTS - 1:
                     delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
                     with suppress(TimeoutError):
                         async with timeout(delay):
                             await self._rate_limit_interrupt.wait()
                     continue
-                raise self._api_error(response.status, payload)
-            if response.status == HTTPStatus.NO_CONTENT:
+                raise self._api_error(response.status_code, payload)
+            if response.status_code == HTTPStatus.NO_CONTENT:
                 return DiscordNoContent()
-            if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
-                raise self._api_error(response.status, payload)
+            if not HTTPStatus.OK <= response.status_code < HTTPStatus.MULTIPLE_CHOICES:
+                raise self._api_error(response.status_code, payload)
             if request.response_type == "bytes":
                 return DiscordBytes(data)
             return DiscordPayload(payload)
@@ -987,7 +982,7 @@ class DiscordRestClient:
 
     def _bind_rate_bucket(
         self,
-        response: AsyncHTTPResponse,
+        response: Response,
         *,
         route: tuple[str, str],
         major: str,
@@ -1051,74 +1046,45 @@ class DiscordRestClient:
     async def _request(
         self,
         request: DiscordRequest,
-    ) -> tuple[AsyncHTTPResponse, bytes]:
-        url = self._url(request)
+    ) -> tuple[Response, bytes]:
         headers = {"User-Agent": _USER_AGENT}
         if request.auth:
             headers["Authorization"] = f"Bot {self.token.get_secret_value()}"
         if request.reason is not None:
             headers["X-Audit-Log-Reason"] = quote(request.reason, safe="")
+        data: dict[str, JsonValue] | None = None
+        files: dict[str, tuple[str, bytes, str]] | None = None
         if request.files is not None:
-            fields: list[tuple[str, MultipartFieldValue]] = []
             if request.multipart == "form_fields" and isinstance(request.json_, dict):
-                fields.extend(
-                    (
-                        name,
-                        str(value).lower()
-                        if isinstance(value, bool)
-                        else ""
-                        if value is None
-                        else str(value),
-                    )
-                    for name, value in request.json_.items()
-                )
+                data = request.json_
             elif request.json_ is not None:
-                fields.append(("payload_json", dumpb(request.json_)))
-            fields.extend(
-                (
-                    file.field or f"files[{index}]",
-                    (file.filename, file.data, file.content_type),
+                data = {"payload_json": dumpb(request.json_).decode()}
+            files = {
+                file.field or f"files[{index}]": (
+                    file.filename,
+                    file.data,
+                    file.content_type,
                 )
                 for index, file in enumerate(request.files)
-            )
-            body, content_type = encode_multipart_formdata(fields)
-            headers["Content-Type"] = content_type
-            json = None
-        else:
-            body = None
-            json = request.json_
-        response = await self.http_pool.request(
+            }
+        outgoing = self.http_client.build_request(
             request.method,
-            url,
+            f"{self.base_url}{request.path}",
+            params=request.query,
             headers=headers,
-            body=body,
-            json=json,
-            preload_content=False,
-            redirect=False,
-            retries=False,
+            data=data,
+            files=files,
+            json=request.json_ if files is None else None,
             timeout=_API_TIMEOUT,
+        )
+        response = await self.http_client.send(
+            outgoing, stream=True, follow_redirects=False
         )
         return response, await read_http_body(response)
 
-    def _url(self, request: DiscordRequest) -> str:
-        url = f"{self.base_url}{request.path}"
-        if not request.query:
-            return url
-        pairs: list[tuple[str, str]] = []
-        for name, raw in request.query.items():
-            values = raw if isinstance(raw, list) else [raw]
-            pairs.extend(
-                (
-                    name,
-                    str(value).lower() if isinstance(value, bool) else str(value),
-                )
-                for value in values
-            )
-        return f"{url}?{urlencode(pairs)}"
-
     def _record_rate_limit(
         self,
-        response: AsyncHTTPResponse,
+        response: Response,
         payload: JsonValue,
         *,
         retry_after: float | None,
@@ -1126,7 +1092,7 @@ class DiscordRestClient:
         bound_bucket: _DiscordRateBucket,
         lane: Literal["authless", "bot", "interaction"],
     ) -> None:
-        if response.status == HTTPStatus.TOO_MANY_REQUESTS:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             if retry_after is None:
                 return
             ready_at = get_running_loop().time() + retry_after
@@ -1156,7 +1122,7 @@ class DiscordRestClient:
 
     @staticmethod
     def _is_global_rate_limit(
-        response: AsyncHTTPResponse,
+        response: Response,
         payload: JsonValue,
     ) -> bool:
         scope = header_value(response.headers, "X-RateLimit-Scope")
@@ -1180,7 +1146,7 @@ class DiscordRestClient:
     @staticmethod
     def _retry_after(
         payload: JsonValue,
-        response: AsyncHTTPResponse,
+        response: Response,
     ) -> float | None:
         value: object = (
             payload.get("retry_after") if isinstance(payload, dict) else None
@@ -1489,7 +1455,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
         bot: Bot,
         *,
         token: SecretStr | str,
-        http_pool: AsyncPoolManager,
+        http_client: AsyncClient,
         intents: int = DEFAULT_DISCORD_INTENTS,
         shard: tuple[int, int] = (0, 1),
         base_url: str = DISCORD_API_BASE_URL,
@@ -1500,7 +1466,7 @@ class DiscordGateway(Gateway, DiscordRestClient):
             self,
             token,
             base_url=base_url,
-            http_pool=http_pool,
+            http_client=http_client,
         )
         self.intents = TypeAdapter(StrictIntLiteral[DiscordIntent]).validate_python(
             intents

@@ -1,9 +1,16 @@
-from httpx import AsyncClient as MCPHttpClient
-from httpx import Timeout as MCPTimeout
-from httpx2 import AsyncClient
-from pydantic_ai import Agent, WebSearchTool
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from json import dumps
+from typing import Any
+
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.exceptions import MCPError
+from httpx2 import AsyncClient, Timeout
+from jsonschema import ValidationError
+from jsonschema.validators import validator_for
+from pydantic_ai import Agent, ModelRetry, Tool, WebSearchTool
 from pydantic_ai.capabilities import NativeTool
-from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
@@ -49,34 +56,95 @@ DST_AGENT_INSTRUCTIONS = """\
 """
 
 
-def build_question_agent(
+@asynccontextmanager
+async def build_question_agent(
     settings: Settings,
     *,
     http_client: AsyncClient,
-) -> Agent:
-    return Agent(
-        OpenRouterModel(
-            "deepseek/deepseek-v4-pro-0813",
-            provider=OpenRouterProvider(
-                api_key=settings.openrouter_api_key.get_secret_value(),
-                http_client=http_client,
-            ),
+) -> AsyncIterator[Agent]:
+    def create_dosu_client(*_args: object, **_kwargs: object) -> AsyncClient:
+        # FastMCP owns each session's client; retain our HTTP policy over its defaults.
+        return AsyncClient(
+            headers={"X-Dosu-API-Key": settings.dosu_api_key.get_secret_value()},
+            proxy=settings.proxy_url,
+            timeout=Timeout(REQUEST_TIMEOUT, connect=5),
+            http2=True,
+            trust_env=False,
+            follow_redirects=False,
+        )
+
+    async with Client(
+        StreamableHttpTransport(
+            settings.dosu_mcp_endpoint,
+            httpx_client_factory=create_dosu_client,
         ),
-        instructions=DST_AGENT_INSTRUCTIONS,
-        toolsets=[
-            MCPToolset(
-                settings.dosu_mcp_endpoint,
-                http_client=MCPHttpClient(
-                    headers={
-                        "X-Dosu-API-Key": settings.dosu_api_key.get_secret_value()
-                    },
-                    proxy=settings.proxy_url,
-                    timeout=MCPTimeout(REQUEST_TIMEOUT, connect=5),
-                    trust_env=False,
-                    follow_redirects=False,
+        timeout=REQUEST_TIMEOUT,
+        init_timeout=REQUEST_TIMEOUT,
+    ) as knowledge:
+        definition = next(
+            (
+                tool
+                for tool in await knowledge.list_tools()
+                if tool.name == "read_knowledge"
+            ),
+            None,
+        )
+        if definition is None:
+            msg = "Dosu MCP does not provide read_knowledge"
+            raise RuntimeError(msg)
+        validator_type = validator_for(definition.input_schema)
+        validator_type.check_schema(definition.input_schema)
+        validator = validator_type(definition.input_schema)
+
+        async def read_knowledge(**arguments: Any) -> Any:
+            try:
+                validator.validate(arguments)
+                result = await knowledge.call_tool(
+                    "read_knowledge", arguments, raise_on_error=False
+                )
+            except ValidationError as error:
+                raise ModelRetry(error.message) from error
+            except MCPError as error:
+                raise ModelRetry(str(error)) from error
+            content = [
+                content.text
+                if content.type == "text"
+                else content.model_dump(mode="json", by_alias=True)
+                for content in result.content
+            ]
+            output = (
+                result.structured_content
+                if result.structured_content is not None
+                else content[0]
+                if len(content) == 1
+                else content
+            )
+            if result.is_error:
+                message = (
+                    output
+                    if isinstance(output, str)
+                    else dumps(output, ensure_ascii=False)
+                )
+                raise ModelRetry(message if output else "Dosu read_knowledge failed")
+            return output
+
+        async with Agent(
+            OpenRouterModel(
+                "deepseek/deepseek-v4-pro-0813",
+                provider=OpenRouterProvider(
+                    api_key=settings.openrouter_api_key.get_secret_value(),
+                    http_client=http_client,
                 ),
-                read_timeout=REQUEST_TIMEOUT,
-            ).filtered(lambda _, tool_def: tool_def.name == "read_knowledge")
-        ],
-        capabilities=[NativeTool(WebSearchTool())],
-    )
+            ),
+            instructions=DST_AGENT_INSTRUCTIONS,
+            tools=[
+                Tool.from_schema(
+                    read_knowledge,
+                    name=definition.name,
+                    description=definition.description,
+                    json_schema=definition.input_schema,
+                )
+            ],
+            capabilities=[NativeTool(WebSearchTool())],
+        ) as agent:
+            yield agent

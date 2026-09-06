@@ -703,7 +703,7 @@ class OneBot11Gateway(OneBotGateway):
             "",
         ))
         async with timeout(backend.timeout):
-            response = await backend.http_pool.request(
+            request = backend.http_client.build_request(
                 HTTPMethod.POST,
                 action_url,
                 headers=self.authorization_headers,
@@ -711,13 +711,16 @@ class OneBot11Gateway(OneBotGateway):
                     mode="json",
                     exclude_unset=True,
                 ),
-                preload_content=False,
-                redirect=False,
-                retries=False,
+                timeout=backend.timeout,
+            )
+            response = await backend.http_client.send(
+                request, stream=True, follow_redirects=False
             )
             body = await read_http_body(response)
-            if response.status != HTTPStatus.OK:
-                msg = f"OneBot 11 action request failed with HTTP {response.status}"
+            if response.status_code != HTTPStatus.OK:
+                msg = (
+                    f"OneBot 11 action request failed with HTTP {response.status_code}"
+                )
                 raise RuntimeError(msg)
             payload = loads(body)
         return decode_action_response(payload)

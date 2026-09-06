@@ -44,15 +44,14 @@ from bot.gateways.discord import (
 from bot.json import loads
 from bot.protocol.actions import ActionParamInput, ActionParamModel
 from bot_test_support import ScriptedWebSocket
+from httpx2 import HTTPError, Request, Response
 from pydantic import BaseModel, ValidationError
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 
-from tests.gateways.support import HangingBodyResponse, response
+from tests.gateways.support import HangingBodyStream, response
 
 from .support import (
     CREDENTIAL,
-    Pool,
+    HttpMock,
     client,
     gateway,
     interaction,
@@ -78,7 +77,7 @@ def test_strict_boundaries_and_secret_repr() -> None:
         with pytest.raises(ValueError, match="Discord bot token"):
             discord_module.DiscordRestClient(
                 cast(str, token),
-                http_pool=cast(AsyncPoolManager, Pool()),
+                http_client=HttpMock().http_client,
             )
     with pytest.raises(ValueError, match="invalid value"):
         DiscordIntent(1 << 19)
@@ -365,7 +364,7 @@ async def test_default_connector_accepts_unbounded_official_gateway_frames(
 
 
 async def test_rest_json_rate_limit_errors_and_multipart() -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(429, {"retry_after": 0.001, "global": True}),
         response(200, {"id": "1"}),
         response(204),
@@ -373,7 +372,7 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
         response(200, body=b"raw"),
         response(400, {"code": 50035, "message": "Invalid Form Body"}),
     )
-    rest = gateway(pool)
+    rest = gateway(mock)
 
     payload = await rest.request_discord(
         "POST",
@@ -404,43 +403,39 @@ async def test_rest_json_rate_limit_errors_and_multipart() -> None:
     assert upload.root == {"id": "2"}
     assert isinstance(raw, DiscordBytes)
     assert raw.root == b"raw"
-    _, url, kwargs = pool.requests[0]
-    assert url == "https://discord.example/api/v10/channels/1/messages?wait=true"
-    assert kwargs["headers"] == {
-        "User-Agent": (
-            "DiscordBot (https://github.com/LetsStarveTogether/lst-bot, 0.0.0)"
-        ),
-        "Authorization": "Bot token",
-        "X-Audit-Log-Reason": "test%20reason",
-    }
-    multipart = cast(bytes, pool.requests[3][2]["body"])
+    request = mock.requests[0]
+    assert (
+        str(request.url)
+        == "https://discord.example/api/v10/channels/1/messages?wait=true"
+    )
+    assert request.headers["User-Agent"] == (
+        "DiscordBot (https://github.com/LetsStarveTogether/lst-bot, 0.0.0)"
+    )
+    assert request.headers["Authorization"] == "Bot token"
+    assert request.headers["X-Audit-Log-Reason"] == "test%20reason"
+    multipart = mock.requests[3].content
     assert b'name="files[0]"' in multipart
     assert b"payload_json" not in multipart
     assert b"\r\n\r\nhello\r\n" in multipart
-    assert all(
-        kwargs["retries"] is False
-        and kwargs["preload_content"] is False
-        and kwargs["redirect"] is False
-        for _, _, kwargs in pool.requests
-    )
 
 
 async def test_rest_timeout_includes_response_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hanging = HangingBodyResponse()
+    hanging = HangingBodyStream()
     monkeypatch.setattr(discord_module, "_API_TIMEOUT", 0.01)
     async with timeout(1):
         with pytest.raises(ConnectionError, match="transport failed"):
-            await client(Pool(hanging)).request_discord("GET", "/gateway/bot")
+            await client(HttpMock(Response(200, stream=hanging))).request_discord(
+                "GET", "/gateway/bot"
+            )
     assert hanging.cancelled.is_set()
     assert hanging.close_called.is_set()
-    assert hanging.decode_content is True
 
 
 async def test_payload_json_multipart_supports_named_files_and_nested_json() -> None:
-    pool = Pool(response(200, {}))
-    rest = client(pool)
+    mock = HttpMock(response(200, {}))
+    rest = client(mock)
 
     await rest.request_discord(
         "POST",
@@ -455,7 +450,7 @@ async def test_payload_json_multipart_supports_named_files_and_nested_json() -> 
         ],
     )
 
-    body = cast(bytes, pool.requests[0][2]["body"])
+    body = mock.requests[0].content
     assert b'name="payload_json"\r\n\r\n{"target_user_ids":["1","2"]}' in body
     assert (
         b'name="target_users_file"; filename="users.txt"\r\n'
@@ -464,8 +459,8 @@ async def test_payload_json_multipart_supports_named_files_and_nested_json() -> 
 
 
 async def test_form_fields_multipart_requires_flat_json() -> None:
-    pool = Pool(response(200, {}))
-    rest = client(pool)
+    mock = HttpMock(response(200, {}))
+    rest = client(mock)
 
     await rest.request_discord(
         "POST",
@@ -475,7 +470,7 @@ async def test_form_fields_multipart_requires_flat_json() -> None:
         multipart="form_fields",
     )
 
-    body = cast(bytes, pool.requests[0][2]["body"])
+    body = mock.requests[0].content
     assert b'name="name"\r\n\r\nwave' in body
     assert b'name="description"\r\n\r\n\r\n--' in body
     assert b'name="tags"\r\n\r\nhello' in body
@@ -512,13 +507,13 @@ async def test_bad_gateway_retries_are_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(discord_module, "_RECONNECT_DELAYS", (0.0,))
-    recovered_pool = Pool(response(502, body=b"bad gateway"), response(200, {}))
+    recovered_pool = HttpMock(response(502, body=b"bad gateway"), response(200, {}))
 
     result = await client(recovered_pool).request_discord("GET", "/gateway/bot")
 
     assert isinstance(result, DiscordPayload)
     assert len(recovered_pool.requests) == 2
-    failed_pool = Pool(*(response(502, body=b"bad gateway") for _ in range(5)))
+    failed_pool = HttpMock(*(response(502, body=b"bad gateway") for _ in range(5)))
     with pytest.raises(DiscordAPIError, match="502"):
         await client(failed_pool).request_discord("GET", "/gateway/bot")
     assert len(failed_pool.requests) == 5
@@ -550,7 +545,7 @@ async def test_public_gateway_lifecycle_can_restart(
             {"op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": message()},
         )
 
-    pool = Pool(response(200, gateway_info), response(200, gateway_info))
+    mock = HttpMock(response(200, gateway_info), response(200, gateway_info))
     websockets = (scripted("first"), scripted("second"))
     pending = iter(websockets)
     urls: list[str] = []
@@ -566,7 +561,7 @@ async def test_public_gateway_lifecycle_can_restart(
         Bot(),
         token=CREDENTIAL,
         base_url="https://discord.example/api/v10",
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
         websocket_connector=connect,
     )
     ready = Event()
@@ -849,7 +844,7 @@ async def test_gateway_identify_limits_and_resume_session_lifetime(
     monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
     monkeypatch.setattr(discord_module, "sleep", mocked_sleep)
     instance = gateway(
-        Pool(
+        HttpMock(
             response(200, info(0, reset_after=1500, max_concurrency=1)),
             response(200, info(10, reset_after=60_000, max_concurrency=2)),
         )
@@ -875,7 +870,7 @@ async def test_gateway_identify_limits_and_resume_session_lifetime(
         6,
     ]
 
-    discovery_pool = Pool(
+    discovery_pool = HttpMock(
         response(200, info(10, reset_after=60_000, max_concurrency=1))
     )
     resuming = gateway(discovery_pool)
@@ -1266,8 +1261,10 @@ def test_gateway_server_close_code_policy() -> None:
 
 
 async def test_sequence_commit_and_public_message_actions() -> None:
-    pool = Pool(response(200, message(message_id="99", content="reply")), response(204))
-    instance = gateway(pool)
+    mock = HttpMock(
+        response(200, message(message_id="99", content="reply")), response(204)
+    )
+    instance = gateway(mock)
     instance._self = BotSelf(platform="discord", user_id="1")
     events: list[object] = []
     instance.enqueue_event = events.append  # ty: ignore[invalid-assignment]
@@ -1315,16 +1312,16 @@ async def test_sequence_commit_and_public_message_actions() -> None:
     )
     assert isinstance(sent, DiscordMessage)
     assert isinstance(deleted, DiscordNoContent)
-    assert pool.requests[0][0:2] == (
+    assert (mock.requests[0].method, str(mock.requests[0].url)) == (
         "POST",
         "https://discord.example/api/v10/channels/4/messages",
     )
-    assert pool.requests[0][2]["json"] == {
+    assert loads(mock.requests[0].content) == {
         "content": "reply",
         "allowed_mentions": {"parse": [], "users": [], "replied_user": False},
         "message_reference": {"message_id": "3", "fail_if_not_exists": False},
     }
-    assert pool.requests[1][0:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         "DELETE",
         "https://discord.example/api/v10/channels/4/messages/99",
     )
@@ -1338,7 +1335,7 @@ async def test_sequence_commit_and_public_message_actions() -> None:
                 user_id="2",
                 channel_id="4",
             )
-    assert len(pool.requests) == 2
+    assert len(mock.requests) == 2
 
     for wrong in (
         instance.connection_for(BotSelf(platform="discord", user_id="wrong")),
@@ -1422,8 +1419,8 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
             "/guilds/10/channels",
         ),
     )
-    pool = Pool(*(reply for _, _, reply, _, _, _ in cases))
-    instance = gateway(pool)
+    mock = HttpMock(*(reply for _, _, reply, _, _, _ in cases))
+    instance = gateway(mock)
     connection = instance.connection_for(instance._self)
 
     supported = await connection.action("get_supported_actions")
@@ -1456,8 +1453,11 @@ async def test_public_common_actions_map_endpoints_and_validate_names() -> None:
         expected for _, _, _, expected, _, _ in cases
     ]
     assert [
-        (method, url.removeprefix("https://discord.example/api/v10"))
-        for method, url, _ in pool.requests
+        (
+            request.method,
+            str(request.url).removeprefix("https://discord.example/api/v10"),
+        )
+        for request in mock.requests
     ] == [(method, path) for _, _, _, _, method, path in cases]
     invalid_names: tuple[tuple[str, dict[str, object]], ...] = (
         ("set_guild_name", {"guild_id": "1", "guild_name": "x"}),
@@ -1542,8 +1542,8 @@ def test_message_model_is_strict_but_accepts_new_fields() -> None:
 async def test_interaction_fallback_survives_a_full_event_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = Pool(response(204))
-    instance = gateway(pool)
+    mock = HttpMock(response(204))
+    instance = gateway(mock)
 
     def full(_: object) -> None:
         raise QueueFull
@@ -1559,29 +1559,24 @@ async def test_interaction_fallback_survives_a_full_event_queue(
         async with timeout(1):
             await pending.task
         assert instance._seq is None
-        _, url, kwargs = pool.requests[0]
-        assert url.endswith(f"/interactions/10/{CREDENTIAL}/callback")
-        assert kwargs["json"] == {"type": 5}
-        assert "Authorization" not in cast(dict[str, str], kwargs["headers"])
-        assert len(pool.requests) == 1
+        request = mock.requests[0]
+        assert request.url.path.endswith(f"/interactions/10/{CREDENTIAL}/callback")
+        assert loads(request.content) == {"type": 5}
+        assert "Authorization" not in request.headers
+        assert len(mock.requests) == 1
     finally:
         await instance.close()
 
 
 async def test_interaction_fallback_io_obeys_the_absolute_deadline() -> None:
-    class BlockingPool(Pool):
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+    class BlockingHttpMock(HttpMock):
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             await Event().wait()
             return response(204)
 
-    pool = BlockingPool()
-    instance = gateway(pool)
+    mock = BlockingHttpMock()
+    instance = gateway(mock)
     path = "/interactions/1/secret/callback"
     deadline = discord_module.get_running_loop().time() + 0.01
     pending = discord_module._DiscordInteractionCallback({"type": 5}, deadline)
@@ -1589,13 +1584,13 @@ async def test_interaction_fallback_io_obeys_the_absolute_deadline() -> None:
     pending.task = create_task(instance._run_interaction_callback(path, pending))
     async with timeout(0.2):
         await pending.task
-    assert len(pool.requests) == 1
+    assert len(mock.requests) == 1
     assert instance._interaction_callbacks == {}
 
 
 async def test_interaction_callbacks_do_not_start_after_deadlines() -> None:
-    pool = Pool(response(204))
-    instance = gateway(pool)
+    mock = HttpMock(response(204))
+    instance = gateway(mock)
     now = discord_module.get_running_loop().time()
     path = "/interactions/1/secret/callback"
     pending = discord_module._DiscordInteractionCallback(
@@ -1611,15 +1606,15 @@ async def test_interaction_callbacks_do_not_start_after_deadlines() -> None:
     assert pending.outcome is not None
     with pytest.raises(TimeoutError):
         pending.outcome.result()
-    assert [request[2]["json"] for request in pool.requests] == [{"type": 5}]
+    assert [loads(request.content) for request in mock.requests] == [{"type": 5}]
 
     expired = discord_module._DiscordInteractionCallback({"type": 5}, now - 1)
     await instance._run_interaction_callback(path, expired)
-    assert len(pool.requests) == 1
+    assert len(mock.requests) == 1
 
 
 async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
-    class BucketPool(Pool):
+    class BucketHttpMock(HttpMock):
         def __init__(self) -> None:
             super().__init__()
             self.blocking = False
@@ -1629,13 +1624,8 @@ async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
             self.both_started = Event()
             self.release = Event()
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             headers = {
                 "X-RateLimit-Bucket": "shared-bucket",
                 "X-RateLimit-Remaining": "1",
@@ -1653,8 +1643,8 @@ async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
                 self.active -= 1
             return response(200, {}, headers=headers)
 
-    pool = BucketPool()
-    rest = client(pool)
+    mock = BucketHttpMock()
+    rest = client(mock)
     await rest.request_discord("GET", "/channels/1/messages/10")
     await rest.request_discord("GET", "/channels/1/pins/10", auth=False)
     second_entered = Event()
@@ -1663,26 +1653,26 @@ async def test_dynamic_buckets_coordinate_lanes_per_major_resource() -> None:
         second_entered.set()
         await rest.request_discord("GET", "/channels/1/pins/11", auth=False)
 
-    pool.blocking = True
+    mock.blocking = True
     async with timeout(1), TaskGroup() as tasks:
         tasks.create_task(rest.request_discord("GET", "/channels/1/messages/11"))
-        await pool.first_started.wait()
+        await mock.first_started.wait()
         tasks.create_task(second_request())
         await second_entered.wait()
-        assert pool.max_active == 1
-        pool.release.set()
+        assert mock.max_active == 1
+        mock.release.set()
 
-    pool.active = 0
-    pool.max_active = 0
-    pool.first_started.clear()
-    pool.both_started.clear()
-    pool.release.clear()
+    mock.active = 0
+    mock.max_active = 0
+    mock.first_started.clear()
+    mock.both_started.clear()
+    mock.release.clear()
     async with timeout(1), TaskGroup() as tasks:
         tasks.create_task(rest.request_discord("GET", "/channels/1/messages/12"))
         tasks.create_task(rest.request_discord("GET", "/channels/2/pins/12"))
-        await pool.both_started.wait()
-        assert pool.max_active == 2
-        pool.release.set()
+        await mock.both_started.wait()
+        assert mock.max_active == 2
+        mock.release.set()
 
 
 async def test_cold_dynamic_routes_share_provisional_bucket(
@@ -1700,20 +1690,15 @@ async def test_cold_dynamic_routes_share_provisional_bucket(
     monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
     monkeypatch.setattr(discord_module, "timeout", virtual_timeout)
 
-    class BucketPool(Pool):
+    class BucketHttpMock(HttpMock):
         def __init__(self) -> None:
             super().__init__()
             self.started = Event()
             self.release = Event()
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
+        async def handle(self, request: Request) -> Response:
             index = len(self.requests)
-            self.requests.append((method, url, kwargs))
+            self.requests.append(request)
             self.started.set()
             await self.release.wait()
             return response(
@@ -1726,8 +1711,8 @@ async def test_cold_dynamic_routes_share_provisional_bucket(
                 },
             )
 
-    pool = BucketPool()
-    rest = client(pool)
+    mock = BucketHttpMock()
+    rest = client(mock)
     second_started = Event()
 
     async def second_request() -> None:
@@ -1736,40 +1721,38 @@ async def test_cold_dynamic_routes_share_provisional_bucket(
 
     async with timeout(1), TaskGroup() as tasks:
         tasks.create_task(rest.request_discord("GET", "/invites/alpha"))
-        await pool.started.wait()
+        await mock.started.wait()
         tasks.create_task(second_request())
         await second_started.wait()
-        assert len(pool.requests) == 1
-        pool.release.set()
+        assert len(mock.requests) == 1
+        mock.release.set()
 
-    assert [url.rsplit("/", 1)[-1] for _, url, _ in pool.requests] == ["alpha", "beta"]
+    assert [request.url.path.rsplit("/", 1)[-1] for request in mock.requests] == [
+        "alpha",
+        "beta",
+    ]
     first_bucket = rest._rate_buckets["bucket", "invites-0", ""]
     second_bucket = rest._rate_buckets["bucket", "invites-1", ""]
     assert (first_bucket.ready_at, second_bucket.ready_at) == pytest.approx((2.0, 4.0))
 
 
 async def test_rest_programming_errors_stay_visible() -> None:
-    class FailingPool(Pool):
+    class FailingHttpMock(HttpMock):
         def __init__(self, error: Exception) -> None:
             super().__init__()
             self.error = error
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             raise self.error
 
     marker = f"token-{id(object())}"
     with pytest.raises(ValueError, match="programming error"):
-        await client(FailingPool(ValueError("programming error"))).request_discord(
+        await client(FailingHttpMock(ValueError("programming error"))).request_discord(
             "GET", "/gateway/bot"
         )
     with pytest.raises(ConnectionError) as error:
-        await client(FailingPool(HTTPError(marker))).request_discord(
+        await client(FailingHttpMock(HTTPError(marker))).request_discord(
             "GET", "/gateway/bot"
         )
     assert marker not in str(error.value)
@@ -1779,7 +1762,7 @@ async def test_rest_programming_errors_stay_visible() -> None:
 async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class GlobalPool(Pool):
+    class GlobalHttpMock(HttpMock):
         def __init__(self) -> None:
             super().__init__()
             self.bot_attempts = 0
@@ -1789,14 +1772,9 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
             self.bot_interaction = Event()
             self.authless_interaction = Event()
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
-            if url.endswith("/gateway/bot"):
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
+            if str(request.url).endswith("/gateway/bot"):
                 self.bot_attempts += 1
                 if self.bot_attempts == 1:
                     self.bot_rate_limited.set()
@@ -1805,7 +1783,7 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
                         {"retry_after": 0.05, "global": True},
                     )
                 return response(200, {})
-            if url.endswith("/webhooks/1/secret"):
+            if str(request.url).endswith("/webhooks/1/secret"):
                 self.authless_attempts += 1
                 if self.authless_attempts == 1:
                     self.authless_rate_limited.set()
@@ -1814,8 +1792,8 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
                         {"retry_after": 0.05, "global": True},
                     )
                 return response(200, {})
-            if "/interactions/" in url:
-                if "/interactions/1/" in url:
+            if "/interactions/" in request.url.path:
+                if "/interactions/1/" in request.url.path:
                     assert self.bot_attempts == 1
                     self.bot_interaction.set()
                 else:
@@ -1825,11 +1803,11 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
             return response(200, {})
 
     monkeypatch.setattr(discord_module, "_API_TIMEOUT", 0.01)
-    pool = GlobalPool()
-    rest = client(pool)
+    mock = GlobalHttpMock()
+    rest = client(mock)
     async with timeout(1), TaskGroup() as tasks:
         authenticated = tasks.create_task(rest.request_discord("GET", "/gateway/bot"))
-        await pool.bot_rate_limited.wait()
+        await mock.bot_rate_limited.wait()
         interaction = tasks.create_task(
             rest.request_discord(
                 "POST",
@@ -1837,7 +1815,7 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
                 json={"type": 5},
             )
         )
-        await pool.bot_interaction.wait()
+        await mock.bot_interaction.wait()
         interaction_response = await interaction
         authenticated_response = await authenticated
     assert isinstance(interaction_response, DiscordNoContent)
@@ -1845,7 +1823,7 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
 
     async with timeout(1), TaskGroup() as tasks:
         authless = tasks.create_task(rest.request_discord("GET", "/webhooks/1/secret"))
-        await pool.authless_rate_limited.wait()
+        await mock.authless_rate_limited.wait()
         interaction = tasks.create_task(
             rest.request_discord(
                 "POST",
@@ -1853,22 +1831,19 @@ async def test_bot_global_limit_does_not_block_interactions_or_timeout_waits(
                 json={"type": 5},
             )
         )
-        await pool.authless_interaction.wait()
+        await mock.authless_interaction.wait()
         second_interaction = await interaction
         authless_response = await authless
     assert isinstance(second_interaction, DiscordNoContent)
     assert isinstance(authless_response, DiscordPayload)
 
     await rest.request_discord("GET", "/webhooks/1")
-    token_headers = cast(
-        dict[str, str],
-        next(
-            kwargs["headers"]
-            for _, url, kwargs in pool.requests
-            if url.endswith("/webhooks/1/secret")
-        ),
+    token_headers = next(
+        request.headers
+        for request in mock.requests
+        if request.url.path.endswith("/webhooks/1/secret")
     )
-    bot_headers = cast(dict[str, str], pool.requests[-1][2]["headers"])
+    bot_headers = mock.requests[-1].headers
     assert "Authorization" not in token_headers
     assert bot_headers["Authorization"] == "Bot token"
 
@@ -1896,7 +1871,7 @@ async def test_proactive_global_limit_exempts_interactions(
 
     monkeypatch.setattr(discord_module, "get_running_loop", lambda: clock)
     monkeypatch.setattr(discord_module, "timeout", ExpiringTimeout)
-    rest = client(Pool())
+    rest = client(HttpMock())
 
     for _ in range(discord_module._MAX_GLOBAL_REST_REQUESTS + 1):
         await rest._wait_for_global_limit("bot")
@@ -1907,8 +1882,8 @@ async def test_proactive_global_limit_exempts_interactions(
 
 
 async def test_explicit_interaction_response_has_one_owner() -> None:
-    pool = Pool(response(204))
-    instance = gateway(pool)
+    mock = HttpMock(response(204))
+    instance = gateway(mock)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
     path = f"/interactions/10/{CREDENTIAL}/callback"
     encoded_path = f"/interactions/%31%30/{CREDENTIAL}/callback"
@@ -1926,11 +1901,10 @@ async def test_explicit_interaction_response_has_one_owner() -> None:
         )
         await pending.task
         assert isinstance(result, DiscordNoContent)
-        assert pool.requests[0][2]["json"] == {"type": 4}
-        headers = pool.requests[0][2]["headers"]
-        assert isinstance(headers, dict)
+        assert loads(mock.requests[0].content) == {"type": 4}
+        headers = mock.requests[0].headers
         assert "Authorization" not in headers
-        assert len(pool.requests) == 1
+        assert len(mock.requests) == 1
         assert instance._interaction_callbacks == {}
     finally:
         await instance.close()
@@ -1943,14 +1917,9 @@ async def test_failed_or_cancelled_interaction_response_falls_back(
     started = Event()
     release = Event()
 
-    class FailingOncePool(Pool):
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+    class FailingOnceHttpMock(HttpMock):
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             if len(self.requests) == 1:
                 started.set()
                 await release.wait()
@@ -1958,8 +1927,8 @@ async def test_failed_or_cancelled_interaction_response_falls_back(
                 raise HTTPError(msg)
             return response(204)
 
-    pool = FailingOncePool()
-    instance = gateway(pool)
+    mock = FailingOnceHttpMock()
+    instance = gateway(mock)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
     path = f"/interactions/10/{CREDENTIAL}/callback"
 
@@ -1988,7 +1957,7 @@ async def test_failed_or_cancelled_interaction_response_falls_back(
                 await caller
         async with timeout(1):
             await pending.task
-        assert [request[2]["json"] for request in pool.requests] == [
+        assert [loads(request.content) for request in mock.requests] == [
             {"type": 4},
             {"type": 5},
         ]
@@ -2000,20 +1969,15 @@ async def test_failed_or_cancelled_interaction_response_falls_back(
 async def test_slow_interaction_response_is_cancelled_then_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class BlockingPool(Pool):
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+    class BlockingHttpMock(HttpMock):
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             if len(self.requests) == 1:
                 await Event().wait()
             return response(204)
 
-    pool = BlockingPool()
-    instance = gateway(pool)
+    mock = BlockingHttpMock()
+    instance = gateway(mock)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
     monkeypatch.setattr(discord_module, "_INTERACTION_AUTO_ACK_DELAY", 0.01)
     path = f"/interactions/10/{CREDENTIAL}/callback"
@@ -2032,7 +1996,7 @@ async def test_slow_interaction_response_is_cancelled_then_falls_back(
                 )
         assert pending.task is not None
         await pending.task
-        assert [request[2]["json"] for request in pool.requests] == [
+        assert [loads(request.content) for request in mock.requests] == [
             {"type": 4},
             {"type": 5},
         ]
@@ -2044,14 +2008,9 @@ async def test_close_cancels_owner_and_waiting_interaction_response() -> None:
     started = Event()
     finished = Event()
 
-    class BlockingPool(Pool):
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+    class BlockingHttpMock(HttpMock):
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             started.set()
             try:
                 await Event().wait()
@@ -2059,8 +2018,8 @@ async def test_close_cancels_owner_and_waiting_interaction_response() -> None:
                 finished.set()
             return response(204)
 
-    pool = BlockingPool()
-    instance = gateway(pool)
+    mock = BlockingHttpMock()
+    instance = gateway(mock)
     instance.enqueue_event = lambda _: None  # ty: ignore[invalid-assignment]
     path = f"/interactions/10/{CREDENTIAL}/callback"
 
@@ -2084,34 +2043,29 @@ async def test_close_cancels_owner_and_waiting_interaction_response() -> None:
         assert pending.task.cancelled()
         assert finished.is_set()
         assert instance._interaction_callbacks == {}
-        assert len(pool.requests) == 1
+        assert len(mock.requests) == 1
     finally:
         await instance.close()
 
 
 async def test_close_waits_for_all_inflight_requests() -> None:
-    class BlockingPool(Pool):
+    class BlockingHttpMock(HttpMock):
         def __init__(self) -> None:
             super().__init__()
             self.started = 0
             self.both_started = Event()
             self.release = Event()
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            self.requests.append((method, url, kwargs))
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             self.started += 1
             if self.started == 2:
                 self.both_started.set()
             await self.release.wait()
             return response(204)
 
-    pool = BlockingPool()
-    rest = client(pool)
+    mock = BlockingHttpMock()
+    rest = client(mock)
     closing = Event()
 
     async def close() -> None:
@@ -2128,14 +2082,14 @@ async def test_close_waits_for_all_inflight_requests() -> None:
         authenticated_task = tasks.create_task(
             rest.request_discord("GET", "/gateway/bot")
         )
-        await pool.both_started.wait()
+        await mock.both_started.wait()
         close_task = tasks.create_task(close())
         await closing.wait()
         with pytest.raises(RuntimeError, match="closed"):
             await rest.request_discord("GET", "/gateway/bot")
         assert not close_task.done()
 
-        pool.release.set()
+        mock.release.set()
         assert isinstance(await interaction_task, DiscordNoContent)
         assert isinstance(await authenticated_task, DiscordNoContent)
         await close_task
@@ -2143,24 +2097,19 @@ async def test_close_waits_for_all_inflight_requests() -> None:
 
 
 async def test_close_waits_for_request_not_its_caller() -> None:
-    class BlockingPool(Pool):
+    class BlockingHttpMock(HttpMock):
         def __init__(self) -> None:
             super().__init__(response(200, {}))
             self.request_started = Event()
             self.release_request = Event()
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
+        async def handle(self, request: Request) -> Response:
             self.request_started.set()
             await self.release_request.wait()
-            return await super().request(method, url, **kwargs)
+            return await super().handle(request)
 
-    pool = BlockingPool()
-    rest = client(pool)
+    mock = BlockingHttpMock()
+    rest = client(mock)
     request_done = Event()
     release_caller = Event()
 
@@ -2171,11 +2120,11 @@ async def test_close_waits_for_request_not_its_caller() -> None:
 
     async with timeout(1), TaskGroup() as tasks:
         caller_task = tasks.create_task(caller())
-        await pool.request_started.wait()
+        await mock.request_started.wait()
         close_task = tasks.create_task(rest.close())
         await sleep(0)
         assert not close_task.done()
-        pool.release_request.set()
+        mock.release_request.set()
         await request_done.wait()
         await close_task
         assert not caller_task.done()
@@ -2183,8 +2132,8 @@ async def test_close_waits_for_request_not_its_caller() -> None:
 
 
 async def test_close_interrupts_rate_limit_wait() -> None:
-    pool = Pool(response(200, {}))
-    rest = client(pool)
+    mock = HttpMock(response(200, {}))
+    rest = client(mock)
     request = DiscordRequest.model_validate({
         "method": "GET",
         "path": "/gateway/bot",
@@ -2203,7 +2152,7 @@ async def test_close_interrupts_rate_limit_wait() -> None:
         await started.wait()
         assert bucket.lock.locked()
         await rest.close()
-    assert pool.requests == []
+    assert mock.requests == []
 
 
 async def test_close_interrupts_bad_gateway_backoff(
@@ -2211,18 +2160,15 @@ async def test_close_interrupts_bad_gateway_backoff(
 ) -> None:
     requested = Event()
 
-    class BadGatewayPool(Pool):
-        async def request(
-            self,
-            *_: object,
-            **__: object,
-        ) -> AsyncHTTPResponse:
+    class BadGatewayHttpMock(HttpMock):
+        async def handle(self, request: Request) -> Response:
+            self.requests.append(request)
             requested.set()
             return response(502, {"code": 0, "message": "bad gateway"})
 
     monkeypatch.setattr(discord_module, "_RECONNECT_DELAYS", (60.0,))
-    pool = BadGatewayPool()
-    rest = client(pool)
+    mock = BadGatewayHttpMock()
+    rest = client(mock)
     async with timeout(1):
         request_task = create_task(rest.request_discord("GET", "/gateway/bot"))
         cleanup_tasks: list[Task[object]] = [request_task]
@@ -2240,9 +2186,9 @@ async def test_close_interrupts_bad_gateway_backoff(
             await gather(*cleanup_tasks, return_exceptions=True)
 
 
-async def test_unauthorized_client_preserves_external_pool() -> None:
-    pool = Pool(response(401, {"code": 0, "message": "unauthorized"}))
-    rest = client(pool)
+async def test_unauthorized_client_preserves_external_http_client() -> None:
+    mock = HttpMock(response(401, {"code": 0, "message": "unauthorized"}))
+    rest = client(mock)
 
     with pytest.raises(DiscordAPIError, match="401"):
         await rest.request_discord("GET", "/users/@me")
@@ -2250,4 +2196,5 @@ async def test_unauthorized_client_preserves_external_pool() -> None:
         await rest.request_discord("GET", "/gateway/bot")
     await rest.close()
 
-    assert len(pool.requests) == 1
+    assert len(mock.requests) == 1
+    assert not mock.http_client.is_closed

@@ -5,8 +5,8 @@ from asyncio import (
     get_running_loop,
     timeout,
 )
+from collections.abc import AsyncIterator
 from http import HTTPMethod
-from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,37 +27,28 @@ from bot.gateways.qq_api import (
     QQSendGroupMessageRequest,
     QQStreamMessageRequest,
 )
-from bot.json import dumpb
+from bot.json import dumpb, loads
+from httpx2 import AsyncByteStream, Request, Response
 from pydantic import JsonValue, ValidationError
-from urllib3_future import AsyncHTTPResponse
 
 from tests.gateways.support import response
 
-from .support import Pool, client, gateway
+from .support import HttpMock, client, gateway
 
 
-class GatedResponse:
+class GatedStream(AsyncByteStream):
     def __init__(self, body: bytes, entered: Event, release: Event) -> None:
-        self.status = 200
-        self.headers: dict[str, str] = {}
         self.body = body
         self.entered = entered
         self.release = release
         self.closed = False
-        self.decode_content: bool | None = None
 
-    async def read(
-        self,
-        _: int,
-        decode_content: bool | None = None,
-    ) -> bytes:
-        self.decode_content = decode_content
-        assert decode_content is True
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         self.entered.set()
         await self.release.wait()
-        return self.body
+        yield self.body
 
-    async def close(self) -> None:
+    async def aclose(self) -> None:
         self.closed = True
 
 
@@ -247,13 +238,13 @@ def test_rest_request_models_follow_current_qq_contract() -> None:
 
 
 async def test_rest_preserves_callback_header_and_empty_body() -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, body=b""),
         response(200, body=b""),
         response(200, {"url_link": "https://qq.example/share"}),
     )
-    rest = client(pool)
+    rest = client(mock)
 
     result = await rest.request_qq(
         QQAction.ACK_INTERACTION,
@@ -268,26 +259,26 @@ async def test_rest_preserves_callback_header_and_empty_body() -> None:
 
     assert isinstance(result, QQNoContent)
     assert isinstance(recalled, QQNoContent)
-    assert pool.requests[1][0:2] == (
+    assert (mock.requests[1].method, str(mock.requests[1].url)) == (
         HTTPMethod.PUT,
         "https://qq.example/interactions/interaction",
     )
-    headers = cast(dict[str, str], pool.requests[1][2]["headers"])
+    headers = mock.requests[1].headers
     assert headers["X-Callback-AppID"] == "app"
-    assert pool.requests[1][2]["json"] == {"code": 0}
-    assert pool.requests[2][0:2] == (
+    assert loads(mock.requests[1].content) == {"code": 0}
+    assert (mock.requests[2].method, str(mock.requests[2].url)) == (
         HTTPMethod.DELETE,
         "https://qq.example/v2/groups/group/messages/message",
     )
-    assert pool.requests[3][2]["json"] == {}
+    assert loads(mock.requests[3].content) == {}
 
 
 async def test_channel_file_image_uses_multipart() -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, {"id": "message", "timestamp": "2026-08-21T00:00:00Z"}),
     )
-    connection = gateway(pool, online=True).connection_for(
+    connection = gateway(mock, online=True).connection_for(
         BotSelf(platform="qq", user_id="app")
     )
 
@@ -299,20 +290,19 @@ async def test_channel_file_image_uses_multipart() -> None:
         file_image="aW1hZ2U=",
     )
 
-    method, url, request = pool.requests[1]
-    assert (method, url) == (
+    request = mock.requests[1]
+    assert (request.method, str(request.url)) == (
         HTTPMethod.POST,
         "https://qq.example/channels/channel/messages",
     )
-    headers = cast(dict[str, str], request["headers"])
+    headers = request.headers
     assert headers["Content-Type"].startswith("multipart/form-data; boundary=")
-    body = cast(bytes, request["body"])
+    body = request.content
     assert b'name="file_image"; filename="image"' in body
     assert b"Content-Type: application/octet-stream" in body
     assert b"\r\n\r\nimage\r\n--" in body
     assert b"aW1hZ2U=" not in body
     assert b'{"message_id":"reply"}' in body
-    assert request["json"] is None
 
     with pytest.raises(ValidationError):
         await connection.action(
@@ -367,13 +357,13 @@ async def test_file_upload_supports_chunk_completion() -> None:
         }
         with pytest.raises(ValidationError):
             QQFilePrepareResult.model_validate(invalid)
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, prepared_payload),
         response(200, {}),
         response(200, uploaded),
     )
-    rest = client(pool)
+    rest = client(mock)
 
     prepared = await rest.request_qq(
         QQAction.PREPARE_GROUP_FILE_UPLOAD,
@@ -393,7 +383,7 @@ async def test_file_upload_supports_chunk_completion() -> None:
 
     assert isinstance(prepared, QQFilePrepareResult)
     assert prepared.model_dump(mode="json", exclude_none=True) == prepared_payload
-    assert [request[2]["json"] for request in pool.requests[1:]] == [
+    assert [loads(request.content) for request in mock.requests[1:]] == [
         prepare_body,
         finish_body,
         merge_body,
@@ -417,17 +407,15 @@ def test_v2_messages_reject_legacy_payload_types() -> None:
 
 @pytest.mark.parametrize("code", [11242, 11252, 11263, 11281])
 async def test_system_errors_retry_once_with_the_same_token(code: int) -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, {"code": code, "message": "temporary"}),
         response(200, []),
     )
 
-    await client(pool).request_qq(QQAction.LIST_BOT_GUILDS)
+    await client(mock).request_qq(QQAction.LIST_BOT_GUILDS)
 
-    headers = [
-        cast(dict[str, str], request[2]["headers"]) for request in pool.requests[1:]
-    ]
+    headers = [request.headers for request in mock.requests[1:]]
     assert [value["Authorization"] for value in headers] == [
         "QQBot token",
         "QQBot token",
@@ -436,29 +424,29 @@ async def test_system_errors_retry_once_with_the_same_token(code: int) -> None:
 
 async def test_system_error_is_never_retried_twice() -> None:
     error = {"code": 11242, "message": "temporary"}
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, error),
         response(200, error),
     )
 
     with pytest.raises(QQAPIError) as caught:
-        await client(pool).request_qq(QQAction.LIST_BOT_GUILDS)
+        await client(mock).request_qq(QQAction.LIST_BOT_GUILDS)
 
     assert caught.value.code == 11242
-    assert len(pool.requests) == 3
+    assert len(mock.requests) == 3
 
 
 async def test_final_expired_token_response_clears_cached_token() -> None:
     expired = {"code": 11244, "message": "expired"}
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "stale", "expires_in": 7200}),
         response(200, expired),
         response(200, {"access_token": "fresh", "expires_in": 7200}),
         response(200, expired),
         response(200, {"access_token": "next", "expires_in": 7200}),
     )
-    rest = client(pool)
+    rest = client(mock)
 
     with pytest.raises(QQAPIError) as caught:
         await rest.request_qq(QQAction.LIST_BOT_GUILDS)
@@ -481,13 +469,13 @@ async def test_non_success_responses_preserve_http_error_context(
     code: int | None,
     message: str | None,
 ) -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(503, body=body, headers={"X-Tps-Trace-ID": "http-trace"}),
     )
 
     with pytest.raises(QQAPIError) as caught:
-        await client(pool).request_qq(QQAction.LIST_BOT_GUILDS)
+        await client(mock).request_qq(QQAction.LIST_BOT_GUILDS)
 
     assert (
         caught.value.status,
@@ -500,12 +488,11 @@ async def test_non_success_responses_preserve_http_error_context(
 async def test_close_cannot_resurrect_an_inflight_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = Pool()
+    mock = HttpMock()
     started = Event()
     cancelled = Event()
 
-    async def request_token(*args: object, **kwargs: object) -> AsyncHTTPResponse:
-        _ = args, kwargs
+    async def request_token(_: Request) -> Response:
         if not started.is_set():
             started.set()
             try:
@@ -516,8 +503,8 @@ async def test_close_cannot_resurrect_an_inflight_token(
         return response(200, {"access_token": "next", "expires_in": 7200})
 
     request = AsyncMock(side_effect=request_token)
-    monkeypatch.setattr(pool, "request", request)
-    rest = client(pool)
+    monkeypatch.setattr(mock, "handle", request)
+    rest = client(mock)
 
     async def token_request() -> None:
         with pytest.raises(RuntimeError, match="closed"):
@@ -541,15 +528,14 @@ async def test_close_cannot_resurrect_an_inflight_token(
 async def test_close_rejects_an_inflight_action_result_across_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = Pool()
+    mock = HttpMock()
     action_started = Event()
     action_cancelled = Event()
     release_action = Event()
     calls = 0
 
-    async def request(*args: object, **kwargs: object) -> AsyncHTTPResponse:
+    async def request(_: Request) -> Response:
         nonlocal calls
-        _ = args, kwargs
         calls += 1
         if calls in {1, 3}:
             return response(
@@ -565,8 +551,8 @@ async def test_close_rejects_an_inflight_action_result_across_restart(
                 await release_action.wait()
         return response(200, [])
 
-    monkeypatch.setattr(pool, "request", request)
-    rest = client(pool)
+    monkeypatch.setattr(mock, "handle", request)
+    rest = client(mock)
 
     async def old_request() -> None:
         with pytest.raises(RuntimeError, match="closed"):
@@ -586,26 +572,26 @@ async def test_close_rejects_an_inflight_action_result_across_restart(
 
 
 async def test_nonempty_invalid_json_is_never_an_empty_success() -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, body=b"<html>upstream failure</html>"),
     )
 
     with pytest.raises(RuntimeError, match="invalid JSON"):
-        await client(pool).request_qq(
+        await client(mock).request_qq(
             QQAction.ACK_INTERACTION,
             interaction_id="interaction",
         )
 
 
 async def test_no_content_response_rejects_extra_data() -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, {"unexpected": True}),
     )
 
     with pytest.raises(RuntimeError, match="invalid response"):
-        await client(pool).request_qq(QQAction.DELETE_CHANNEL, channel_id="channel")
+        await client(mock).request_qq(QQAction.DELETE_CHANNEL, channel_id="channel")
 
 
 @pytest.mark.parametrize(
@@ -647,13 +633,13 @@ async def test_success_response_schema_is_validated(
     params: dict[str, object],
     payload: JsonValue,
 ) -> None:
-    pool = Pool(
+    mock = HttpMock(
         response(200, {"access_token": "token", "expires_in": 7200}),
         response(200, payload),
     )
 
     with pytest.raises(RuntimeError, match="invalid response"):
-        await client(pool).request_qq(action, **params)
+        await client(mock).request_qq(action, **params)
 
 
 @pytest.mark.parametrize("phase", ["request", "body"])
@@ -663,22 +649,21 @@ async def test_http_deadline_covers_request_and_response_body(
 ) -> None:
     never = Event()
     body_entered = Event()
-    pool = Pool()
+    mock = HttpMock()
 
-    async def blocked_request(*args: object, **kwargs: object) -> AsyncHTTPResponse:
-        _ = args, kwargs
+    async def blocked_request(_: Request) -> Response:
         if phase == "request":
             await never.wait()
         if phase == "body":
-            return cast(AsyncHTTPResponse, GatedResponse(b"", body_entered, never))
+            return Response(200, stream=GatedStream(b"", body_entered, never))
         return response(200, {"access_token": "token", "expires_in": 7200})
 
-    monkeypatch.setattr(pool, "request", blocked_request)
+    monkeypatch.setattr(mock, "handle", blocked_request)
     monkeypatch.setattr(qq_api, "_HTTP_TIMEOUT", 0.01)
 
     async with timeout(1):
         with pytest.raises(TimeoutError):
-            await client(pool).access_token()
+            await client(mock).access_token()
     assert body_entered.is_set() is (phase == "body")
 
 
@@ -692,17 +677,16 @@ async def test_action_deadline_is_shared_by_token_and_action_io(
     token_body_release = Event()
     final_entered = Event()
     final_release = Event()
-    pool = Pool()
+    mock = HttpMock()
     calls = 0
 
-    async def request(*args: object, **kwargs: object) -> AsyncHTTPResponse:
+    async def request(_: Request) -> Response:
         nonlocal calls
-        _ = args, kwargs
         calls += 1
         if calls == 1:
-            return cast(
-                AsyncHTTPResponse,
-                GatedResponse(
+            return Response(
+                200,
+                stream=GatedStream(
                     dumpb({"access_token": "token", "expires_in": 7200}),
                     token_body_entered,
                     token_body_release,
@@ -712,12 +696,12 @@ async def test_action_deadline_is_shared_by_token_and_action_io(
             final_entered.set()
             await final_release.wait()
             return response(200, [])
-        return cast(
-            AsyncHTTPResponse,
-            GatedResponse(dumpb([]), final_entered, final_release),
+        return Response(
+            200,
+            stream=GatedStream(dumpb([]), final_entered, final_release),
         )
 
-    monkeypatch.setattr(pool, "request", request)
+    monkeypatch.setattr(mock, "handle", request)
     now = loop.time
     clock_offset = 0.0
     monkeypatch.setattr(loop, "time", lambda: now() + clock_offset)
@@ -726,7 +710,7 @@ async def test_action_deadline_is_shared_by_token_and_action_io(
 
     async def request_until_timeout() -> None:
         with pytest.raises(TimeoutError):
-            await client(pool).request_qq(QQAction.LIST_BOT_GUILDS)
+            await client(mock).request_qq(QQAction.LIST_BOT_GUILDS)
 
     async with timeout(1), TaskGroup() as tasks:
         task = tasks.create_task(request_until_timeout())

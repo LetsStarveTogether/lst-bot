@@ -7,9 +7,9 @@ from asyncio import (
     create_task,
     timeout,
 )
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from hashlib import sha256
-from typing import cast
+from typing import cast, override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -35,6 +35,7 @@ from bot.gateways.telegram_api import (
     TelegramUser,
     TelegramVenue,
 )
+from bot.json import loads
 from bot.protocol.actions import ActionParamModel
 from bot.protocol.enums import Action
 from bot.protocol.events import (
@@ -43,37 +44,37 @@ from bot.protocol.events import (
     MessageEvent,
     NoticeEvent,
 )
+from httpx2 import AsyncByteStream, Request, Response
 from pydantic import JsonValue, ValidationError
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
 
-from tests.gateways.support import HangingBodyResponse, Pool, response
+from tests.gateways.support import HangingBodyStream, HttpMock, response
 
 CREDENTIAL = "opaque-token"
 SUPERGROUP_ID = -1_000_000_000_001
 
 
-def client(pool: object, *, max_rate_limit_retries: int = 2) -> TelegramRestClient:
+def client(mock: HttpMock, *, max_rate_limit_retries: int = 2) -> TelegramRestClient:
     return TelegramRestClient(
         CREDENTIAL,
         base_url="https://telegram.example",
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
         max_rate_limit_retries=max_rate_limit_retries,
     )
 
 
-def make_gateway(pool: object | None = None) -> TelegramGateway:
+def make_gateway(mock: HttpMock | None = None) -> TelegramGateway:
     return TelegramGateway(
         Bot(),
         token=CREDENTIAL,
         base_url="https://telegram.example",
-        http_pool=cast(AsyncPoolManager, pool if pool is not None else Pool()),
+        http_client=(mock if mock is not None else HttpMock()).http_client,
     )
 
 
 def gateway_connection(
-    pool: object | None = None,
+    mock: HttpMock | None = None,
 ) -> tuple[TelegramGateway, telegram_module.TelegramConnection]:
-    gateway = make_gateway(pool)
+    gateway = make_gateway(mock)
     gateway._self = BotSelf(platform="telegram", user_id="123")
     return gateway, gateway.connection_for(gateway._self)
 
@@ -247,7 +248,7 @@ def test_current_telegram_model_boundaries() -> None:
         TelegramGateway(
             Bot(),
             token=CREDENTIAL,
-            http_pool=cast(AsyncPoolManager, Pool()),
+            http_client=HttpMock().http_client,
             poll_timeout=maximum_int32 + 1,
         )
 
@@ -477,15 +478,15 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
         with pytest.raises(ValidationError):
             telegram_module._message_calls("42", Msg.from_input("reply"), obsolete)
 
-    pool = Pool({"ok": True, "result": {"message_id": 1}})
-    _, connection = gateway_connection(pool)
+    mock = HttpMock({"ok": True, "result": {"message_id": 1}})
+    _, connection = gateway_connection(mock)
     await connection.action(
         "sendPhoto",
         chat_id=42,
         photo="photo",
         has_spoiler=True,
     )
-    assert pool.requests[0][2]["json"] == {
+    assert loads(mock.requests[0].content) == {
         "chat_id": 42,
         "photo": "photo",
         "has_spoiler": True,
@@ -498,13 +499,13 @@ async def test_common_message_options_are_scoped_to_supported_methods() -> None:
 )
 def test_token_is_validated_without_leaking(token: str) -> None:
     with pytest.raises(ValueError, match="invalid Telegram bot token") as error:
-        TelegramRestClient(token, http_pool=cast(AsyncPoolManager, Pool()))
+        TelegramRestClient(token, http_client=HttpMock().http_client)
     if token:
         assert token not in str(error.value)
 
 
 def test_secrets_are_not_represented() -> None:
-    assert "token" not in repr(client(Pool()))
+    assert "token" not in repr(client(HttpMock()))
     secret_result = TelegramResult("managed-secret")
     assert "managed-secret" not in repr(secret_result)
     assert "managed-secret" not in str(secret_result)
@@ -514,13 +515,13 @@ async def test_response_json_rejects_nonfinite_numbers() -> None:
     for value in ("1e400", "NaN", "Infinity"):
         body = f'{{"ok":true,"result":{value}}}'.encode()
         with pytest.raises(RuntimeError, match="invalid response"):
-            await client(Pool(response(200, body=body))).call_json("getMe")
+            await client(HttpMock(response(200, body=body))).call_json("getMe")
     with pytest.raises(ValidationError):
         TelegramResult(float("inf"))
 
 
 async def test_rest_boundaries_and_get_updates_parameters() -> None:
-    pool = Pool(
+    mock = HttpMock(
         {
             "ok": True,
             "result": [
@@ -534,13 +535,13 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
         {"ok": True, "result": []},
         {"ok": True, "result": []},
     )
-    rest = client(pool)
+    rest = client(mock)
     updates = await rest.get_updates(offset=7, poll_timeout=30)
     assert isinstance(updates[0], TelegramUpdate)
     assert updates[1].payload is None
     assert updates[2].payload == ("future_update", {"value": 1})
     assert updates[3].payload == ("stopped_message_generation", {})
-    params = cast(dict[str, object], pool.requests[0][2]["json"])
+    params = cast(dict[str, object], loads(mock.requests[0].content))
     assert (params["offset"], params["timeout"], params["limit"]) == (7, 30, 100)
     assert {
         "chat_member",
@@ -548,15 +549,15 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
         "message_reaction_count",
         "stopped_message_generation",
     } <= set(cast(list[str], params["allowed_updates"]))
-    assert pool.requests[0][2]["retries"] is False
-    assert pool.requests[0][2]["preload_content"] is False
-    assert pool.requests[0][2]["redirect"] is False
-    assert cast(float, pool.requests[0][2]["timeout"]) > 30
+    assert mock.requests[0].extensions["timeout"]["read"] > 30
     assert await rest.get_updates(offset=-1, poll_timeout=0) == []
-    assert cast(dict[str, object], pool.requests[1][2]["json"])["offset"] == -1
+    assert cast(dict[str, object], loads(mock.requests[1].content))["offset"] == -1
     for offset in (-(2**31), 2**31 - 1):
         assert await rest.get_updates(offset=offset, poll_timeout=0) == []
-        assert cast(dict[str, object], pool.requests[-1][2]["json"])["offset"] == offset
+        assert (
+            cast(dict[str, object], loads(mock.requests[-1].content))["offset"]
+            == offset
+        )
     for offset in (-(2**31) - 1, 2**31):
         with pytest.raises(ValidationError):
             await rest.get_updates(offset=offset, poll_timeout=0)
@@ -572,12 +573,12 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
     with pytest.raises(ValidationError):
         TelegramRestClient(
             CREDENTIAL,
-            http_pool=cast(AsyncPoolManager, Pool()),
+            http_client=HttpMock().http_client,
             request_timeout=float("nan"),
         )
 
     invalid = client(
-        Pool({
+        HttpMock({
             "ok": True,
             "result": [{"update_id": 10, "poll": True}],
         })
@@ -586,33 +587,39 @@ async def test_rest_boundaries_and_get_updates_parameters() -> None:
         await invalid.get_updates(offset=None, poll_timeout=0)
 
     too_many = client(
-        Pool({"ok": True, "result": [{"update_id": index} for index in range(1, 102)]})
+        HttpMock({
+            "ok": True,
+            "result": [{"update_id": index} for index in range(1, 102)],
+        })
     )
     with pytest.raises(ValidationError):
         await too_many.get_updates(offset=None, poll_timeout=0)
 
-    class BrokenPool:
-        async def request(self, *_: object, **__: object) -> AsyncHTTPResponse:
+    class BrokenHttpMock(HttpMock):
+        @override
+        async def handle(self, request: Request) -> Response:
+            _ = request
             msg = "local bug"
             raise ValueError(msg)
 
     with pytest.raises(ValueError, match="local bug"):
-        await client(BrokenPool()).call_json("getMe")
+        await client(BrokenHttpMock()).call_json("getMe")
 
 
 async def test_rest_timeout_includes_response_body() -> None:
-    hanging = HangingBodyResponse()
+    hanging = HangingBodyStream()
     async with timeout(1):
         with pytest.raises(ConnectionError, match="request failed"):
-            await client(Pool(hanging)).call_json("getMe", request_timeout=0.01)
+            await client(HttpMock(Response(200, stream=hanging))).call_json(
+                "getMe", request_timeout=0.01
+            )
     assert hanging.cancelled.is_set()
     assert hanging.close_called.is_set()
-    assert hanging.decode_content is True
 
 
 async def test_multipart_preserves_file_metadata() -> None:
-    pool = Pool({"ok": True, "result": True})
-    instance = make_gateway(pool)
+    mock = HttpMock({"ok": True, "result": True})
+    instance = make_gateway(mock)
     instance._self = BotSelf(platform="telegram", user_id="123")
     await instance.connection_for(instance._self).action(
         "sendDocument",
@@ -625,11 +632,8 @@ async def test_multipart_preserves_file_metadata() -> None:
             }
         },
     )
-    body = pool.requests[0][2]["body"]
+    body = mock.requests[0].content
     assert isinstance(body, bytes)
-    assert pool.requests[0][2]["retries"] is False
-    assert pool.requests[0][2]["preload_content"] is False
-    assert pool.requests[0][2]["redirect"] is False
     assert b'filename="report.txt"' in body
     assert b"Content-Type: text/plain" in body
     assert b"content" in body
@@ -638,12 +642,12 @@ async def test_multipart_preserves_file_metadata() -> None:
 async def test_file_download_is_bounded_and_token_safe() -> None:
     file = {"file_id": "file", "file_unique_id": "unique"}
     stream = response(200, body=b"abcdef")
-    pool = Pool({
+    mock = HttpMock({
         "ok": True,
         "result": file | {"file_path": "documents/a b.txt"},
     })
-    pool.responses.append(stream)
-    gateway = make_gateway(pool)
+    mock.responses.append(stream)
+    gateway = make_gateway(mock)
     gateway._self = BotSelf(platform="telegram", user_id="123")
     connection = gateway.connection_for(gateway._self)
 
@@ -656,23 +660,23 @@ async def test_file_download_is_bounded_and_token_safe() -> None:
     assert downloaded.data == b"abcdef"
     assert downloaded.model_dump(mode="json")["data"] == "YWJjZGVm"
     assert downloaded.sha256 == sha256(b"abcdef").hexdigest()
-    assert stream.isclosed()
-    assert pool.requests[1] == (
-        "GET",
-        f"https://telegram.example/file/bot{CREDENTIAL}/documents/a%20b.txt",
-        {
-            "headers": {"Accept-Encoding": "identity"},
-            "decode_content": False,
-            "redirect": False,
-            "retries": False,
-            "timeout": 30.0,
-            "preload_content": False,
-        },
+    assert stream.is_closed
+    download_request = mock.requests[1]
+    assert download_request.method == "GET"
+    assert str(download_request.url) == (
+        f"https://telegram.example/file/bot{CREDENTIAL}/documents/a%20b.txt"
     )
+    assert download_request.headers["Accept-Encoding"] == "identity"
+    assert download_request.extensions["timeout"] == {
+        "connect": 30.0,
+        "read": 30.0,
+        "write": 30.0,
+        "pool": 30.0,
+    }
     with pytest.raises(TypeError, match="data result type"):
         await connection.action(Action.GET_FILE, file_id="file", type="url")
 
-    absolute_pool = Pool({
+    absolute_pool = HttpMock({
         "ok": True,
         "result": file | {"file_path": "/srv/telegram/file"},
     })
@@ -681,7 +685,7 @@ async def test_file_download_is_bounded_and_token_safe() -> None:
     assert CREDENTIAL not in str(error.value)
     assert len(absolute_pool.requests) == 1
 
-    metadata_pool = Pool({
+    metadata_pool = HttpMock({
         "ok": True,
         "result": file | {"file_path": "documents/file.bin", "file_size": 5},
     })
@@ -690,7 +694,7 @@ async def test_file_download_is_bounded_and_token_safe() -> None:
     assert len(metadata_pool.requests) == 1
 
     oversized_stream = response(200, body=b"12345")
-    oversized_pool = Pool({
+    oversized_pool = HttpMock({
         "ok": True,
         "result": file | {"file_path": "documents/file.bin"},
     })
@@ -698,10 +702,10 @@ async def test_file_download_is_bounded_and_token_safe() -> None:
     with pytest.raises(TelegramFileTooLargeError) as error:
         await client(oversized_pool).download_file("file", max_bytes=4)
     assert CREDENTIAL not in str(error.value)
-    assert oversized_stream.isclosed()
+    assert oversized_stream.is_closed
 
     exact_stream = response(200, body=b"1234")
-    exact_pool = Pool({
+    exact_pool = HttpMock({
         "ok": True,
         "result": file | {"file_path": "documents/file.bin"},
     })
@@ -709,7 +713,7 @@ async def test_file_download_is_bounded_and_token_safe() -> None:
     exact = await client(exact_pool).download_file("file", max_bytes=4)
     assert exact.data == b"1234"
     assert exact.sha256 == sha256(b"1234").hexdigest()
-    assert exact_stream.isclosed()
+    assert exact_stream.is_closed
     for candidate, error_type in (
         (response(404, body=b""), ConnectionError),
         (
@@ -730,36 +734,29 @@ async def test_file_download_is_bounded_and_token_safe() -> None:
 
 
 async def test_file_download_finishes_close_after_repeated_cancellation() -> None:
-    class BlockingStreamResponse:
+    class BlockingStream(AsyncByteStream):
         def __init__(self) -> None:
-            self.status = 200
-            self.headers: dict[str, str] = {}
             self.closed = False
             self.reading = Event()
             self.closing = Event()
             self.release_close = Event()
 
-        async def read(
-            self,
-            amt: int | None = None,
-            decode_content: bool | None = None,
-            cache_content: bool = False,
-        ) -> bytes:
-            assert decode_content is False
-            _ = amt, cache_content
+        @override
+        async def __aiter__(self) -> AsyncIterator[bytes]:
             self.reading.set()
             await Event().wait()
-            return b""
+            yield b""
 
-        async def close(self) -> None:
+        @override
+        async def aclose(self) -> None:
             self.closing.set()
             await self.release_close.wait()
             self.closed = True
             msg = "close failed"
             raise RuntimeError(msg)
 
-    stream = BlockingStreamResponse()
-    pool = Pool({
+    stream = BlockingStream()
+    mock = HttpMock({
         "ok": True,
         "result": {
             "file_id": "file",
@@ -767,8 +764,8 @@ async def test_file_download_finishes_close_after_repeated_cancellation() -> Non
             "file_path": "documents/file.bin",
         },
     })
-    pool.responses.append(cast(AsyncHTTPResponse, stream))
-    task = create_task(client(pool).download_file("file"))
+    mock.responses.append(Response(200, stream=stream))
+    task = create_task(client(mock).download_file("file"))
 
     async with timeout(1):
         await stream.reading.wait()
@@ -789,51 +786,47 @@ async def test_rate_limit_retry_and_error_parameters() -> None:
         "description": "retry later",
         "parameters": {"retry_after": 0},
     }
-    pool = Pool()
-    pool.responses = [
+    mock = HttpMock()
+    mock.responses = [
         response(429, limited),
         response(200, {"ok": True, "result": 1}),
     ]
-    assert await client(pool).call_json("getMe") == 1
-    assert len(pool.requests) == 2
+    assert await client(mock).call_json("getMe") == 1
+    assert len(mock.requests) == 2
 
-    pool = Pool()
-    pool.responses = [
+    mock = HttpMock()
+    mock.responses = [
         response(
             429,
             {**limited, "parameters": {"retry_after": 31}},
         )
     ]
     with pytest.raises(TelegramAPIError) as error:
-        await client(pool).call_json("getMe")
+        await client(mock).call_json("getMe")
     assert error.value.parameters is not None
     assert error.value.parameters.retry_after == 31
 
-    pool = Pool()
-    pool.responses = [response(429, limited)]
+    mock = HttpMock()
+    mock.responses = [response(429, limited)]
     with pytest.raises(TelegramAPIError):
-        await client(pool, max_rate_limit_retries=0).call_json("getMe")
-    assert len(pool.requests) == 1
+        await client(mock, max_rate_limit_retries=0).call_json("getMe")
+    assert len(mock.requests) == 1
 
 
 async def test_close_stops_rate_limit_retry() -> None:
-    class SignallingPool(Pool):
+    class SignallingHttpMock(HttpMock):
         def __init__(self) -> None:
             super().__init__()
             self.requested = Event()
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            result = await super().request(method, url, **kwargs)
+        @override
+        async def handle(self, request: Request) -> Response:
+            result = await super().handle(request)
             self.requested.set()
             return result
 
-    pool = SignallingPool()
-    pool.responses = [
+    mock = SignallingHttpMock()
+    mock.responses = [
         response(
             429,
             {
@@ -845,7 +838,7 @@ async def test_close_stops_rate_limit_retry() -> None:
         ),
         response(200, {"ok": True, "result": True}),
     ]
-    rest = client(pool)
+    rest = client(mock)
 
     async def request_once() -> None:
         with pytest.raises(RuntimeError, match="closed"):
@@ -853,20 +846,23 @@ async def test_close_stops_rate_limit_retry() -> None:
 
     async with timeout(1), TaskGroup() as tasks:
         tasks.create_task(request_once())
-        await pool.requested.wait()
+        await mock.requested.wait()
         await rest.close()
         await rest.start()
-    assert len(pool.requests) == 1
+    assert len(mock.requests) == 1
     assert await rest.call_json("getMe") is True
 
 
 async def test_close_cancels_in_flight_request_across_restart() -> None:
-    class BlockingPool:
+    class BlockingHttpMock(HttpMock):
         def __init__(self) -> None:
+            super().__init__()
             self.requested = Event()
             self.cancelled = Event()
 
-        async def request(self, *_: object, **__: object) -> AsyncHTTPResponse:
+        @override
+        async def handle(self, request: Request) -> Response:
+            _ = request
             self.requested.set()
             try:
                 await Event().wait()
@@ -876,8 +872,8 @@ async def test_close_cancels_in_flight_request_across_restart() -> None:
             msg = "unreachable"
             raise AssertionError(msg)
 
-    pool = BlockingPool()
-    rest = client(pool)
+    mock = BlockingHttpMock()
+    rest = client(mock)
 
     async def request_once() -> None:
         with pytest.raises(RuntimeError, match="closed"):
@@ -885,24 +881,28 @@ async def test_close_cancels_in_flight_request_across_restart() -> None:
 
     async with timeout(1), TaskGroup() as tasks:
         tasks.create_task(request_once())
-        await pool.requested.wait()
+        await mock.requested.wait()
         await rest.close()
         await rest.start()
-        await pool.cancelled.wait()
+        await mock.cancelled.wait()
 
 
 async def test_cancellation_is_not_wrapped() -> None:
-    class CancellingPool:
-        async def request(self, *_: object, **__: object) -> AsyncHTTPResponse:
+    class CancellingHttpMock(HttpMock):
+        @override
+        async def handle(self, request: Request) -> Response:
+            _ = request
             raise CancelledError
 
     with pytest.raises(CancelledError):
-        await client(CancellingPool()).call_json("getMe")
+        await client(CancellingHttpMock()).call_json("getMe")
 
     started = Event()
 
-    class FailingCleanupPool:
-        async def request(self, *_: object, **__: object) -> AsyncHTTPResponse:
+    class FailingCleanupHttpMock(HttpMock):
+        @override
+        async def handle(self, request: Request) -> Response:
+            _ = request
             started.set()
             try:
                 await Event().wait()
@@ -913,7 +913,7 @@ async def test_cancellation_is_not_wrapped() -> None:
             raise AssertionError(msg)
 
     async with timeout(1):
-        task = create_task(client(FailingCleanupPool()).call_json("getMe"))
+        task = create_task(client(FailingCleanupHttpMock()).call_json("getMe"))
         await started.wait()
         task.cancel()
         with pytest.raises(CancelledError):
@@ -922,14 +922,14 @@ async def test_cancellation_is_not_wrapped() -> None:
 
 async def test_invalid_server_error_is_retryable_transport_failure() -> None:
     invalid = response(502, body=b"bad gateway")
-    pool = Pool()
-    pool.responses = [invalid]
+    mock = HttpMock()
+    mock.responses = [invalid]
     with pytest.raises(ConnectionError, match="invalid response"):
-        await client(pool).call_json("getMe")
+        await client(mock).call_json("getMe")
 
 
 async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
-    pool = Pool(
+    mock = HttpMock(
         {
             "ok": True,
             "result": {
@@ -959,7 +959,7 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
             },
         },
     )
-    gateway = make_gateway(pool)
+    gateway = make_gateway(mock)
     with pytest.raises(RuntimeError, match="reserved"):
         await gateway.call_json("getUpdates")
     with pytest.raises(RuntimeError, match="polling gateway"):
@@ -975,7 +975,7 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
         result = await connection.send_msg("hello", user_id="42")
         assert isinstance(result, TelegramResult)
         assert result.root == {"message_id": 1}
-        assert pool.requests[-1][2]["json"] == {
+        assert loads(mock.requests[-1].content) == {
             "chat_id": "42",
             "text": "hello",
         }
@@ -986,7 +986,7 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
             ],
             user_id="42",
         )
-        assert [request[2]["json"] for request in pool.requests[-2:]] == [
+        assert [loads(request.content) for request in mock.requests[-2:]] == [
             {"chat_id": "42", "text": "caption"},
             {"chat_id": "42", "sticker": "sticker"},
         ]
@@ -999,8 +999,8 @@ async def test_gateway_start_actions_and_get_updates_exclusivity() -> None:
             user_id="42",
         )
         assert [
-            (url.rsplit("/", 1)[-1], kwargs["json"])
-            for _, url, kwargs in pool.requests[-2:]
+            (request.url.path.rsplit("/", 1)[-1], loads(request.content))
+            for request in mock.requests[-2:]
         ] == [
             ("getMyCommands", {}),
             (
@@ -1045,9 +1045,9 @@ async def test_cancelling_start_rolls_back(
 async def test_failed_start_can_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = Pool()
+    mock = HttpMock()
     identify_error = RuntimeError("identify failed")
-    gateway = make_gateway(pool)
+    gateway = make_gateway(mock)
     identify = AsyncMock(
         side_effect=[
             identify_error,
@@ -1067,21 +1067,16 @@ async def test_failed_start_can_retry(
 
 
 async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
-    class LifecyclePool:
+    class LifecycleHttpMock(HttpMock):
         def __init__(self) -> None:
+            super().__init__()
             self.generation = 0
             self.delivered: set[int] = set()
-            self.requests: list[tuple[str, dict[str, object]]] = []
 
-        async def request(
-            self,
-            _: str,
-            url: str,
-            **kwargs: object,
-        ) -> AsyncHTTPResponse:
-            method = url.rsplit("/", 1)[-1]
-            params = cast(dict[str, object], kwargs["json"])
-            self.requests.append((method, params))
+        @override
+        async def handle(self, request: Request) -> Response:
+            method = request.url.path.rsplit("/", 1)[-1]
+            self.requests.append(request)
             if method == "getMe":
                 self.generation += 1
                 return response(
@@ -1117,12 +1112,12 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
             raise AssertionError(msg)
 
     bot = Bot()
-    pool = LifecyclePool()
+    mock = LifecycleHttpMock()
     gateway = TelegramGateway(
         bot,
         token=CREDENTIAL,
         base_url="https://telegram.example",
-        http_pool=cast(AsyncPoolManager, pool),
+        http_client=mock.http_client,
         poll_timeout=0,
     )
     bot.add_gateway(gateway)
@@ -1147,7 +1142,11 @@ async def test_real_bot_polling_lifecycle_dispatches_after_restart() -> None:
             await bot.close()
 
     assert received == [1, 2]
-    polls = [params for method, params in pool.requests if method == "getUpdates"]
+    polls = [
+        cast(dict[str, object], loads(request.content))
+        for request in mock.requests
+        if request.url.path.endswith("/getUpdates")
+    ]
     assert polls[0].get("offset") is None
     assert any(params.get("offset") == 2 for params in polls)
 
@@ -1212,8 +1211,8 @@ def test_removed_chat_boost_uses_removal_time() -> None:
 
 
 async def test_business_message_reply_uses_business_connection() -> None:
-    pool = Pool({"ok": True, "result": True})
-    gateway, connection = gateway_connection(pool)
+    mock = HttpMock({"ok": True, "result": True})
+    gateway, connection = gateway_connection(mock)
     business_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 1,
@@ -1229,7 +1228,7 @@ async def test_business_message_reply_uses_business_connection() -> None:
     )
     assert isinstance(business_event, MessageEvent)
     await connection.execute_message_action(business_event, "reply")
-    assert pool.requests[-1][2]["json"] == {
+    assert loads(mock.requests[-1].content) == {
         "chat_id": 99,
         "business_connection_id": "business",
         "text": "reply",
@@ -1237,8 +1236,8 @@ async def test_business_message_reply_uses_business_connection() -> None:
 
 
 async def test_direct_message_reply_requires_its_topic() -> None:
-    pool = Pool({"ok": True, "result": True})
-    gateway, connection = gateway_connection(pool)
+    mock = HttpMock({"ok": True, "result": True})
+    gateway, connection = gateway_connection(mock)
     direct_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 2,
@@ -1260,7 +1259,7 @@ async def test_direct_message_reply_requires_its_topic() -> None:
     )
     assert isinstance(direct_event, GroupMessageEvent)
     await connection.execute_message_action(direct_event, "reply")
-    assert pool.requests[-1][2]["json"] == {
+    assert loads(mock.requests[-1].content) == {
         "chat_id": SUPERGROUP_ID,
         "direct_messages_topic_id": 60,
         "text": "reply",
@@ -1273,8 +1272,8 @@ async def test_direct_message_reply_requires_its_topic() -> None:
 
 
 async def test_ephemeral_reply_uses_ephemeral_parameters() -> None:
-    pool = Pool(*({"ok": True, "result": True} for _ in range(2)))
-    gateway, connection = gateway_connection(pool)
+    mock = HttpMock(*({"ok": True, "result": True} for _ in range(2)))
+    gateway, connection = gateway_connection(mock)
     ephemeral_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 3,
@@ -1302,16 +1301,16 @@ async def test_ephemeral_reply_uses_ephemeral_parameters() -> None:
             {"type": "telegram.sticker", "data": {"file_id": "sticker"}},
         ],
     )
-    for request in pool.requests[-2:]:
-        params = cast(dict[str, object], request[2]["json"])
+    for request in mock.requests[-2:]:
+        params = cast(dict[str, object], loads(request.content))
         assert params["chat_id"] == SUPERGROUP_ID
         assert params["ephemeral_message_parameters"] == {"receiver_user_id": 42}
         assert params["reply_parameters"] == {"ephemeral_message_id": 70}
 
 
 async def test_guest_query_reply_accepts_only_plain_text() -> None:
-    pool = Pool({"ok": True, "result": True})
-    gateway, connection = gateway_connection(pool)
+    mock = HttpMock({"ok": True, "result": True})
+    gateway, connection = gateway_connection(mock)
     guest_event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 4,
@@ -1333,7 +1332,7 @@ async def test_guest_query_reply_accepts_only_plain_text() -> None:
     )
     assert isinstance(guest_event, MessageEvent)
     await connection.execute_message_action(guest_event, "reply")
-    assert pool.requests[-1][2]["json"] == {
+    assert loads(mock.requests[-1].content) == {
         "guest_query_id": "guest",
         "result": {
             "type": "article",
@@ -1359,15 +1358,15 @@ async def test_guest_query_reply_accepts_only_plain_text() -> None:
 
 
 async def test_delete_message_uses_ordinary_or_ephemeral_route() -> None:
-    pool = Pool(*({"ok": True, "result": True} for _ in range(2)))
-    _, connection = gateway_connection(pool)
+    mock = HttpMock(*({"ok": True, "result": True} for _ in range(2)))
+    _, connection = gateway_connection(mock)
     await connection.action(
         Action.DELETE_MESSAGE,
         message_id="12",
         group_id=str(SUPERGROUP_ID),
     )
-    assert pool.requests[-1][1].endswith("/deleteMessage")
-    assert pool.requests[-1][2]["json"] == {
+    assert str(mock.requests[-1].url).endswith("/deleteMessage")
+    assert loads(mock.requests[-1].content) == {
         "chat_id": str(SUPERGROUP_ID),
         "message_id": 12,
     }
@@ -1378,8 +1377,8 @@ async def test_delete_message_uses_ordinary_or_ephemeral_route() -> None:
         ephemeral_message_id=70,
         receiver_user_id=42,
     )
-    assert pool.requests[-1][1].endswith("/deleteEphemeralMessage")
-    assert pool.requests[-1][2]["json"] == {
+    assert str(mock.requests[-1].url).endswith("/deleteEphemeralMessage")
+    assert loads(mock.requests[-1].content) == {
         "chat_id": str(SUPERGROUP_ID),
         "receiver_user_id": 42,
         "ephemeral_message_id": 70,
@@ -1400,8 +1399,8 @@ async def test_delete_message_uses_ordinary_or_ephemeral_route() -> None:
 
 
 async def test_join_request_query_maps_and_native_response_is_routed() -> None:
-    pool = Pool({"ok": True, "result": True})
-    gateway, connection = gateway_connection(pool)
+    mock = HttpMock({"ok": True, "result": True})
+    gateway, connection = gateway_connection(mock)
     event = gateway._event_from_update(
         TelegramUpdate.model_validate({
             "update_id": 5,
@@ -1426,14 +1425,14 @@ async def test_join_request_query_maps_and_native_response_is_routed() -> None:
         chat_join_request_query_id=event.flag,
         result="approve",
     )
-    assert pool.requests[-1][2]["json"] == {
+    assert loads(mock.requests[-1].content) == {
         "chat_join_request_query_id": "query",
         "result": "approve",
     }
 
 
 async def test_webhook_conflict_fails_before_polling() -> None:
-    pool = Pool(
+    mock = HttpMock(
         {
             "ok": True,
             "result": {"id": 123, "is_bot": True, "first_name": "Bot"},
@@ -1447,7 +1446,7 @@ async def test_webhook_conflict_fails_before_polling() -> None:
             },
         },
     )
-    gateway = make_gateway(pool)
+    gateway = make_gateway(mock)
     with pytest.raises(RuntimeError, match="webhook") as error:
         await gateway.start()
     assert "secret.example" not in str(error.value)

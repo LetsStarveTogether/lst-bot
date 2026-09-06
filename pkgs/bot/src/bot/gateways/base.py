@@ -7,12 +7,13 @@ from asyncio import (
     create_task,
     gather,
     get_running_loop,
+    shield,
     timeout,
     wait,
 )
 from asyncio import Event as AsyncEvent
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from hmac import compare_digest
 from logging import getLogger
@@ -21,6 +22,8 @@ from typing import TYPE_CHECKING, Annotated, Protocol, Self, override
 from urllib.parse import parse_qs
 from uuid import uuid4
 
+from httpx2 import AsyncClient, HTTPError
+from httpx2 import Response as HTTPResponse
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
@@ -34,8 +37,6 @@ from pydantic import (
     UrlConstraints,
 )
 from robyn import Response
-from urllib3_future import AsyncHTTPResponse, AsyncPoolManager
-from urllib3_future.exceptions import HTTPError
 from websockets.asyncio.client import connect
 from websockets.asyncio.connection import Connection as NativeWebSocketConnection
 from websockets.asyncio.server import Server
@@ -101,23 +102,41 @@ def url_has_credentials(value: object) -> bool:
     )
 
 
+class HTTPResponseTooLargeError(HTTPError):
+    pass
+
+
 async def read_http_body(
-    response: AsyncHTTPResponse,
+    response: HTTPResponse,
     max_bytes: int = _MAX_HTTP_RESPONSE_BYTES,
+    *,
+    raw: bool = False,
 ) -> bytes:
+    async def read() -> bytes:
+        body = bytearray()
+        chunks = response.aiter_raw() if raw else response.aiter_bytes()
+        async with aclosing(chunks):
+            async for chunk in chunks:
+                if len(body) + len(chunk) > max_bytes:
+                    msg = f"HTTP response exceeds the {max_bytes}-byte limit"
+                    raise HTTPResponseTooLargeError(msg)
+                body.extend(chunk)
+        return bytes(body)
+
+    reading = create_task(read())
+
+    async def cleanup() -> None:
+        await gather(reading, return_exceptions=True)
+        with suppress(Exception):
+            await response.aclose()
+
     try:
-        body = await response.read(max_bytes + 1, decode_content=True)
-        if len(body) > max_bytes:
-            msg = f"HTTP response exceeds the {max_bytes}-byte limit"
-            raise HTTPError(msg)
-        return body
+        return await shield(reading)
     finally:
-
-        async def close() -> None:
-            with suppress(Exception):
-                await response.close()
-
-        await await_cleanup(create_task(close()))
+        # HTTPX marks the response closed before awaiting transport cleanup.
+        if not reading.done() and not response.is_closed:
+            reading.cancel()
+        await await_cleanup(create_task(cleanup()))
 
 
 async def run_while_open[T](
@@ -172,7 +191,7 @@ type WebSocketConnector = Callable[
 class HttpAction:
     base_url: str
     timeout: float = 30.0
-    http_pool: AsyncPoolManager = field(kw_only=True, repr=False)
+    http_client: AsyncClient = field(kw_only=True, repr=False)
 
     def __post_init__(self) -> None:
         msg = "HTTP action base URL must be an absolute HTTP(S) URL"
@@ -739,7 +758,7 @@ def _field_values(
     *,
     case_insensitive: bool = False,
 ) -> list[object]:
-    get_all = getattr(fields, "get_all", None)
+    get_all = getattr(fields, "get_all", None) or getattr(fields, "get_list", None)
     if callable(get_all):
         values = get_all(name)
         if not values and case_insensitive and name.lower() != name:
