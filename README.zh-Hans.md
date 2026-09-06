@@ -18,6 +18,10 @@
 - 管理本机 DST 房间并发送定时活跃报告。
 - 使用 AI 助手回答 DST 问题。
 
+房间管理使用部署目录中的完整编号，保留前导零，例如 `/房间存档 000,020,100`。
+`/房间回档 020 2` 表示回退两个存档点；重启、重置使用相同的编号列表格式。
+成功回复表示请求已发送，实际执行结果需在房间中确认。
+
 ## 架构
 
 ```mermaid
@@ -36,6 +40,9 @@ flowchart LR
 - `pkgs/` 包含 bot 框架和服务客户端。
 - `systemd/` 包含部署单元。
 - 测试放在其覆盖的代码旁边。
+
+所有 HTTP 集成统一使用 HTTPX2；可复用客户端和网关通过 `http_client: httpx2.AsyncClient` 接收外部管理的客户端。
+资源归属、超时、响应大小限制和 MCP 接入见 [HTTP 客户端设计](docs/http-client.md)。
 
 ## 配置
 
@@ -108,12 +115,23 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now lst-bot.service
 ```
 
-房间管理需要安装 polkit，并由管理员提供 `dst@<room>.service` 单元。
+房间重启需要安装 polkit，并由管理员提供 `dst@<room>.service` 单元。
 该规则不允许创建、启用或修改单元。
 
 ```sh
 sudo ln -sfn /srv/lst-bot/systemd/lst-bot.rules /etc/polkit-1/rules.d/00-lst-bot.rules
 ```
+
+存档、回档和重置通过 `/srv/dst/<room>/console` FIFO 发送命令。
+运行房间服务后，须给 `lst-bot` 用户授予对应 FIFO 的写权限；例如安装 ACL 工具后，为房间 `020` 执行：
+
+```sh
+sudo setfacl -m u:lst-bot:w /srv/dst/020/console
+```
+
+父目录也需要允许该用户遍历。
+如果房间服务会重新创建 FIFO，应在其创建流程中重新设置此权限。
+没有读端、权限不足或管道已满时，命令会立即失败，不会创建普通文件代替 FIFO。
 
 启用 OneBot 11 时，安装 rootful Quadlet，并在启动前收紧已有 NapCat 数据的权限：
 

@@ -18,6 +18,10 @@ This repository contains the bot application and its reusable framework and clie
 - Manages local DST rooms and sends scheduled activity reports.
 - Answers DST questions with an AI agent.
 
+Room controls use the full deployment directory ID, preserving leading zeros, for example `/房间存档 000,020,100`.
+`/房间回档 020 2` rolls back two snapshots; restart and regenerate accept the same comma-separated room IDs.
+A successful reply means the request was sent; confirm its execution in the room.
+
 ## Architecture
 
 ```mermaid
@@ -36,6 +40,9 @@ flowchart LR
 - `pkgs/` contains the bot framework and service clients.
 - `systemd/` contains the deployment units.
 - Tests live beside the code they cover.
+
+All HTTP integrations use HTTPX2; reusable clients and gateways accept a borrowed `http_client: httpx2.AsyncClient`.
+See [HTTP client design](docs/http-client.md) for ownership, timeouts, response limits, and MCP integration.
 
 ## Configuration
 
@@ -108,12 +115,23 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now lst-bot.service
 ```
 
-Room management requires polkit and administrator-provided `dst@<room>.service` units.
+Room restarts require polkit and administrator-provided `dst@<room>.service` units.
 The rule does not permit creating, enabling, or modifying units.
 
 ```sh
 sudo ln -sfn /srv/lst-bot/systemd/lst-bot.rules /etc/polkit-1/rules.d/00-lst-bot.rules
 ```
+
+Save, rollback, and regenerate commands use the `/srv/dst/<room>/console` FIFO.
+After starting the room service, grant the `lst-bot` user write access to its FIFO; for example, with ACL tools installed, configure room `020`:
+
+```sh
+sudo setfacl -m u:lst-bot:w /srv/dst/020/console
+```
+
+The parent directories must also allow this user to traverse them.
+If the room service recreates its FIFO, reapply the permission when it creates the pipe.
+Commands fail immediately when no reader exists, access is denied, or the pipe is full, and never create a regular file in place of a FIFO.
 
 When OneBot 11 is enabled, install the rootful Quadlet and secure any existing NapCat data before starting it:
 
